@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
@@ -191,7 +192,11 @@ func (h *Handler) GetUsageStatisticsEnabled(c *gin.Context) {
 	c.JSON(200, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
 }
 func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
+	h.updateBoolField(c, func(v bool) {
+		h.cfg.UsageStatisticsEnabled = v
+		// Also update usage package state immediately to keep consistency
+		usage.SetRequestLogEnabled(h.cfg.UsageStatisticsEnabled && h.cfg.EnableRequestLog)
+	})
 }
 
 // UsageStatisticsEnabled
@@ -242,10 +247,22 @@ func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 	h.persist(c)
 }
 
-// Request log
+// Request log (File)
 func (h *Handler) GetRequestLog(c *gin.Context) { c.JSON(200, gin.H{"request-log": h.cfg.RequestLog}) }
 func (h *Handler) PutRequestLog(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
+}
+
+// Request log (DB / EnableRequestLog)
+func (h *Handler) GetEnableRequestLog(c *gin.Context) {
+	c.JSON(200, gin.H{"enable-request-log": h.cfg.EnableRequestLog})
+}
+func (h *Handler) PutEnableRequestLog(c *gin.Context) {
+	h.updateBoolField(c, func(v bool) {
+		h.cfg.EnableRequestLog = v
+		// Also update usage package state immediately
+		usage.SetRequestLogEnabled(h.cfg.UsageStatisticsEnabled && h.cfg.EnableRequestLog)
+	})
 }
 
 // Websocket auth

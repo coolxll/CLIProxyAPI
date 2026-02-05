@@ -18,6 +18,11 @@ type Record struct {
 	Source      string
 	RequestedAt time.Time
 	Failed      bool
+	Method      string
+	Path        string
+	ClientIP    string
+	StatusCode  int
+	LatencyMs   int64
 	Detail      Detail
 }
 

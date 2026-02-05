@@ -73,6 +73,25 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 		return
 	}
 	r.once.Do(func() {
+		var method, path, clientIP string
+		var statusCode int
+		latency := time.Since(r.requestedAt).Milliseconds()
+		
+		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+			method = ginCtx.Request.Method
+			path = ginCtx.FullPath()
+			if path == "" && ginCtx.Request != nil {
+				path = ginCtx.Request.URL.Path
+			}
+			clientIP = ginCtx.ClientIP()
+			statusCode = ginCtx.Writer.Status()
+		}
+
+		// Final check for failure if not already marked
+		if !failed && statusCode >= 400 {
+			failed = true
+		}
+
 		usage.PublishRecord(ctx, usage.Record{
 			Provider:    r.provider,
 			Model:       r.model,
@@ -82,6 +101,11 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 			AuthIndex:   r.authIndex,
 			RequestedAt: r.requestedAt,
 			Failed:      failed,
+			Method:      method,
+			Path:        path,
+			ClientIP:    clientIP,
+			StatusCode:  statusCode,
+			LatencyMs:   latency,
 			Detail:      detail,
 		})
 	})
@@ -96,6 +120,22 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 		return
 	}
 	r.once.Do(func() {
+		var method, path, clientIP string
+		var statusCode int
+		latency := time.Since(r.requestedAt).Milliseconds()
+		
+		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+			method = ginCtx.Request.Method
+			path = ginCtx.FullPath()
+			if path == "" && ginCtx.Request != nil {
+				path = ginCtx.Request.URL.Path
+			}
+			clientIP = ginCtx.ClientIP()
+			statusCode = ginCtx.Writer.Status()
+		}
+
+		failed := statusCode >= 400
+
 		usage.PublishRecord(ctx, usage.Record{
 			Provider:    r.provider,
 			Model:       r.model,
@@ -104,7 +144,12 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 			AuthID:      r.authID,
 			AuthIndex:   r.authIndex,
 			RequestedAt: r.requestedAt,
-			Failed:      false,
+			Failed:      failed,
+			Method:      method,
+			Path:        path,
+			ClientIP:    clientIP,
+			StatusCode:  statusCode,
+			LatencyMs:   latency,
 			Detail:      usage.Detail{},
 		})
 	})

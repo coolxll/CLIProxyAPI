@@ -26,6 +26,13 @@ const (
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
 	SDKConfig `yaml:",inline"`
+
+	// Database configuration
+	Database DatabaseConfig `yaml:"database" json:"database"`
+
+	// EnableRequestLog controls whether detailed request logs are persisted to the database.
+	EnableRequestLog bool `yaml:"enable-request-log" json:"enable-request-log"`
+
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`
@@ -427,6 +434,17 @@ type GeminiModel struct {
 func (m GeminiModel) GetName() string  { return m.Name }
 func (m GeminiModel) GetAlias() string { return m.Alias }
 
+// DatabaseConfig defines configuration for the internal database.
+type DatabaseConfig struct {
+	// Driver specifies the database driver to use (e.g., "sqlite", "sqlite3", "mysql").
+	Driver string `yaml:"driver" json:"driver"`
+	// DSN (Data Source Name) is the connection string for the database.
+	DSN string `yaml:"dsn" json:"dsn"`
+	// LogDir specifies the directory for database-related logs.
+	LogDir string `yaml:"log-dir,omitempty" json:"log-dir,omitempty"`
+}
+
+
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
 type OpenAICompatibility struct {
@@ -527,6 +545,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.EnableRequestLog = true
 	cfg.DisableCooling = false
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr

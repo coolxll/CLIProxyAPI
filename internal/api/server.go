@@ -264,6 +264,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.mgmt.SetLogDirectory(logDir)
 	s.localPassword = optionState.localPassword
 
+	// Configure usage logging
+	// UsageStatisticsEnabled=false should disable both aggregation and DB writes.
+	usage.SetRequestLogEnabled(cfg.UsageStatisticsEnabled && cfg.EnableRequestLog)
+
 	// Setup routes
 	s.setupRoutes()
 
@@ -476,6 +480,7 @@ func (s *Server) registerManagementRoutes() {
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
+		mgmt.GET("/traffic-logs", s.mgmt.GetTrafficLogs)
 		mgmt.GET("/usage/export", s.mgmt.ExportUsageStatistics)
 		mgmt.POST("/usage/import", s.mgmt.ImportUsageStatistics)
 		mgmt.GET("/config", s.mgmt.GetConfig)

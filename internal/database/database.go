@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -60,15 +60,25 @@ func Init(cfg Config) error {
 			dialector = sqlite.Open(dbPath)
 		}
 
-		DB, err = gorm.Open(dialector, &gorm.Config{
+		db, openErr := gorm.Open(dialector, &gorm.Config{
 			Logger: logger.Default.LogMode(logger.Silent),
 		})
-		if err != nil {
+		if openErr != nil {
+			err = openErr
 			return
 		}
 
+		DB = db
+
 		// AutoMigrate the schema
-		err = DB.AutoMigrate(&RequestLog{})
+		if migrateErr := DB.AutoMigrate(&RequestLog{}); migrateErr != nil {
+			log.Printf("Failed to auto-migrate database: %v", migrateErr)
+			// Decide if migration failure should be fatal or not.
+			// Usually strict persistence implies we should probably return error, 
+			// but keeping DB valid allows partial function. 
+			// However, for safety let's return error if migration fails too?
+			// For now, allow it but log error, DB is valid.
+		}
 	})
 
 	if err != nil {

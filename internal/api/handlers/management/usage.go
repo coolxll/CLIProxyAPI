@@ -113,9 +113,16 @@ func exportUsageStreamFromDB(ctx context.Context, w io.Writer) {
 	failureCount := int64(0)
 	totalTokens := int64(0)
 
-	_ = database.DB.WithContext(ctx).Model(&database.RequestLog{}).
+	err := database.DB.WithContext(ctx).Model(&database.RequestLog{}).
 		Select("COUNT(*) as requests, SUM(CASE WHEN is_error THEN 1 ELSE 0 END) as failure_count, SUM(total_tokens) as total_tokens").
 		Row().Scan(&totalRequests, &failureCount, &totalTokens)
+	if err != nil {
+		_, _ = w.Write([]byte(`{"version":1,"exported_at":"`))
+		_, _ = w.Write([]byte(time.Now().UTC().Format(time.RFC3339)))
+		_, _ = w.Write([]byte(`","usage":{"total_requests":0,"success_count":0,"failure_count":0,"total_tokens":0,"apis":{`))
+		_, _ = w.Write([]byte(`}}}`))
+		return
+	}
 	successCount = totalRequests - failureCount
 
 	// Start writing header
@@ -350,7 +357,7 @@ func (h *Handler) GetTrafficLogs(c *gin.Context) {
 
 	// Fetch page
 	offset := (page - 1) * size
-	if err := query.Order("id DESC").Limit(size).Offset(offset).Find(&logs).Error; err != nil {
+	if err := query.Order("timestamp DESC, id DESC").Limit(size).Offset(offset).Find(&logs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query logs"})
 		return
 	}

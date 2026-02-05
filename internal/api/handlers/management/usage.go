@@ -129,13 +129,21 @@ func exportUsageStreamFromDB(ctx context.Context, w io.Writer) {
 	_, _ = w.Write([]byte(`{"version":1,"exported_at":"`))
 	_, _ = w.Write([]byte(time.Now().UTC().Format(time.RFC3339)))
 	_, _ = w.Write([]byte(`","usage":{"total_requests":`))
-	_ = enc.Encode(totalRequests)
+	if err := enc.Encode(totalRequests); err != nil {
+		return // Early return on write error
+	}
 	_, _ = w.Write([]byte(`,"success_count":`))
-	_ = enc.Encode(successCount)
+	if err := enc.Encode(successCount); err != nil {
+		return // Early return on write error
+	}
 	_, _ = w.Write([]byte(`,"failure_count":`))
-	_ = enc.Encode(failureCount)
+	if err := enc.Encode(failureCount); err != nil {
+		return // Early return on write error
+	}
 	_, _ = w.Write([]byte(`,"total_tokens":`))
-	_ = enc.Encode(totalTokens)
+	if err := enc.Encode(totalTokens); err != nil {
+		return // Early return on write error
+	}
 	_, _ = w.Write([]byte(`,"apis":{`))
 
 	rows, err := database.DB.WithContext(ctx).Model(&database.RequestLog{}).
@@ -173,9 +181,13 @@ func exportUsageStreamFromDB(ctx context.Context, w io.Writer) {
 	writeAPIModelTotals := func() {
 		if !firstModel {
 			_, _ = w.Write([]byte(`],"total_requests":`))
-			_ = enc.Encode(modTotalReq)
+			if err := enc.Encode(modTotalReq); err != nil {
+				return // Early return on write error
+			}
 			_, _ = w.Write([]byte(`,"total_tokens":`))
-			_ = enc.Encode(modTotalTok)
+			if err := enc.Encode(modTotalTok); err != nil {
+				return // Early return on write error
+			}
 			_, _ = w.Write([]byte(`}`))
 		}
 	}
@@ -184,9 +196,13 @@ func exportUsageStreamFromDB(ctx context.Context, w io.Writer) {
 		writeAPIModelTotals()
 		if !firstAPI {
 			_, _ = w.Write([]byte(`},"total_requests":`))
-			_ = enc.Encode(apiTotalReq)
+			if err := enc.Encode(apiTotalReq); err != nil {
+				return // Early return on write error
+			}
 			_, _ = w.Write([]byte(`,"total_tokens":`))
-			_ = enc.Encode(apiTotalTok)
+			if err := enc.Encode(apiTotalTok); err != nil {
+				return // Early return on write error
+			}
 			_, _ = w.Write([]byte(`}`))
 		}
 	}
@@ -238,7 +254,7 @@ func exportUsageStreamFromDB(ctx context.Context, w io.Writer) {
 		}
 		firstDetail = false
 
-		_ = enc.Encode(usage.RequestDetail{
+		if err := enc.Encode(usage.RequestDetail{
 			Timestamp: r.Timestamp,
 			Source:    r.Provider,
 			AuthIndex: r.AuthIndex,
@@ -248,7 +264,9 @@ func exportUsageStreamFromDB(ctx context.Context, w io.Writer) {
 				TotalTokens:  r.TotalTokens,
 			},
 			Failed: r.IsError,
-		})
+		}); err != nil {
+			break // Stop processing on write error
+		}
 
 		modTotalReq++
 		modTotalTok += r.TotalTokens

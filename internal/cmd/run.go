@@ -32,8 +32,6 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		log.Warnf("failed to initialize telemetry: %v", err)
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdownTelemetry(shutdownCtx); err != nil {

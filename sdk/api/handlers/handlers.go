@@ -243,8 +243,8 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		}
 	}
 	newCtx, cancel := context.WithCancel(parentCtx)
-	if requestCtx != nil && c.Request.Context() != nil {
-		span := trace.SpanFromContext(c.Request.Context())
+	if requestCtx != nil {
+		span := trace.SpanFromContext(requestCtx)
 		if span.SpanContext().IsValid() {
 			newCtx = trace.ContextWithSpan(newCtx, span)
 		}

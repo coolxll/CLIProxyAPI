@@ -383,9 +383,10 @@ func logWithRequestID(ctx context.Context) *log.Entry {
 	if ctx == nil {
 		return log.NewEntry(log.StandardLogger())
 	}
+	entry := log.NewEntry(log.StandardLogger()).WithContext(ctx)
 	requestID := logging.GetRequestID(ctx)
 	if requestID == "" {
-		return log.NewEntry(log.StandardLogger())
+		return entry
 	}
-	return log.WithField("request_id", requestID)
+	return entry.WithField("request_id", requestID)
 }

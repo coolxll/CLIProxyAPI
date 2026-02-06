@@ -13,6 +13,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type usageReporter struct {
@@ -73,6 +75,18 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 		return
 	}
 	r.once.Do(func() {
+		if ctx != nil {
+			span := trace.SpanFromContext(ctx)
+			if span.SpanContext().IsValid() {
+				span.SetAttributes(
+					attribute.String("gen_ai.system", r.provider),
+					attribute.String("gen_ai.request.model", r.model),
+					attribute.Int64("gen_ai.usage.input_tokens", int64(detail.InputTokens)),
+					attribute.Int64("gen_ai.usage.output_tokens", int64(detail.OutputTokens)),
+				)
+			}
+		}
+
 		usage.PublishRecord(ctx, usage.Record{
 			Provider:    r.provider,
 			Model:       r.model,

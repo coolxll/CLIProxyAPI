@@ -33,4 +33,9 @@ langfuse-up:
 
 # 停止监控全家桶
 langfuse-down:
-	docker-compose -f docker-compose.langfuse.yml down
+	docker-compose -f docker-compose.langfuse.yml --env-file .env.langfuse down
+
+# 重启监控全家桶（确保重新加载环境变量）
+langfuse-restart:
+	docker-compose -f docker-compose.langfuse.yml --env-file .env.langfuse down
+	docker-compose -f docker-compose.langfuse.yml --env-file .env.langfuse up -d --remove-orphans

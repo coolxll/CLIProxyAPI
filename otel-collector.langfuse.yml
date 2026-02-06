@@ -11,12 +11,11 @@ processors:
 
 exporters:
   otlphttp:
-    traces_endpoint: "${LANGFUSE_HOST}/api/public/otel"
+    endpoint: "${LANGFUSE_HOST}/api/public/otel"
     headers:
       Authorization: "Basic ${LANGFUSE_AUTH_BASE64}"
 
   logging:
-    verbosity: detailed
 
 service:
   pipelines:

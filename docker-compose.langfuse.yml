@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # Langfuse
+  langfuse-server:
+    image: langfuse/langfuse:3
+    depends_on:
+      db:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "${LANGFUSE_PORT:-3000}:3000"
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse@db:5432/langfuse
+      - NEXTAUTH_URL=http://localhost:${LANGFUSE_PORT:-3000}
+      - NEXTAUTH_SECRET=${LANGFUSE_AUTH_SECRET:?Please set LANGFUSE_AUTH_SECRET in .env.langfuse}
+      - SALT=${LANGFUSE_SALT:?Please set LANGFUSE_SALT in .env.langfuse}
+      - ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY:?Please set LANGFUSE_ENCRYPTION_KEY in .env.langfuse}
+      - TELEMETRY_ENABLED=${TELEMETRY_ENABLED:-true}
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=${LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES:-true}
+      - CLICKHOUSE_URL=http://clickhouse:8123/default
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+      - REDIS_HOST=redis
+
+  db:
+    image: postgres:16
+    restart: always
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse
+      - POSTGRES_DB=langfuse
+    volumes:
+      - langfuse_db_data:/var/lib/postgresql/data
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    restart: always
+    environment:
+      - CLICKHOUSE_DB=default
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "-q", "localhost:8123/ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    depends_on:
+      db:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse@db:5432/langfuse
+      - CLICKHOUSE_URL=http://clickhouse:8123/default
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+      - REDIS_HOST=redis
+      - NEXTAUTH_SECRET=${LANGFUSE_AUTH_SECRET}
+      - SALT=${LANGFUSE_SALT}
+      - ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY}
+      - TELEMETRY_ENABLED=${TELEMETRY_ENABLED:-true}
+
+  redis:
+    image: redis:7-alpine
+    container_name: langfuse-redis
+    restart: always
+    command: redis-server --maxmemory-policy noeviction
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector:0.103.1
+    command: [ "--config=/etc/otel-collector-config.yaml" ]
+    volumes:
+      - ./otel-collector.langfuse.yml:/etc/otel-collector-config.yaml
+    ports:
+      - "127.0.0.1:4318:4318" # OTLP HTTP receiver
+    depends_on:
+      - langfuse-server
+    env_file:
+      - .env.langfuse
+
+volumes:
+  langfuse_db_data:
+  clickhouse_data:

@@ -22,6 +22,7 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/context"
 )
 
@@ -242,6 +243,12 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		}
 	}
 	newCtx, cancel := context.WithCancel(parentCtx)
+	if requestCtx != nil {
+		span := trace.SpanFromContext(requestCtx)
+		if span.SpanContext().IsValid() {
+			newCtx = trace.ContextWithSpan(newCtx, span)
+		}
+	}
 	if requestCtx != nil && requestCtx != parentCtx {
 		go func() {
 			select {

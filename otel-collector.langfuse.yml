@@ -11,13 +11,16 @@ processors:
 
 exporters:
   otlphttp:
-    endpoint: "${LANGFUSE_HOST:-http://langfuse-server:3000}/api/public/otel"
+    traces_endpoint: "${LANGFUSE_HOST}/api/public/otel"
     headers:
       Authorization: "Basic ${LANGFUSE_AUTH_BASE64}"
+
+  logging:
+    verbosity: detailed
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp]
+      exporters: [otlphttp, logging]

@@ -13,14 +13,10 @@ CLIProxyAPI 内置了对 OpenTelemetry (OTel) 的支持，允许你对请求链�
 cp .env.langfuse.example .env.langfuse
 ```
 
-**获取 Langfuse 密钥：**
-1. 先启动 Langfuse 服务（首次启动可能需要初始化数据库）：
-   ```bash
-   docker-compose -f docker-compose.langfuse.yml up -d langfuse-server db
-   ```
-2. 访问 http://localhost:18888（注意端口是 18888，避免与常用端口冲突）。
-3. 注册账号并创建一个新项目 (Project)。
-4. 在项目设置 (Settings) -> API Keys 中获取 **Public Key** 和 **Secret Key**。
+**配置环境变量：**
+编辑 `.env.langfuse` 文件，根据需要调整以下项：
+*   `LANGFUSE_PORT`: 设置为你希望访问 Langfuse UI 的端口（默认 `18888`）。
+*   `LANGFUSE_AUTH_SECRET` / `LANGFUSE_SALT` / `LANGFUSE_ENCRYPTION_KEY`: **必须填写**。这些是随机字符串，用于保护数据库和会话安全。你可以使用 PowerShell 运行 `[guid]::NewGuid().ToString('N')` 来生成随机串。
 
 **生成认证字符串：**
 OTel Collector 需要将密钥编码为 Base64 格式的 Basic Auth Header。
@@ -39,7 +35,7 @@ OTel Collector 需要将密钥编码为 Base64 格式的 Basic Auth Header。
 
 ### 2. 启动服务栈
 
-启动所有服务（包括 OTel Collector）：
+启动所有服务（必须显式指定环境文件以加载自定义端口和密钥）：
 ```bash
 docker-compose -f docker-compose.langfuse.yml --env-file .env.langfuse up -d
 ```
@@ -108,8 +104,10 @@ Go 的 OTel SDK 对 Endpoint 格式比较严格。
 2.  **检查网络**: 确保 4318 端口没有被防火墙拦截。
 3.  **检查采样率**: 目前默认采样率是 100% (AlwaysSample)，如果请求量巨大可能会被后端限流。
 
-#### 3. 关于 .env 文件
-Windows 下 Docker Compose 读取 `.env` 文件时，**不会**自动执行 shell 命令（如 `$(...)`）。所以必须手动生成 Base64 字符串并填入，不能在 .env 里写脚本。
+#### 3. 关于环境文件与端口
+1.  **显式加载**: 由于 Docker Compose 默认只加载 `.env`，如果你使用 `.env.langfuse`，运行命令时**必须**带上 `--env-file .env.langfuse` 参数，否则 `LANGFUSE_PORT` 等变量将使用默认值（3000）。
+2.  **Windows 环境**: Windows 下 Docker Compose 读取环境变量时，**不会**自动执行 shell 命令（如 `$(...)`）。所以必须手动生成 Base64 字符串并填入，不能在 .env 里写脚本。
+3.  **密钥缺失**: 如果 `LANGFUSE_AUTH_SECRET` 等密钥未设置，Langfuse 容器可能会启动失败或不断重启，请务必检查日志。
 
 ## 进阶架构
 

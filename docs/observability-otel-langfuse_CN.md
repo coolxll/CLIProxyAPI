@@ -46,12 +46,22 @@ docker-compose -f docker-compose.langfuse.yml --env-file .env.langfuse up -d
 
 ### 3. 运行 CLIProxyAPI
 
-CLIProxyAPI 默认会尝试连接 `127.0.0.1:4318` 发送数据，这正好对应我们启动的 Collector 的 HTTP 接收端口。
+你可以使用根目录下的 `Makefile` 快速编译并运行：
 
-直接启动即可：
 ```bash
-./CLIProxyAPI
+# 编译并启动（会自动设置 OTEL_EXPORTER_OTLP_ENDPOINT 环境变量）
+make run
 ```
+
+或者手动操作：
+
+1. **编译**：
+   ```bash
+   go build -o CLIProxyAPI.exe ./cmd/server/main.go
+   ```
+
+2. **启动**：
+   CLIProxyAPI 默认会尝试连接 `127.0.0.1:4318` 发送数据，这正好对应我们启动的 Collector 的 HTTP 接收端口。
 
 如果你的 Collector 在其他地址，可以通过环境变量修改：
 ```powershell

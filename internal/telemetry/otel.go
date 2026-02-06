@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -91,15 +92,7 @@ func Init(serviceName string) (func(context.Context) error, error) {
 	return shutdownFunc, initErr
 }
 
-func serviceVersionAttr() resource.Option {
-	version := strings.TrimSpace(os.Getenv("APP_VERSION"))
-	if version == "" {
-		return resource.WithAttributes()
-	}
-	return resource.WithAttributes(semconv.ServiceVersionKey.String(version))
-}
-
-func newOTLPHTTPExporter() (*otlptracehttp.Exporter, error) {
+func newOTLPHTTPExporter() (*otlptrace.Exporter, error) {
 	raw := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	if raw == "" {
 		raw = "127.0.0.1:4318"

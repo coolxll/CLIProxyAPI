@@ -10,10 +10,10 @@ services:
       - "${LANGFUSE_PORT:-3000}:3000"
     environment:
       - DATABASE_URL=postgresql://langfuse:langfuse@db:5432/langfuse
-      - NEXTAUTH_URL=http://localhost:3000
-      - NEXTAUTH_SECRET=${LANGFUSE_AUTH_SECRET:-auto-generated-secret-please-change}
-      - SALT=${LANGFUSE_SALT:-auto-generated-salt-please-change}
-      - ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      - NEXTAUTH_URL=http://localhost:${LANGFUSE_PORT:-3000}
+      - NEXTAUTH_SECRET=${LANGFUSE_AUTH_SECRET:?Please set LANGFUSE_AUTH_SECRET in .env.langfuse}
+      - SALT=${LANGFUSE_SALT:?Please set LANGFUSE_SALT in .env.langfuse}
+      - ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY:?Please set LANGFUSE_ENCRYPTION_KEY in .env.langfuse}
       - TELEMETRY_ENABLED=${TELEMETRY_ENABLED:-true}
       - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=${LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES:-true}
 

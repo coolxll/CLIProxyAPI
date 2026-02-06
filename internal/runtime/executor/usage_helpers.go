@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/telemetry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
@@ -18,30 +19,43 @@ import (
 )
 
 type usageReporter struct {
-	provider    string
-	model       string
-	authID      string
-	authIndex   string
-	apiKey      string
-	source      string
-	requestedAt time.Time
-	once        sync.Once
+	provider     string
+	model        string
+	authID       string
+	authIndex    string
+	apiKey       string
+	source       string
+	requestedAt  time.Time
+	inputPayload []byte
+	once         sync.Once
 }
 
 func newUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *usageReporter {
 	apiKey := apiKeyFromContext(ctx)
 	reporter := &usageReporter{
-		provider:    provider,
-		model:       model,
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
+		provider:     provider,
+		model:        model,
+		requestedAt:  time.Now(),
+		apiKey:       apiKey,
+		source:       resolveUsageSource(auth, apiKey),
+		inputPayload: telemetry.GetInputFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
 	}
 	return reporter
+}
+
+// SetInput captures the input payload (prompt) for telemetry.
+// This should ideally be the original, generic format request (e.g. OpenAI format)
+// to ensure best readability in tracing dashboards.
+func (r *usageReporter) SetInput(payload []byte) {
+	if r == nil || len(payload) == 0 {
+		return
+	}
+	// Copy to prevent data races or modification issues
+	r.inputPayload = bytes.Clone(payload)
 }
 
 func (r *usageReporter) publish(ctx context.Context, detail usage.Detail) {
@@ -78,12 +92,29 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 		if ctx != nil {
 			span := trace.SpanFromContext(ctx)
 			if span.SpanContext().IsValid() {
-				span.SetAttributes(
+				attrs := []attribute.KeyValue{
 					attribute.String("gen_ai.system", r.provider),
 					attribute.String("gen_ai.request.model", r.model),
 					attribute.Int64("gen_ai.usage.input_tokens", int64(detail.InputTokens)),
 					attribute.Int64("gen_ai.usage.output_tokens", int64(detail.OutputTokens)),
-				)
+					attribute.Int64("gen_ai.usage.total_tokens", int64(detail.TotalTokens)),
+				}
+
+				if detail.ReasoningTokens > 0 {
+					attrs = append(attrs, attribute.Int64("gen_ai.usage.reasoning_tokens", int64(detail.ReasoningTokens)))
+				}
+				if detail.CachedTokens > 0 {
+					attrs = append(attrs, attribute.Int64("gen_ai.usage.cached_tokens", int64(detail.CachedTokens)))
+				}
+
+				// Record the input prompt if available.
+				// We store it as a string. Langfuse and other tools can often parse JSON strings
+				// to display structured messages (e.g. for Chat Completion requests).
+				if len(r.inputPayload) > 0 {
+					attrs = append(attrs, attribute.String("gen_ai.prompt", string(r.inputPayload)))
+				}
+
+				span.SetAttributes(attrs...)
 			}
 		}
 

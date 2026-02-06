@@ -32,6 +32,31 @@ var (
 	shutdownFunc func(context.Context) error = func(context.Context) error { return nil }
 )
 
+type contextKey string
+
+const (
+	inputPayloadKey contextKey = "telemetry_input_payload"
+)
+
+// ContextWithInput embeds the original AI request payload into the context.
+func ContextWithInput(ctx context.Context, payload []byte) context.Context {
+	if len(payload) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, inputPayloadKey, payload)
+}
+
+// GetInputFromContext retrieves the captured AI request payload from the context.
+func GetInputFromContext(ctx context.Context) []byte {
+	if ctx == nil {
+		return nil
+	}
+	if v, ok := ctx.Value(inputPayloadKey).([]byte); ok {
+		return v
+	}
+	return nil
+}
+
 func init() {
 	enabled.Store(true)
 }

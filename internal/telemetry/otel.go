@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -125,6 +126,8 @@ func normalizeOTLPEndpoint(raw string) (endpoint string, urlPath string, insecur
 				endpoint = u.Host
 			}
 			urlPath = u.EscapedPath()
+		} else {
+			log.Warnf("failed to parse OTLP endpoint URL %q, treating as host:port: %v", raw, err)
 		}
 	}
 	if endpoint == "" {

@@ -5,6 +5,7 @@ cli-proxy-api
 # Configuration
 config.yaml
 .env
+.env.langfuse
 
 # Generated content
 bin/*
@@ -32,6 +33,7 @@ CLAUDE.md
 GEMINI.md
 
 # Tooling metadata
+*.code-workspace
 .vscode/*
 .codex/*
 .claude/*

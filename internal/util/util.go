@@ -5,6 +5,8 @@ package util
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -124,4 +126,42 @@ func WritablePath() string {
 		}
 	}
 	return ""
+}
+
+// AnonymizeString hashes the input string using SHA-256 and returns the first 16 characters of the hex hash.
+// This is used to provide a stable, non-reversible identifier for sensitive data like API keys in telemetry.
+func AnonymizeString(s string) string {
+	if s == "" {
+		return ""
+	}
+	hash := sha256.Sum256([]byte(s))
+	hexHash := hex.EncodeToString(hash[:])
+	if len(hexHash) > 16 {
+		return hexHash[:16]
+	}
+	return hexHash
+}
+
+// TruncatePayload limits a string to a safe maximum size for telemetry.
+// If the string exceeds the limit, it keeps the beginning and end with a truncation marker.
+// Default suggested limit is 32KB for OTel spans.
+func TruncatePayload(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	if limit < 100 { // Too small for smart truncation, just slice
+		return s[:limit]
+	}
+	// Keep 80% at the beginning and 20% at the end (minus marker length)
+	marker := " ... [TRUNCATED] ... "
+	if limit <= len(marker) {
+		return s[:limit]
+	}
+
+	headLen := (limit * 4) / 5
+	tailLen := limit - headLen - len(marker)
+	if tailLen < 0 {
+		return s[:limit]
+	}
+	return s[:headLen] + marker + s[len(s)-tailLen:]
 }

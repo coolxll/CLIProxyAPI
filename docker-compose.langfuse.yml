@@ -6,7 +6,7 @@
 services:
   langfuse-worker:
     image: docker.io/langfuse/langfuse-worker:3
-    restart: always
+    restart: "no"
     depends_on: &langfuse-depends-on
       postgres:
         condition: service_healthy
@@ -61,7 +61,7 @@ services:
 
   langfuse-web:
     image: docker.io/langfuse/langfuse:3
-    restart: always
+    restart: "no"
     depends_on: *langfuse-depends-on
     ports:
       - "${LANGFUSE_PORT:-3000}:3000"
@@ -71,7 +71,7 @@ services:
 
   clickhouse:
     image: docker.io/clickhouse/clickhouse-server:24.3
-    restart: always
+    restart: "no"
     # user: "101:101" # May cause permission issues on Windows, skipping for now
     environment:
       CLICKHOUSE_DB: default
@@ -89,7 +89,7 @@ services:
 
   minio:
     image: minio/minio
-    restart: always
+    restart: "no"
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minio}
@@ -108,7 +108,7 @@ services:
 
   redis:
     image: docker.io/redis:7
-    restart: always
+    restart: "no"
     command: >
       --requirepass ${REDIS_AUTH:-myredissecret} --maxmemory-policy noeviction
     healthcheck:
@@ -119,7 +119,7 @@ services:
 
   postgres:
     image: docker.io/postgres:16
-    restart: always
+    restart: "no"
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U langfuse" ]
       interval: 3s

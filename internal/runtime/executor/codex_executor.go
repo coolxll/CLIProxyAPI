@@ -178,6 +178,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		if detail, ok := parseCodexUsage(line); ok {
+			reporter.SetOutput(line)
 			reporter.publish(ctx, detail)
 		}
 

@@ -3,43 +3,146 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/telemetry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type usageReporter struct {
-	provider    string
-	model       string
-	authID      string
-	authIndex   string
-	apiKey      string
-	source      string
-	requestedAt time.Time
-	once        sync.Once
+	provider      string
+	model         string
+	authID        string
+	authIndex     string
+	apiKey        string
+	source        string
+	requestedAt   time.Time
+	inputPayload  []byte
+	outputPayload []byte
+	respID        string
+	finishReasons []string
+	once          sync.Once
+	mu            sync.Mutex
 }
 
 func newUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *usageReporter {
 	apiKey := apiKeyFromContext(ctx)
 	reporter := &usageReporter{
-		provider:    provider,
-		model:       model,
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
+		provider:     provider,
+		model:        model,
+		requestedAt:  time.Now(),
+		apiKey:       apiKey,
+		source:       resolveUsageSource(auth, apiKey),
+		inputPayload: telemetry.GetInputFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
 	}
 	return reporter
+}
+
+// SetInput captures the input payload (prompt) for telemetry.
+// This should ideally be the original, generic format request (e.g. OpenAI format)
+// to ensure best readability in tracing dashboards.
+func (r *usageReporter) SetInput(payload []byte) {
+	if r == nil || len(payload) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Copy to prevent data races or modification issues
+	r.inputPayload = bytes.Clone(payload)
+}
+
+// SetOutput captures the output payload (completion) for telemetry.
+func (r *usageReporter) SetOutput(payload []byte) {
+	if r == nil || len(payload) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outputPayload = bytes.Clone(payload)
+}
+
+// AppendOutput appends a chunk of output payload (completion) for telemetry in streaming mode.
+func (r *usageReporter) AppendOutput(chunk []byte) {
+	if r == nil || len(chunk) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outputPayload = append(r.outputPayload, chunk...)
+}
+
+// CaptureStreamChunk parses a translated stream chunk and appends its content to the completion.
+// It supports common formats like OpenAI (delta.content).
+func (r *usageReporter) CaptureStreamChunk(chunk []byte) {
+	if r == nil || len(chunk) == 0 {
+		return
+	}
+
+	// Strip SSE prefix if present
+	trimmed := bytes.TrimSpace(chunk)
+	if bytes.HasPrefix(trimmed, []byte("data:")) {
+		trimmed = bytes.TrimSpace(trimmed[5:])
+	}
+	if len(trimmed) == 0 || !gjson.ValidBytes(trimmed) {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Extract response ID if seen
+	if id := gjson.GetBytes(trimmed, "id").String(); id != "" {
+		r.respID = id
+	}
+
+	// Extract finish reason if seen
+	if choices := gjson.GetBytes(trimmed, "choices"); choices.IsArray() {
+		choices.ForEach(func(_, choice gjson.Result) bool {
+			if reason := choice.Get("finish_reason").String(); reason != "" {
+				r.finishReasons = append(r.finishReasons, reason)
+			}
+			return true
+		})
+	}
+
+	// Try to extract content from OpenAI format: choices[0].delta.content
+	content := gjson.GetBytes(trimmed, "choices.0.delta.content").String()
+	if content != "" {
+		r.outputPayload = append(r.outputPayload, []byte(content)...)
+		return
+	}
+
+	// Try Gemini format: candidates[0].content.parts[0].text
+	content = gjson.GetBytes(trimmed, "candidates.0.content.parts.0.text").String()
+	if content != "" {
+		r.outputPayload = append(r.outputPayload, []byte(content)...)
+		return
+	}
+
+	// Try Claude format: delta.text or content_block.text
+	content = gjson.GetBytes(trimmed, "delta.text").String()
+	if content == "" {
+		content = gjson.GetBytes(trimmed, "content_block.text").String()
+	}
+	if content != "" {
+		r.outputPayload = append(r.outputPayload, []byte(content)...)
+		return
+	}
 }
 
 func (r *usageReporter) publish(ctx context.Context, detail usage.Detail) {
@@ -69,10 +172,156 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 			detail.TotalTokens = total
 		}
 	}
-	if detail.InputTokens == 0 && detail.OutputTokens == 0 && detail.ReasoningTokens == 0 && detail.CachedTokens == 0 && detail.TotalTokens == 0 && !failed {
-		return
-	}
 	r.once.Do(func() {
+		r.mu.Lock()
+		outputPayload := r.outputPayload
+		inputPayload := r.inputPayload
+		capturedID := r.respID
+		capturedReasons := r.finishReasons
+		r.mu.Unlock()
+
+		if ctx != nil {
+			span := trace.SpanFromContext(ctx)
+			if span.SpanContext().IsValid() {
+				attrs := []attribute.KeyValue{
+					attribute.String("gen_ai.system", r.provider),
+					attribute.String("gen_ai.request.model", r.model),
+					attribute.String("gen_ai.operation.name", "chat"),
+					attribute.String("openinference.span.kind", "LLM"), // Phoenix specific category
+					attribute.Int64("gen_ai.usage.input_tokens", int64(detail.InputTokens)),
+					attribute.Int64("gen_ai.usage.output_tokens", int64(detail.OutputTokens)),
+					attribute.Int64("gen_ai.usage.total_tokens", int64(detail.TotalTokens)),
+				}
+
+				if detail.ReasoningTokens > 0 {
+					attrs = append(attrs, attribute.Int64("gen_ai.usage.reasoning_tokens", int64(detail.ReasoningTokens)))
+				}
+				if detail.CachedTokens > 0 {
+					attrs = append(attrs, attribute.Int64("gen_ai.usage.cached_tokens", int64(detail.CachedTokens)))
+				}
+
+				// Record the input prompt if available.
+				if len(inputPayload) > 0 {
+					attrs = append(attrs, attribute.String("gen_ai.prompt", string(inputPayload)))
+
+					// Extract request parameters
+					if temp := gjson.GetBytes(inputPayload, "temperature"); temp.Exists() {
+						attrs = append(attrs, attribute.Float64("gen_ai.request.temperature", temp.Float()))
+					}
+					if topP := gjson.GetBytes(inputPayload, "top_p"); topP.Exists() {
+						attrs = append(attrs, attribute.Float64("gen_ai.request.top_p", topP.Float()))
+					}
+					if topK := gjson.GetBytes(inputPayload, "top_k"); topK.Exists() {
+						attrs = append(attrs, attribute.Int64("gen_ai.request.top_k", topK.Int()))
+					}
+					if presP := gjson.GetBytes(inputPayload, "presence_penalty"); presP.Exists() {
+						attrs = append(attrs, attribute.Float64("gen_ai.request.presence_penalty", presP.Float()))
+					}
+					if freqP := gjson.GetBytes(inputPayload, "frequency_penalty"); freqP.Exists() {
+						attrs = append(attrs, attribute.Float64("gen_ai.request.frequency_penalty", freqP.Float()))
+					}
+					if maxTokens := gjson.GetBytes(inputPayload, "max_tokens"); maxTokens.Exists() {
+						attrs = append(attrs, attribute.Int64("gen_ai.request.max_tokens", maxTokens.Int()))
+					}
+
+					// Phoenix specific: structured messages for better UI
+					// Support OpenAI 'messages' and Gemini 'contents'
+					if messages := gjson.GetBytes(inputPayload, "messages"); messages.IsArray() {
+						attrs = append(attrs, attribute.String("llm.input_messages", messages.Raw))
+					} else if contents := gjson.GetBytes(inputPayload, "contents"); contents.IsArray() {
+						attrs = append(attrs, attribute.String("llm.input_messages", contents.Raw))
+					}
+
+					// OpenInference/Phoenix specific: primary input value for dashboard columns
+					attrs = append(attrs, attribute.String("input.value", string(inputPayload)))
+				}
+
+				// Record the output completion if available.
+				if len(outputPayload) > 0 {
+					attrs = append(attrs, attribute.String("gen_ai.completion", string(outputPayload)))
+
+					// OpenInference/Phoenix specific: primary output value for dashboard columns
+					var outputValue string
+					if outputPayload[0] == '{' {
+						// Try to extract text content for cleaner dashboard display
+						res := gjson.GetBytes(outputPayload, "choices.0.message.content")
+						if !res.Exists() {
+							res = gjson.GetBytes(outputPayload, "candidates.0.content.parts.0.text")
+						}
+						if !res.Exists() {
+							res = gjson.GetBytes(outputPayload, "content.0.text")
+						}
+
+						if res.Exists() {
+							outputValue = res.String()
+						} else {
+							outputValue = string(outputPayload)
+						}
+					} else {
+						outputValue = string(outputPayload)
+					}
+					attrs = append(attrs, attribute.String("output.value", outputValue))
+
+					// Extract response ID (prefer captured streaming ID)
+					respID := capturedID
+					if respID == "" {
+						respID = gjson.GetBytes(outputPayload, "id").String()
+					}
+					if respID != "" {
+						attrs = append(attrs, attribute.String("gen_ai.response.id", respID))
+					}
+
+					// Extract finish reasons (prefer captured streaming reasons)
+					reasons := capturedReasons
+					var lastMessage gjson.Result
+					if len(reasons) == 0 {
+						if choices := gjson.GetBytes(outputPayload, "choices"); choices.IsArray() {
+							choices.ForEach(func(_, choice gjson.Result) bool {
+								if reason := choice.Get("finish_reason").String(); reason != "" {
+									reasons = append(reasons, reason)
+								}
+								if msg := choice.Get("message"); msg.Exists() {
+									lastMessage = msg
+								} else if delta := choice.Get("delta"); delta.Exists() {
+									lastMessage = delta
+								}
+								return true
+							})
+						}
+					}
+					if len(reasons) > 0 {
+						attrs = append(attrs, attribute.StringSlice("gen_ai.response.finish_reasons", reasons))
+					}
+
+					// Phoenix specific: structured output message
+					if lastMessage.Exists() {
+						attrs = append(attrs, attribute.String("llm.output_messages", "["+lastMessage.Raw+"]"))
+					} else if len(outputPayload) > 0 && outputPayload[0] != '{' {
+						// Streaming case where outputPayload is plain text, create a simple message array for Phoenix
+						payloadJSON, _ := json.Marshal(string(outputPayload))
+						msgObj := fmt.Sprintf(`[{"role":"assistant","content":%s}]`, string(payloadJSON))
+						attrs = append(attrs, attribute.String("llm.output_messages", msgObj))
+					}
+
+					// Try to extract response model if it differs from request model
+					if respModel := gjson.GetBytes(outputPayload, "model").String(); respModel != "" {
+						attrs = append(attrs, attribute.String("gen_ai.response.model", respModel))
+					} else if respModel = gjson.GetBytes(outputPayload, "response.model").String(); respModel != "" {
+						attrs = append(attrs, attribute.String("gen_ai.response.model", respModel))
+					}
+				}
+
+				// Record user context
+				if r.source != "" {
+					attrs = append(attrs, attribute.String("user.id", r.source))
+				} else if r.apiKey != "" {
+					attrs = append(attrs, attribute.String("user.id", util.AnonymizeString(r.apiKey)))
+				}
+
+				span.SetAttributes(attrs...)
+			}
+		}
+
 		usage.PublishRecord(ctx, usage.Record{
 			Provider:    r.provider,
 			Model:       r.model,
@@ -88,26 +337,12 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 }
 
 // ensurePublished guarantees that a usage record is emitted exactly once.
-// It is safe to call multiple times; only the first call wins due to once.Do.
-// This is used to ensure request counting even when upstream responses do not
-// include any usage fields (tokens), especially for streaming paths.
 func (r *usageReporter) ensurePublished(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	r.once.Do(func() {
-		usage.PublishRecord(ctx, usage.Record{
-			Provider:    r.provider,
-			Model:       r.model,
-			Source:      r.source,
-			APIKey:      r.apiKey,
-			AuthID:      r.authID,
-			AuthIndex:   r.authIndex,
-			RequestedAt: r.requestedAt,
-			Failed:      false,
-			Detail:      usage.Detail{},
-		})
-	})
+	// Use publishWithOutcome with empty detail to ensure OTel attributes are also set
+	r.publishWithOutcome(ctx, usage.Detail{}, false)
 }
 
 func apiKeyFromContext(ctx context.Context) string {
@@ -153,7 +388,10 @@ func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 				}
 			}
 		}
-		if _, value := auth.AccountInfo(); value != "" {
+		if typ, value := auth.AccountInfo(); value != "" {
+			if typ == "api_key" {
+				return util.AnonymizeString(value)
+			}
 			return strings.TrimSpace(value)
 		}
 		if auth.Metadata != nil {
@@ -165,12 +403,12 @@ func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 		}
 		if auth.Attributes != nil {
 			if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
-				return key
+				return util.AnonymizeString(key)
 			}
 		}
 	}
 	if trimmed := strings.TrimSpace(ctxAPIKey); trimmed != "" {
-		return trimmed
+		return util.AnonymizeString(trimmed)
 	}
 	return ""
 }

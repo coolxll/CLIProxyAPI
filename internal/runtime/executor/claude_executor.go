@@ -198,6 +198,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.SetOutput(data)
 	if stream {
 		lines := bytes.Split(data, []byte("\n"))
 		for _, line := range lines {
@@ -355,6 +356,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				cloned := make([]byte, len(line)+1)
 				copy(cloned, line)
 				cloned[len(line)] = '\n'
+				reporter.CaptureStreamChunk(line)
 				out <- cliproxyexecutor.StreamChunk{Payload: cloned}
 			}
 			if errScan := scanner.Err(); errScan != nil {
@@ -389,7 +391,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				&param,
 			)
 			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+				r := []byte(chunks[i])
+				reporter.CaptureStreamChunk(r)
+				out <- cliproxyexecutor.StreamChunk{Payload: r}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {

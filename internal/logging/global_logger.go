@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/trace"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -47,6 +48,16 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	reqID := "--------"
 	if id, ok := entry.Data["request_id"].(string); ok && id != "" {
 		reqID = id
+	}
+
+	if entry.Context != nil {
+		span := trace.SpanFromContext(entry.Context)
+		if span.SpanContext().IsValid() {
+			traceID := span.SpanContext().TraceID().String()
+			if traceID != "" {
+				reqID = fmt.Sprintf("%s|trace=%s", reqID, traceID[:8])
+			}
+		}
 	}
 
 	level := entry.Level.String()

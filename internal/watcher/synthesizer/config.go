@@ -35,6 +35,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
+	// Lingma API Keys
+	out = append(out, s.synthesizeLingmaKeys(ctx)...)
 
 	return out, nil
 }
@@ -360,6 +362,76 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, compat.ExcludedModels, "apikey")
+		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeLingmaKeys creates Auth entries for Lingma API keys.
+func (s *ConfigSynthesizer) synthesizeLingmaKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.LingmaKey))
+	for i := range cfg.LingmaKey {
+		entry := cfg.LingmaKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		if key == "" {
+			continue
+		}
+
+		prefix := strings.TrimSpace(entry.Prefix)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+
+		id, token := idGen.Next("lingma:apikey", key, entry.UID)
+		attrs := map[string]string{
+			"source":  fmt.Sprintf("config:lingma[%s]", token),
+			"api_key": key,
+		}
+		metadata := map[string]any{}
+		if entry.DisableCooling {
+			metadata["disable_cooling"] = true
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		metadata["key"] = key
+		if machineID := strings.TrimSpace(entry.MachineID); machineID != "" {
+			metadata["machine_id"] = machineID
+		}
+		if uid := strings.TrimSpace(entry.UID); uid != "" {
+			metadata["uid"] = uid
+		}
+		if organizationID := strings.TrimSpace(entry.OrganizationID); organizationID != "" {
+			metadata["organization_id"] = organizationID
+		}
+		if encryptUserInfo := strings.TrimSpace(entry.EncryptUserInfo); encryptUserInfo != "" {
+			metadata["encrypt_user_info"] = encryptUserInfo
+		}
+		if userType := strings.TrimSpace(entry.UserType); userType != "" {
+			metadata["user_type"] = userType
+		}
+		if securityOAuthToken := strings.TrimSpace(entry.SecurityOAuthToken); securityOAuthToken != "" {
+			metadata["security_oauth_token"] = securityOAuthToken
+		}
+
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "lingma",
+			Label:      "lingma-apikey",
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			Attributes: attrs,
+			Metadata:   metadata,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
 		out = append(out, a)
 	}
 	return out

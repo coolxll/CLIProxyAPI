@@ -397,6 +397,7 @@ func TestEnsureAccessToken_WarmTokenLoadsCreditsHint(t *testing.T) {
 		Metadata: map[string]any{
 			"access_token": "token",
 			"expired":      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+			"base_url":     "https://cloudcode-pa.googleapis.com",
 		},
 	}
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -447,7 +448,10 @@ func TestUpdateAntigravityCreditsBalance_LoadCodeAssistUserAgent(t *testing.T) {
 	const userAgent = "antigravity/1.23.2 windows/amd64 google-api-nodejs-client/10.3.0"
 	auth := &cliproxyauth.Auth{
 		ID:         "auth-load-code-assist-ua",
-		Attributes: map[string]string{"user_agent": userAgent},
+		Attributes: map[string]string{
+			"user_agent": userAgent,
+			"base_url":   "https://cloudcode-pa.googleapis.com",
+		},
 	}
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {

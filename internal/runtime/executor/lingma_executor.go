@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/lingma"
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	lingmaChatURL = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
+	lingmaChatURL      = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
 	lingmaModelListURL = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/model/list"
 )
 
@@ -78,9 +79,10 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("lingma")
-	
-	// Payload is already Qoder encoded by the translator
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+	// Lingma's chat endpoint is SSE-only; even non-streaming OpenAI requests are
+	// sent upstream as a stream and aggregated by the response translator.
+	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, lingmaChatURL, bytes.NewReader(body))
 	if err != nil {
@@ -154,7 +156,7 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("lingma")
-	
+
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, lingmaChatURL, bytes.NewReader(body))
@@ -211,7 +213,7 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 		scanner := bufio.NewScanner(httpResp.Body)
 		// Lingma responses can be large
-		scanner.Buffer(nil, 5*1024*1024) 
+		scanner.Buffer(nil, 5*1024*1024)
 
 		var param any
 		for scanner.Scan() {
@@ -220,7 +222,7 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				continue
 			}
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			
+
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
 			for i := range chunks {
 				select {
@@ -297,7 +299,7 @@ func (e *LingmaExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Aut
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
 	}
-	
+
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -315,30 +317,80 @@ func (e *LingmaExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, err
 	}
 
-	models := make([]*registry.ModelInfo, 0)
-	result := gjson.ParseBytes(data)
-	if !result.IsArray() {
-		return nil, fmt.Errorf("invalid model list response: %s", string(data))
+	return parseLingmaModels(data, time.Now().Unix()), nil
+}
+
+func parseLingmaModels(data []byte, now int64) []*registry.ModelInfo {
+	root := gjson.ParseBytes(data)
+	roots := []gjson.Result{root}
+	if wrapped := root.Get("data"); wrapped.Exists() {
+		roots = append(roots, wrapped)
+	}
+	if wrapped := root.Get("result"); wrapped.Exists() {
+		roots = append(roots, wrapped)
 	}
 
-	now := time.Now().Unix()
-	result.ForEach(func(key, value gjson.Result) bool {
-		modelName := value.Get("modelName").String()
-		if modelName == "" {
-			return true
+	models := make([]*registry.ModelInfo, 0)
+	seen := make(map[string]struct{})
+	appendModel := func(key, value gjson.Result) {
+		modelID := firstLingmaModelString(value, "key", "modelId", "model_id", "modelName", "model_name", "id", "name")
+		if modelID == "" && key.Type == gjson.String {
+			modelID = key.String()
+		}
+		if modelID == "" {
+			return
+		}
+		dedupeKey := strings.ToLower(modelID)
+		if _, ok := seen[dedupeKey]; ok {
+			return
+		}
+		seen[dedupeKey] = struct{}{}
+
+		displayName := firstLingmaModelString(value, "display_name", "displayName", "modelName", "model_name", "name", "label")
+		if displayName == "" {
+			displayName = modelID
 		}
 		models = append(models, &registry.ModelInfo{
-			ID:          modelName,
+			ID:          modelID,
 			Object:      "model",
 			Created:     now,
 			OwnedBy:     "alibaba",
 			Type:        "lingma",
-			DisplayName: modelName,
+			DisplayName: displayName,
 		})
-		return true
-	})
+	}
 
-	return models, nil
+	for _, candidate := range roots {
+		if candidate.IsArray() {
+			candidate.ForEach(func(key, value gjson.Result) bool {
+				appendModel(key, value)
+				return true
+			})
+		}
+		for _, cat := range []string{"chat", "developer", "assistant", "inline"} {
+			group := candidate.Get(cat)
+			if !group.Exists() {
+				continue
+			}
+			group.ForEach(func(key, value gjson.Result) bool {
+				appendModel(key, value)
+				return true
+			})
+		}
+	}
+
+	return models
+}
+
+func firstLingmaModelString(value gjson.Result, keys ...string) string {
+	for _, key := range keys {
+		if v := value.Get(key); v.Exists() {
+			if s := strings.TrimSpace(v.String()); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 func (e *LingmaExecutor) getLingmaCreds(auth *cliproxyauth.Auth) (*lingma.Credentials, error) {

@@ -1158,17 +1158,24 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = applyExcludedModels(models, excluded)
 	case "lingma":
 		// Dynamic model fetching from Lingma API
+		var fetchErr error
 		if exec, ok := s.coreManager.Executor("lingma"); ok {
 			if fetcher, ok := exec.(interface {
 				FetchModels(ctx context.Context, auth *coreauth.Auth) ([]*registry.ModelInfo, error)
 			}); ok {
 				if dynamicModels, err := fetcher.FetchModels(context.Background(), a); err == nil && len(dynamicModels) > 0 {
 					models = dynamicModels
+				} else if err != nil {
+					fetchErr = err
 				}
 			}
 		}
 		if len(models) == 0 {
-			models = registry.GetStaticModelDefinitionsByChannel("lingma")
+			if fetchErr != nil {
+				log.Warnf("failed to fetch Lingma models for auth %s; skipping model registration: %v", a.ID, fetchErr)
+			} else {
+				log.Warnf("Lingma model fetch returned no models for auth %s; skipping model registration", a.ID)
+			}
 		}
 		models = applyExcludedModels(models, excluded)
 	default:

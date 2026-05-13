@@ -9,8 +9,8 @@ import (
 
 func init() {
 	translator.Register(
-		Lingma,
 		OpenAI,
+		Lingma,
 		ConvertOpenAIRequestToLingma,
 		interfaces.TranslateResponse{
 			Stream:    responses.ConvertLingmaResponseToOpenAI,

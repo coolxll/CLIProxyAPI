@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -34,38 +35,17 @@ func (h *Handler) ImportLingmaCredentials(c *gin.Context) {
 		return
 	}
 
-	// 2. Perform OAuth token exchange/activation to verify they work
-	if err := lingma.ExchangeToken(creds); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify or activate Lingma tokens", "details": err.Error()})
+	// 2. Verify the imported local Lingma credentials can sign V2 business APIs.
+	// The OAuth exchange path is intentionally not used here; lingma-tap's known
+	// working route imports the decrypted local cache key directly.
+	if err := lingma.ValidateCredentials(creds); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify Lingma credentials", "details": err.Error()})
 		return
 	}
 
 	// 3. Construct Auth metadata
-	fileName := fmt.Sprintf("lingma-%s.json", creds.UID)
-	if req.Name != "" {
-		fileName = fmt.Sprintf("lingma-%s-%s.json", req.Name, creds.UID)
-	}
-
-	metadata := map[string]any{
-		"machine_id":           creds.MachineID,
-		"uid":                  creds.UID,
-		"organization_id":      creds.OrganizationID,
-		"key":                  creds.CosyKey,
-		"security_oauth_token": creds.SecurityOAuthToken,
-		"encrypt_user_info":    creds.EncryptUserInfo,
-		"user_type":            creds.UserType,
-		"expire_time":          creds.ExpireTime,
-		"name":                 req.Name,
-		"expires_at":           func() time.Time {
-			if creds.ExpireTime > 0 {
-				if creds.ExpireTime > 32503680000 {
-					return time.UnixMilli(creds.ExpireTime)
-				}
-				return time.Unix(creds.ExpireTime, 0)
-			}
-			return time.Now().Add(24 * time.Hour)
-		}(),
-	}
+	fileName := lingmaCredentialFileName(req.Name, creds.UID)
+	metadata := buildLingmaCredentialMetadata(req.Name, creds)
 
 	// 4. Save to auth file
 	filePath := filepath.Join(h.cfg.AuthDir, fileName)
@@ -93,9 +73,69 @@ func (h *Handler) ImportLingmaCredentials(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":  "Lingma credentials imported successfully",
-		"uid":      creds.UID,
-		"org_id":   creds.OrganizationID,
-		"file":     fileName,
+		"message": "Lingma credentials imported successfully",
+		"uid":     creds.UID,
+		"org_id":  creds.OrganizationID,
+		"file":    fileName,
 	})
+}
+
+func buildLingmaCredentialMetadata(name string, creds *lingma.Credentials) map[string]any {
+	return map[string]any{
+		"type":                 "lingma",
+		"machine_id":           creds.MachineID,
+		"uid":                  creds.UID,
+		"organization_id":      creds.OrganizationID,
+		"key":                  creds.CosyKey,
+		"security_oauth_token": creds.SecurityOAuthToken,
+		"encrypt_user_info":    creds.EncryptUserInfo,
+		"user_type":            creds.UserType,
+		"expire_time":          creds.ExpireTime,
+		"name":                 name,
+		"expires_at": func() time.Time {
+			if creds.ExpireTime > 0 {
+				if creds.ExpireTime > 32503680000 {
+					return time.UnixMilli(creds.ExpireTime)
+				}
+				return time.Unix(creds.ExpireTime, 0)
+			}
+			return time.Now().Add(24 * time.Hour)
+		}(),
+	}
+}
+
+func lingmaCredentialFileName(name, uid string) string {
+	uidPart := sanitizeLingmaFileComponent(uid)
+	if uidPart == "" {
+		uidPart = "unknown"
+	}
+	namePart := sanitizeLingmaFileComponent(name)
+	if namePart == "" {
+		return fmt.Sprintf("lingma-%s.json", uidPart)
+	}
+	return fmt.Sprintf("lingma-%s-%s.json", namePart, uidPart)
+}
+
+func sanitizeLingmaFileComponent(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, ".")
+	value = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, value)
+	value = strings.Trim(value, "-_.")
+	for strings.Contains(value, "--") {
+		value = strings.ReplaceAll(value, "--", "-")
+	}
+	return value
 }

@@ -447,7 +447,7 @@ func TestUpdateAntigravityCreditsBalance_LoadCodeAssistUserAgent(t *testing.T) {
 	exec := NewAntigravityExecutor(&config.Config{})
 	const userAgent = "antigravity/1.23.2 windows/amd64 google-api-nodejs-client/10.3.0"
 	auth := &cliproxyauth.Auth{
-		ID:         "auth-load-code-assist-ua",
+		ID: "auth-load-code-assist-ua",
 		Attributes: map[string]string{
 			"user_agent": userAgent,
 			"base_url":   "https://cloudcode-pa.googleapis.com",

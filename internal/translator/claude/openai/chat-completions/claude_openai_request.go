@@ -12,8 +12,11 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/tidwall/gjson"
@@ -21,9 +24,8 @@ import (
 )
 
 var (
-	user    = ""
-	account = ""
-	session = ""
+	userID   string
+	userOnce sync.Once
 )
 
 // ConvertOpenAIRequestToClaude parses and transforms an OpenAI Chat Completions API request into Claude Code API format.
@@ -46,19 +48,25 @@ var (
 func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 
-	if account == "" {
-		u, _ := uuid.NewRandom()
-		account = u.String()
-	}
-	if session == "" {
-		u, _ := uuid.NewRandom()
-		session = u.String()
-	}
-	if user == "" {
+	userOnce.Do(func() {
+		u1, err := uuid.NewRandom()
+		if err != nil {
+			log.Errorf("failed to generate account UUID: %v", err)
+			return
+		}
+		account := u1.String()
+
+		u2, err := uuid.NewRandom()
+		if err != nil {
+			log.Errorf("failed to generate session UUID: %v", err)
+			return
+		}
+		session := u2.String()
+
 		sum := sha256.Sum256([]byte(account + session))
-		user = hex.EncodeToString(sum[:])
-	}
-	userID := fmt.Sprintf("user_%s_account_%s_session_%s", user, account, session)
+		user := hex.EncodeToString(sum[:])
+		userID = fmt.Sprintf("user_%s_account_%s_session_%s", user, account, session)
+	})
 
 	// Base Claude Code API template with default max_tokens value
 	out := []byte(fmt.Sprintf(`{"model":"","max_tokens":32000,"messages":[],"metadata":{"user_id":"%s"}}`, userID))

@@ -20,6 +20,8 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 )
 
 const (
@@ -68,6 +70,9 @@ func (e *LingmaExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 
 // Execute performs a non-streaming chat completion request to Lingma.
 func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if opts.SourceFormat == sdktranslator.Format(constant.OpenaiResponse) {
+		return resp, statusErr{code: http.StatusNotImplemented, msg: "lingma: openai-response format is not supported"}
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	creds, err := e.getLingmaCreds(auth)
 	if err != nil {
@@ -145,6 +150,9 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 // ExecuteStream performs a streaming chat completion request to Lingma.
 func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if opts.SourceFormat == sdktranslator.Format(constant.OpenaiResponse) {
+		return nil, statusErr{code: http.StatusNotImplemented, msg: "lingma: openai-response format is not supported"}
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	creds, err := e.getLingmaCreds(auth)
 	if err != nil {
@@ -254,9 +262,32 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
 
-// CountTokens returns the token count (placeholder for Lingma).
+// CountTokens returns an approximate token count for Lingma requests.
+// It converts the source request to OpenAI Chat format and uses a local tokenizer.
 func (e *LingmaExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, fmt.Errorf("CountTokens not implemented for Lingma")
+	if opts.SourceFormat == "" {
+		return cliproxyexecutor.Response{}, fmt.Errorf("lingma executor: source format is required")
+	}
+
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	from := opts.SourceFormat
+	to := sdktranslator.Format(constant.OpenAI)
+	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+	enc, err := helps.TokenizerForModel(baseModel)
+	if err != nil {
+		return cliproxyexecutor.Response{}, fmt.Errorf("lingma executor: tokenizer init failed: %w", err)
+	}
+
+	count, err := helps.CountOpenAIChatTokens(enc, translated)
+	if err != nil {
+		return cliproxyexecutor.Response{}, fmt.Errorf("lingma executor: token counting failed: %w", err)
+	}
+
+	usageJSON := helps.BuildOpenAIUsageJSON(count)
+	translatedUsage := sdktranslator.TranslateTokenCount(ctx, to, from, count, usageJSON)
+	return cliproxyexecutor.Response{Payload: translatedUsage}, nil
 }
 
 // Refresh triggers a credential refresh for Lingma.

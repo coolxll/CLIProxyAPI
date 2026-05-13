@@ -1,6 +1,7 @@
 package lingma
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/md5"
@@ -81,6 +82,15 @@ func ParseCredentials(machineID, userB64 string) (*Credentials, error) {
 		RefreshToken       string `json:"refresh_token"`
 		ExpireTime         int64  `json:"expire_time"`
 	}
+	// Sanitize JSON: remove control characters and trim whitespace.
+	userJSON = bytes.Map(func(r rune) rune {
+		if r < 32 && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, userJSON)
+	userJSON = bytes.TrimSpace(userJSON)
+
 	if err := json.Unmarshal(userJSON, &user); err != nil {
 		return nil, fmt.Errorf("parse user json: %w", err)
 	}
@@ -132,6 +142,15 @@ func decryptUser(b64, machineID string) ([]byte, error) {
 		return nil, fmt.Errorf("invalid PKCS7 padding")
 	}
 	return plaintext[:len(plaintext)-padding], nil
+}
+
+// ValidateCredentials verifies that the decrypted local Lingma credentials can
+// sign V2 business API requests.
+func ValidateCredentials(creds *Credentials) error {
+	if creds == nil {
+		return fmt.Errorf("credentials are nil")
+	}
+	return activateCosyKey(creds)
 }
 
 // ExchangeToken performs the grantAuthInfos handshake to activate the CosyKey.
@@ -186,7 +205,7 @@ func ExchangeToken(creds *Credentials) error {
 	if err != nil {
 		return fmt.Errorf("fetch user status: %w", err)
 	}
-	
+
 	// Parse statusBody to update credentials
 	res := gjson.ParseBytes(statusBody)
 	if id := res.Get("id"); id.Exists() {
@@ -242,7 +261,7 @@ func activateCosyKey(creds *Credentials) error {
 
 func callV3API(method, path string, payload map[string]interface{}, creds *Credentials) ([]byte, error) {
 	innerJSON, _ := json.Marshal(payload)
-	
+
 	wrapper := map[string]string{
 		"payload":       string(innerJSON),
 		"encodeVersion": "1",
@@ -252,7 +271,7 @@ func callV3API(method, path string, payload map[string]interface{}, creds *Crede
 
 	url := apiBaseURL + path + "?Encode=1"
 	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-	
+
 	sigInput := "cosy&" + signatureSecret + "&" + date
 	h := md5.Sum([]byte(sigInput))
 	signature := fmt.Sprintf("%x", h)

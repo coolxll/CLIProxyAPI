@@ -105,6 +105,38 @@ func TestConvertOpenAIRequestToLingmaSetsIsReasoning(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIRequestToLingmaClampsMaxTokens(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+		want float64
+	}{
+		{
+			name: "preserves value below hard limit",
+			raw:  []byte(`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":4096}`),
+			want: 4096,
+		},
+		{
+			name: "clamps value above hard limit",
+			raw:  []byte(`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32000}`),
+			want: lingmaMaxTokensHardLimit,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := decodeLingmaRequestPayload(t, ConvertOpenAIRequestToLingma("test", tt.raw, true))
+			parameters, ok := payload["parameters"].(map[string]any)
+			if !ok {
+				t.Fatalf("parameters = %T, want object", payload["parameters"])
+			}
+			if got := parameters["max_tokens"]; got != tt.want {
+				t.Fatalf("max_tokens = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIRequestToLingmaPassesToolsThrough(t *testing.T) {
 	raw := []byte(`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true,"tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}}}}]}`)
 	payload := decodeLingmaRequestPayload(t, ConvertOpenAIRequestToLingma("test", raw, true))

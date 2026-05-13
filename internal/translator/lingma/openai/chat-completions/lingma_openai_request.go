@@ -12,6 +12,8 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+const lingmaMaxTokensHardLimit = 16384
+
 // ConvertOpenAIRequestToLingma translates an OpenAI chat completions request
 // into the Lingma agent_chat_generation format, wrapped and Lingma encoded.
 func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream bool) []byte {
@@ -27,7 +29,11 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		"temperature": temperature,
 	}
 	if maxTokens := res.Get("max_tokens"); maxTokens.Exists() {
-		parameters["max_tokens"] = maxTokens.Int()
+		value := maxTokens.Int()
+		if value > lingmaMaxTokensHardLimit {
+			value = lingmaMaxTokensHardLimit
+		}
+		parameters["max_tokens"] = value
 	}
 	if topP := res.Get("top_p"); topP.Exists() {
 		parameters["top_p"] = topP.Float()

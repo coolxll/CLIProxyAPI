@@ -9,23 +9,36 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
 	"github.com/tidwall/gjson"
 )
 
 // ConvertLingmaResponseToOpenAI normalizes a single chunk of a Lingma streaming response to OpenAI format.
 func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, rawJSON []byte, param *any) [][]byte {
+	state := lingmaStreamStateFromParam(param, modelName)
+	if helpers.IsLingmaDone(rawJSON) {
+		if state.Finished {
+			return nil
+		}
+		state.Finished = true
+		return [][]byte{state.openAIStreamChunk(true, "")}
+	}
+
 	data, ok := lingmaSSEData(rawJSON)
 	if !ok {
 		return nil
 	}
-	state := lingmaStreamStateFromParam(param, modelName)
 	res := gjson.ParseBytes(data)
 
 	// 1. Try to parse as the double-JSON envelope: {"body":"..."}
 	if body := res.Get("body"); body.Exists() && body.Type == gjson.String {
 		inner := body.String()
 		if inner == "[DONE]" {
-			return [][]byte{}
+			if state.Finished {
+				return nil
+			}
+			state.Finished = true
+			return [][]byte{state.openAIStreamChunk(true, "")}
 		}
 		innerJSON := []byte(inner)
 		if gjson.GetBytes(innerJSON, "choices").Exists() {
@@ -44,12 +57,47 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 
 	state.capture(data)
 
+	if state.HasError {
+		state.Finished = true // Mark stream as finished on error
+		errType := state.ErrorType
+		if errType == "" {
+			errType = "server_error"
+		}
+		errMsg := state.ErrorMsg
+		if errMsg == "" {
+			errMsg = "unknown error from lingma"
+		}
+		errChunk := map[string]any{
+			"error": map[string]any{
+				"message": errMsg,
+				"type":    errType,
+			},
+		}
+		if encoded, err := json.Marshal(errChunk); err == nil {
+			return [][]byte{encoded}
+		}
+	}
+
 	// 2. Try to parse as finish event/usage event: {"usage":...}
 	// We might want to convert this to an OpenAI finish chunk if it's not already.
 	if usage := res.Get("usage"); usage.Exists() && !res.Get("choices").Exists() {
-		// Normalizing usage info to OpenAI format if needed
-		// For now, if it has usage but no choices, it's a metadata chunk.
-		// OpenAI standard expects choices in every chunk except maybe the last one with usage.
+		normalizedUsage := normalizeLingmaUsage(usage)
+		if normalizedUsage != nil {
+			out := map[string]any{
+				"id":      state.ID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   state.Model,
+				"choices": []map[string]any{},
+			}
+			var usageVal any
+			if err := json.Unmarshal(normalizedUsage, &usageVal); err == nil {
+				out["usage"] = usageVal
+			}
+			if encoded, err := json.Marshal(out); err == nil {
+				return [][]byte{encoded}
+			}
+		}
 		return [][]byte{data}
 	}
 
@@ -110,6 +158,11 @@ type lingmaNonStreamAggregate struct {
 	Content      strings.Builder
 	FinishReason string
 	Usage        json.RawMessage
+	ToolCalls    []json.RawMessage
+	HasToolCalls bool
+	HasError     bool
+	ErrorMsg     string
+	ErrorType    string
 }
 
 func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
@@ -129,13 +182,41 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 	if strings.TrimSpace(agg.Model) == "" {
 		agg.Model = modelName
 	}
-	if agg.FinishReason == "" {
-		agg.FinishReason = "stop"
+
+	if agg.HasError {
+		errType := agg.ErrorType
+		if errType == "" {
+			errType = "server_error"
+		}
+		errMsg := agg.ErrorMsg
+		if errMsg == "" {
+			errMsg = "unknown error from lingma"
+		}
+		out := map[string]any{
+			"error": map[string]any{
+				"message": errMsg,
+				"type":    errType,
+			},
+		}
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			return raw
+		}
+		return encoded
 	}
 
 	message := map[string]any{
 		"role":    "assistant",
 		"content": agg.Content.String(),
+	}
+	if agg.HasToolCalls && len(agg.ToolCalls) > 0 {
+		message["tool_calls"] = agg.ToolCalls
+		if agg.FinishReason == "" || agg.FinishReason == "stop" {
+			agg.FinishReason = "tool_calls"
+		}
+	}
+	if agg.FinishReason == "" {
+		agg.FinishReason = "stop"
 	}
 	out := map[string]any{
 		"id":      agg.ID,
@@ -185,6 +266,14 @@ func collectLingmaOpenAIFragment(agg *lingmaNonStreamAggregate, data []byte) {
 	if usage := res.Get("usage"); usage.Exists() {
 		agg.Usage = normalizeLingmaUsage(usage)
 	}
+	if errResult := res.Get("error"); errResult.Exists() {
+		agg.HasError = true
+		agg.ErrorMsg = errResult.Get("message").String()
+		if agg.ErrorMsg == "" {
+			agg.ErrorMsg = errResult.Get("msg").String()
+		}
+		agg.ErrorType = errResult.Get("type").String()
+	}
 	res.Get("choices").ForEach(func(_, choice gjson.Result) bool {
 		if content := choice.Get("delta.content").String(); content != "" {
 			agg.Content.WriteString(content)
@@ -194,6 +283,21 @@ func collectLingmaOpenAIFragment(agg *lingmaNonStreamAggregate, data []byte) {
 		}
 		if finishReason := strings.TrimSpace(choice.Get("finish_reason").String()); finishReason != "" {
 			agg.FinishReason = finishReason
+		}
+		// Collect tool_calls from delta (streaming) or message (non-streaming)
+		if tcs := choice.Get("delta.tool_calls"); tcs.Exists() && tcs.IsArray() {
+			agg.HasToolCalls = true
+			tcs.ForEach(func(_, tc gjson.Result) bool {
+				agg.ToolCalls = append(agg.ToolCalls, json.RawMessage(tc.Raw))
+				return true
+			})
+		}
+		if tcs := choice.Get("message.tool_calls"); tcs.Exists() && tcs.IsArray() {
+			agg.HasToolCalls = true
+			tcs.ForEach(func(_, tc gjson.Result) bool {
+				agg.ToolCalls = append(agg.ToolCalls, json.RawMessage(tc.Raw))
+				return true
+			})
 		}
 		return true
 	})
@@ -220,6 +324,23 @@ func normalizeLingmaUsage(usage gjson.Result) json.RawMessage {
 		"completion_tokens": completionTokens,
 		"total_tokens":      totalTokens,
 	}
+
+	// Map cached tokens from various possible locations
+	if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
+		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
+	} else if v := usage.Get("cached_tokens"); v.Exists() && v.Int() > 0 {
+		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
+	} else if v := usage.Get("cache_read_input_tokens"); v.Exists() && v.Int() > 0 {
+		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
+	}
+
+	// Map reasoning tokens
+	if v := usage.Get("completion_tokens_details.reasoning_tokens"); v.Exists() && v.Int() > 0 {
+		out["completion_tokens_details"] = map[string]any{"reasoning_tokens": v.Int()}
+	} else if v := usage.Get("reasoning_tokens"); v.Exists() && v.Int() > 0 {
+		out["completion_tokens_details"] = map[string]any{"reasoning_tokens": v.Int()}
+	}
+
 	encoded, err := json.Marshal(out)
 	if err != nil {
 		return json.RawMessage(usage.Raw)
@@ -232,6 +353,10 @@ type lingmaStreamState struct {
 	Model        string
 	FinishReason string
 	Finished     bool
+	HasToolCalls bool
+	HasError     bool
+	ErrorMsg     string
+	ErrorType    string
 }
 
 func lingmaStreamStateFromParam(param *any, modelName string) *lingmaStreamState {
@@ -261,10 +386,22 @@ func (s *lingmaStreamState) capture(raw []byte) {
 	if model := strings.TrimSpace(res.Get("model").String()); model != "" {
 		s.Model = model
 	}
+	if errResult := res.Get("error"); errResult.Exists() {
+		s.HasError = true
+		s.ErrorMsg = errResult.Get("message").String()
+		if s.ErrorMsg == "" {
+			s.ErrorMsg = errResult.Get("msg").String()
+		}
+		s.ErrorType = errResult.Get("type").String()
+		s.Finished = true
+	}
 	res.Get("choices").ForEach(func(_, choice gjson.Result) bool {
 		if fr := strings.TrimSpace(choice.Get("finish_reason").String()); fr != "" {
 			s.FinishReason = fr
 			s.Finished = true
+		}
+		if choice.Get("delta.tool_calls").Exists() || choice.Get("message.tool_calls").Exists() {
+			s.HasToolCalls = true
 		}
 		return true
 	})
@@ -298,7 +435,12 @@ func (s *lingmaStreamState) openAIStreamChunk(finished bool, finishReason string
 			reason = s.FinishReason
 		}
 		if reason == "" {
-			reason = "stop"
+			// Only default to tool_calls if we have tool calls and no explicit finish reason
+			if s != nil && s.HasToolCalls && s.FinishReason == "" {
+				reason = "tool_calls"
+			} else {
+				reason = "stop"
+			}
 		}
 		choice["finish_reason"] = reason
 	}

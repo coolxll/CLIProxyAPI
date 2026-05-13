@@ -80,6 +80,79 @@ data:{"firstTokenDuration":1,"totalDuration":2,"serverDuration":3}`)
 	}
 }
 
+func TestConvertLingmaResponseToOpenAIPassesToolCallsInStream(t *testing.T) {
+	var param any
+	raw := []byte(`data:{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"NYC\"}"}}]},"index":0}]}`)
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, raw, &param)
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+	tcs := gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls")
+	if !tcs.Exists() || !tcs.IsArray() {
+		t.Fatalf("tool_calls not found in chunk: %s", chunks[0])
+	}
+	if len(tcs.Array()) != 1 {
+		t.Fatalf("len(tool_calls) = %d, want 1", len(tcs.Array()))
+	}
+	if got := tcs.Array()[0].Get("id").String(); got != "call_123" {
+		t.Fatalf("tool_calls.0.id = %q, want call_123", got)
+	}
+	if got := tcs.Array()[0].Get("function.name").String(); got != "get_weather" {
+		t.Fatalf("tool_calls.0.function.name = %q, want get_weather", got)
+	}
+}
+
+func TestConvertLingmaResponseToOpenAIFinishReasonToolCalls(t *testing.T) {
+	var param any
+	// First chunk with tool_calls
+	toolChunk := []byte(`data:{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"index":0}]}`)
+	ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, toolChunk, &param)
+
+	// Timing event that triggers synthetic finish
+	finish := []byte(`data:{"firstTokenDuration":1,"totalDuration":2,"serverDuration":3}`)
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, finish, &param)
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+	if got := gjson.GetBytes(chunks[0], "choices.0.finish_reason").String(); got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls; chunk=%s", got, chunks[0])
+	}
+}
+
+func TestConvertLingmaResponseToOpenAISynthesizesToolFinishOnDone(t *testing.T) {
+	var param any
+	toolChunk := []byte(`data:{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"index":0}]}`)
+	ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, toolChunk, &param)
+
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, []byte(`data:{"body":"[DONE]"}`), &param)
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+	if got := gjson.GetBytes(chunks[0], "choices.0.finish_reason").String(); got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls; chunk=%s", got, chunks[0])
+	}
+}
+
+func TestConvertLingmaResponseToOpenAINonStreamWithToolCalls(t *testing.T) {
+	raw := []byte(`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[{\"delta\":{\"content\":\"\"},\"index\":0}]}","statusCodeValue":200,"statusCode":"OK"}
+data:{"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_abc\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"test\\\"}\"}}]},\"finish_reason\":\"tool_calls\",\"index\":0}]}","statusCodeValue":200,"statusCode":"OK"}`)
+
+	out := ConvertLingmaResponseToOpenAINonStream(context.Background(), "test", nil, nil, raw, nil)
+	if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls; out=%s", got, out)
+	}
+	tcs := gjson.GetBytes(out, "choices.0.message.tool_calls")
+	if !tcs.Exists() || !tcs.IsArray() {
+		t.Fatalf("message.tool_calls not found: %s", out)
+	}
+	if len(tcs.Array()) != 1 {
+		t.Fatalf("len(tool_calls) = %d, want 1", len(tcs.Array()))
+	}
+	if got := tcs.Array()[0].Get("function.name").String(); got != "search" {
+		t.Fatalf("tool_calls.0.function.name = %q, want search", got)
+	}
+}
+
 func TestConvertLingmaResponseToOpenAINonStreamConsolidatesLingmaUsage(t *testing.T) {
 	raw := []byte(`data: {"headers":{},"body":"{\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}]}","statusCodeValue":200,"statusCode":"OK"}
 data: {"firstTokenDuration":100,"totalDuration":200,"serverDuration":150,"usage":{"input_tokens":10,"output_tokens":20}}`)

@@ -1,6 +1,61 @@
 package executor
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"testing"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+)
+
+func TestLingmaExecutorExecuteReturns501ForOpenAIResponseFormat(t *testing.T) {
+	e := &LingmaExecutor{}
+	req := cliproxyexecutor.Request{Model: "test-model", Payload: []byte(`{}`)}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.Format("openai-response")}
+	_, err := e.Execute(context.Background(), nil, req, opts)
+	if err == nil {
+		t.Fatal("expected error for openai-response format, got nil")
+	}
+	statusErr, ok := err.(statusErr)
+	if !ok {
+		t.Fatalf("expected statusErr, got %T: %v", err, err)
+	}
+	if statusErr.code != http.StatusNotImplemented {
+		t.Fatalf("status code = %d, want %d", statusErr.code, http.StatusNotImplemented)
+	}
+}
+
+func TestLingmaExecutorExecuteStreamReturns501ForOpenAIResponseFormat(t *testing.T) {
+	e := &LingmaExecutor{}
+	req := cliproxyexecutor.Request{Model: "test-model", Payload: []byte(`{}`)}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.Format("openai-response")}
+	_, err := e.ExecuteStream(context.Background(), nil, req, opts)
+	if err == nil {
+		t.Fatal("expected error for openai-response format, got nil")
+	}
+	statusErr, ok := err.(statusErr)
+	if !ok {
+		t.Fatalf("expected statusErr, got %T: %v", err, err)
+	}
+	if statusErr.code != http.StatusNotImplemented {
+		t.Fatalf("status code = %d, want %d", statusErr.code, http.StatusNotImplemented)
+	}
+}
+
+func TestLingmaExecutorCountTokensReturnsApproximation(t *testing.T) {
+	e := &LingmaExecutor{}
+	payload := []byte(`{"model":"test","messages":[{"role":"user","content":"Hello, how are you?"}],"stream":false}`)
+	req := cliproxyexecutor.Request{Model: "test-model", Payload: payload}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.Format("claude")}
+	resp, err := e.CountTokens(context.Background(), nil, req, opts)
+	if err != nil {
+		t.Fatalf("CountTokens error: %v", err)
+	}
+	if len(resp.Payload) == 0 {
+		t.Fatal("CountTokens returned empty payload")
+	}
+}
 
 func TestParseLingmaModelsCategorizedResponse(t *testing.T) {
 	raw := []byte(`{

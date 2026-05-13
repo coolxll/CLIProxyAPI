@@ -40,7 +40,7 @@ func Encode(plaintext []byte) string {
 	a := n / 3
 
 	encoded := make([]byte, n)
-	
+
 	// Part 1: std[n-a:n] -> encoded[0:a]
 	for i := 0; i < a; i++ {
 		encoded[i] = s2c[std[n-a+i]]
@@ -66,7 +66,7 @@ func Decode(encoded string) ([]byte, error) {
 
 	a := n / 3
 	std := make([]byte, n)
-	
+
 	// Inverse mapping
 	// encoded[0:a] corresponds to std[n-a:n]
 	for i := 0; i < a; i++ {

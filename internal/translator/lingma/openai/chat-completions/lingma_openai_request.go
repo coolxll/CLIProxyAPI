@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/lingma"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
 
@@ -47,16 +48,56 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		contentVal := value.Get("content")
 		if contentVal.Exists() {
 			if contentVal.IsArray() {
-				var textParts []string
+				hasNonText := false
 				contentVal.ForEach(func(_, part gjson.Result) bool {
-					if part.Get("type").String() == "text" {
-						textParts = append(textParts, part.Get("text").String())
+					if part.Get("type").String() != "text" {
+						hasNonText = true
+						return false
 					}
 					return true
 				})
-				msg["content"] = strings.Join(textParts, "\n")
+				if hasNonText {
+					// Preserve the full content array for multimodal (images, audio, etc.)
+					msg["content"] = contentVal.Value()
+				} else {
+					// Text-only: join into a single string
+					var textParts []string
+					contentVal.ForEach(func(_, part gjson.Result) bool {
+						if part.Get("type").String() == "text" {
+							textParts = append(textParts, part.Get("text").String())
+						}
+						return true
+					})
+					msg["content"] = strings.Join(textParts, "\n")
+				}
 			} else {
 				msg["content"] = contentVal.String()
+			}
+		}
+
+		// Merge reasoning_content into content to preserve thinking context across providers.
+		if reasoning := value.Get("reasoning_content"); reasoning.Exists() && reasoning.String() != "" {
+			reasoningText := reasoning.String()
+			thoughtBlock := "<thought>" + reasoningText + "</thought>"
+			if existing, ok := msg["content"]; ok {
+				switch v := existing.(type) {
+				case string:
+					msg["content"] = thoughtBlock + "\n" + v
+				default:
+					// For array content (multimodal), prepend thought block as a text element
+					if arr, ok := existing.([]any); ok {
+						thoughtElement := map[string]any{
+							"type": "text",
+							"text": thoughtBlock,
+						}
+						msg["content"] = append([]any{thoughtElement}, arr...)
+					} else {
+						// Log warning for unexpected content type
+						log.Warnf("unexpected content type %T when merging reasoning_content, discarding reasoning", existing)
+					}
+				}
+			} else {
+				msg["content"] = thoughtBlock
 			}
 		}
 
@@ -80,6 +121,11 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 	sessionID := generateSessionID(inputRawJSON)
 
 	// 3. Build inner Lingma agent_chat_generation body
+	isReasoning := false
+	if reasoningEffort := res.Get("reasoning_effort"); reasoningEffort.Exists() && reasoningEffort.String() != "" && reasoningEffort.String() != "none" {
+		isReasoning = true
+	}
+
 	innerBody := map[string]any{
 		"request_id":       requestID,
 		"request_set_id":   "",
@@ -102,7 +148,7 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 			"model":                 "",
 			"format":                "",
 			"is_vl":                 false,
-			"is_reasoning":          false,
+			"is_reasoning":          isReasoning,
 			"api_key":               "",
 			"url":                   "",
 			"source":                "",
@@ -134,6 +180,11 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 	// Add tools if present
 	if tools := res.Get("tools"); tools.Exists() && tools.IsArray() {
 		innerBody["tools"] = tools.Value()
+	}
+
+	// Add tool_choice if present
+	if toolChoice := res.Get("tool_choice"); toolChoice.Exists() {
+		innerBody["tool_choice"] = toolChoice.Value()
 	}
 
 	innerJSON, _ := json.Marshal(innerBody)

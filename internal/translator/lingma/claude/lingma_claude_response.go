@@ -69,11 +69,6 @@ func ConvertLingmaResponseToClaude(ctx context.Context, modelName string, origin
 		claudeEvents := openaiclaude.ConvertOpenAIResponseToClaude(ctx, modelName, originalRequestRawJSON, requestRawJSON, doneSSE, &st.claudeState)
 		result = append(result, claudeEvents...)
 
-		// After [DONE], also close the stream if the done handler didn't already
-		// (e.g. if no message_start was ever emitted).
-		if cleanup := openaiclaude.CloseStream(&st.claudeState); len(cleanup) > 0 {
-			result = append(result, cleanup...)
-		}
 	}
 
 	return result

@@ -141,6 +141,11 @@ func decryptUser(b64, machineID string) ([]byte, error) {
 	if padding == 0 || padding > aes.BlockSize || padding > len(plaintext) {
 		return nil, fmt.Errorf("invalid PKCS7 padding")
 	}
+	for i := 0; i < padding; i++ {
+		if plaintext[len(plaintext)-1-i] != byte(padding) {
+			return nil, fmt.Errorf("invalid PKCS7 padding")
+		}
+	}
 	return plaintext[:len(plaintext)-padding], nil
 }
 
@@ -349,7 +354,9 @@ func extractPathWithoutAlgo(rawURL string) string {
 
 func newUUID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("lingma: crypto/rand failed: " + err.Error())
+	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 1
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])

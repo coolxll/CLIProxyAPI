@@ -131,7 +131,10 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
+		b, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return resp, fmt.Errorf("lingma: failed to read error response body: %w", err)
+		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		return resp, statusErr{code: httpResp.StatusCode, msg: string(b)}
 	}

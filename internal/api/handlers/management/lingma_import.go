@@ -69,7 +69,10 @@ func (h *Handler) ImportLingmaCredentials(c *gin.Context) {
 			FileName: fileName,
 			Metadata: metadata,
 		}
-		_, _ = h.authManager.Register(c.Request.Context(), authObj)
+		if _, err := h.authManager.Register(c.Request.Context(), authObj); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register credentials", "details": err.Error()})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

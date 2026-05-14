@@ -256,7 +256,6 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 					if args := function.Get("arguments"); args.Exists() {
 						argsText := args.String()
 						if argsText != "" {
-
 							accumulator.Arguments.WriteString(argsText)
 						}
 					}
@@ -269,7 +268,6 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 
 	// Handle finish_reason (but don't send message_delta/message_stop yet)
 	if finishReason := root.Get("choices.0.finish_reason"); finishReason.Exists() && finishReason.String() != "" {
-
 		reason := finishReason.String()
 		if param.SawToolCall {
 			param.FinishReason = "tool_calls"
@@ -341,10 +339,6 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 
 // convertOpenAIDoneToAnthropic handles the [DONE] marker and sends final events
 func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams) [][]byte {
-	if !param.MessageStarted {
-		return nil
-	}
-
 	var results [][]byte
 
 	// Ensure all content blocks are stopped before final events
@@ -389,22 +383,6 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 	emitMessageStopIfNeeded(param, &results)
 
 	return results
-}
-
-// CloseStream emits cleanup events if the Claude stream was left incomplete.
-// Call this when the upstream connection ends without sending [DONE].
-func CloseStream(param *any) [][]byte {
-	if param == nil || *param == nil {
-		return nil
-	}
-	p, ok := (*param).(*ConvertOpenAIResponseToAnthropicParams)
-	if !ok || !p.MessageStarted {
-		return nil
-	}
-	if p.MessageStopSent {
-		return nil
-	}
-	return convertOpenAIDoneToAnthropic(p)
 }
 
 // convertOpenAINonStreamingToAnthropic converts OpenAI non-streaming response to Anthropic format

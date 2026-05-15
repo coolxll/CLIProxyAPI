@@ -9,6 +9,12 @@ var agentCommonModels = map[string]bool{
 	"mmodel": true,
 }
 
+const (
+	AgentChat    = "agent_chat"
+	AgentCommon  = "agent_common"
+	SourceSystem = "system"
+)
+
 // IsAgentCommonModel reports whether the given model name requires the
 // agent_common AgentId instead of agent_chat.
 func IsAgentCommonModel(modelName string) bool {
@@ -19,9 +25,9 @@ func IsAgentCommonModel(modelName string) bool {
 // Models that require agent_common get "agent_common"; all others get "agent_chat".
 func AgentID(modelName string) string {
 	if IsAgentCommonModel(modelName) {
-		return "agent_common"
+		return AgentCommon
 	}
-	return "agent_chat"
+	return AgentChat
 }
 
 // ModelConfigSource returns the model_config.source value for the given model name.
@@ -30,5 +36,5 @@ func ModelConfigSource(modelName string) string {
 	if IsAgentCommonModel(modelName) {
 		return ""
 	}
-	return "system"
+	return SourceSystem
 }

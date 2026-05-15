@@ -26,18 +26,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
 )
-
 const (
-	lingmaChatURLAgentChat   = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_chat&Encode=1"
-	lingmaChatURLAgentCommon = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
-	lingmaModelListURL       = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/model/list"
+	lingmaModelListURL = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/model/list"
 )
 
 func lingmaChatURLForModel(modelName string) string {
-	if helpers.IsAgentCommonModel(modelName) {
-		return lingmaChatURLAgentCommon
-	}
-	return lingmaChatURLAgentChat
+	agentID := helpers.AgentID(modelName)
+	return fmt.Sprintf("https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=%s&Encode=1", agentID)
 }
 
 // LingmaExecutor is a stateless executor for the Lingma API.

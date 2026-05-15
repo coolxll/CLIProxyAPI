@@ -18,6 +18,7 @@ var providerAppliers = map[string]ProviderApplier{
 	"codex":       nil,
 	"antigravity": nil,
 	"kimi":        nil,
+	"lingma":      nil,
 }
 
 // GetProviderApplier returns the ProviderApplier for the given provider name.
@@ -329,6 +330,8 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	case "kimi":
 		// Kimi uses OpenAI-compatible reasoning_effort format
 		return extractOpenAIConfig(body)
+	case "lingma":
+		return extractLingmaConfig(body)
 	default:
 		return ThinkingConfig{}
 	}
@@ -483,6 +486,22 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
 		}
 		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	}
+
+	return ThinkingConfig{}
+}
+
+// extractLingmaConfig extracts thinking configuration from Lingma format request body.
+//
+// Lingma API format:
+//   - model_config.is_reasoning: boolean
+func extractLingmaConfig(body []byte) ThinkingConfig {
+	if ir := gjson.GetBytes(body, "model_config.is_reasoning"); ir.Exists() {
+		if !ir.Bool() {
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
+		// If is_reasoning is true, we treat it as ModeAuto (enabled)
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
 	}
 
 	return ThinkingConfig{}

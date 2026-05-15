@@ -18,8 +18,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	lingmaencoding "github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/lingma"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 )
@@ -88,13 +90,18 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Lingma's chat endpoint is SSE-only; even non-streaming OpenAI requests are
 	// sent upstream as a stream and aggregated by the response translator.
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
+	body, _ = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	body = preserveLingmaClaudeCodeThinking(body, req.Payload, from.String())
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, lingmaChatURL, bytes.NewReader(body))
+	// Final encoding after thinking application
+	encodedBody := lingmaencoding.Encode(body)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, lingmaChatURL, strings.NewReader(encodedBody))
 	if err != nil {
 		return resp, err
 	}
 
-	headers, err := lingma.BuildHeaders(creds, string(body), lingmaChatURL)
+	headers, err := lingma.BuildHeaders(creds, encodedBody, lingmaChatURL)
 	if err != nil {
 		return resp, err
 	}
@@ -169,13 +176,18 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	to := sdktranslator.FromString("lingma")
 
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
+	body, _ = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	body = preserveLingmaClaudeCodeThinking(body, req.Payload, from.String())
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, lingmaChatURL, bytes.NewReader(body))
+	// Final encoding after thinking application
+	encodedBody := lingmaencoding.Encode(body)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, lingmaChatURL, strings.NewReader(encodedBody))
 	if err != nil {
 		return nil, err
 	}
 
-	headers, err := lingma.BuildHeaders(creds, string(body), lingmaChatURL)
+	headers, err := lingma.BuildHeaders(creds, encodedBody, lingmaChatURL)
 	if err != nil {
 		return nil, err
 	}
@@ -414,6 +426,55 @@ func parseLingmaModels(data []byte, now int64) []*registry.ModelInfo {
 	}
 
 	return models
+}
+
+func preserveLingmaClaudeCodeThinking(body, source []byte, sourceFormat string) []byte {
+	if !strings.EqualFold(strings.TrimSpace(sourceFormat), constant.Claude) {
+		return body
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) || len(source) == 0 || !gjson.ValidBytes(source) {
+		return body
+	}
+
+	enabled, ok := claudeCodeThinkingEnabled(source)
+	if !ok {
+		return body
+	}
+	result, err := sjson.SetBytes(body, "model_config.is_reasoning", enabled)
+	if err != nil {
+		return body
+	}
+	return result
+}
+
+func claudeCodeThinkingEnabled(source []byte) (bool, bool) {
+	if effort := gjson.GetBytes(source, "output_config.effort"); effort.Exists() && effort.Type == gjson.String {
+		switch strings.ToLower(strings.TrimSpace(effort.String())) {
+		case "none":
+			return false, true
+		case "off", "disabled":
+			return false, true
+		case "":
+			// Empty effort is not a meaningful Claude Code thinking signal.
+		default:
+			return true, true
+		}
+	}
+
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(source, "thinking.type").String()))
+	switch thinkingType {
+	case "disabled":
+		return false, true
+	case "enabled":
+		if budget := gjson.GetBytes(source, "thinking.budget_tokens"); budget.Exists() && budget.Int() == 0 {
+			return false, true
+		}
+		return true, true
+	case "adaptive", "auto":
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 func firstLingmaModelString(value gjson.Result, keys ...string) string {

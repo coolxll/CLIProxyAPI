@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/lingma"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -127,9 +126,12 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 	sessionID := generateSessionID(inputRawJSON)
 
 	// 3. Build inner Lingma agent_chat_generation body
-	isReasoning := false
-	if reasoningEffort := res.Get("reasoning_effort"); reasoningEffort.Exists() && reasoningEffort.String() != "" && reasoningEffort.String() != "none" {
-		isReasoning = true
+	isReasoning := true
+	if re := res.Get("reasoning_effort"); re.Exists() && re.String() == "none" {
+		isReasoning = false
+	}
+	if ir := res.Get("is_reasoning"); ir.Exists() {
+		isReasoning = ir.Bool()
 	}
 
 	innerBody := map[string]any{
@@ -195,10 +197,8 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 
 	innerJSON, _ := json.Marshal(innerBody)
 
-	// 4. Lingma Encode the request body.
-	encoded := lingma.Encode(innerJSON)
-
-	return []byte(encoded)
+	// 4. Return raw JSON bytes (encoding is handled by executor after thinking application).
+	return innerJSON
 }
 
 // generateSessionID produces a deterministic session ID from the request content.

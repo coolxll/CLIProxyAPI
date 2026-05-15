@@ -7,6 +7,7 @@ import (
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/tidwall/gjson"
 )
 
 func TestLingmaExecutorExecuteReturns501ForOpenAIResponseFormat(t *testing.T) {
@@ -54,6 +55,28 @@ func TestLingmaExecutorCountTokensReturnsApproximation(t *testing.T) {
 	}
 	if len(resp.Payload) == 0 {
 		t.Fatal("CountTokens returned empty payload")
+	}
+}
+
+func TestPreserveLingmaClaudeCodeThinkingAdaptiveEffort(t *testing.T) {
+	body := []byte(`{"model_config":{"is_reasoning":false}}`)
+	source := []byte(`{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`)
+
+	out := preserveLingmaClaudeCodeThinking(body, source, "claude")
+
+	if got := gjson.GetBytes(out, "model_config.is_reasoning").Bool(); !got {
+		t.Fatalf("model_config.is_reasoning = %v, want true; body=%s", got, string(out))
+	}
+}
+
+func TestPreserveLingmaClaudeCodeThinkingDisabled(t *testing.T) {
+	body := []byte(`{"model_config":{"is_reasoning":true}}`)
+	source := []byte(`{"thinking":{"type":"disabled"}}`)
+
+	out := preserveLingmaClaudeCodeThinking(body, source, "claude")
+
+	if got := gjson.GetBytes(out, "model_config.is_reasoning").Bool(); got {
+		t.Fatalf("model_config.is_reasoning = %v, want false; body=%s", got, string(out))
 	}
 }
 

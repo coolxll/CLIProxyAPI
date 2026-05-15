@@ -40,22 +40,15 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 			state.Finished = true
 			return [][]byte{state.openAIStreamChunk(true, "")}
 		}
-		innerJSON := []byte(inner)
-		if gjson.GetBytes(innerJSON, "choices").Exists() {
-			state.capture(innerJSON)
-			return [][]byte{innerJSON}
-		}
-		if gjson.GetBytes(innerJSON, "usage").Exists() {
-			return [][]byte{innerJSON}
-		}
-		if gjson.GetBytes(innerJSON, "id").Exists() || gjson.GetBytes(innerJSON, "model").Exists() {
-			state.capture(innerJSON)
-			return [][]byte{state.openAIStreamChunk(false, "")}
-		}
-		return nil
+		// Unroll envelope: continue processing with inner JSON
+		data = []byte(inner)
+		res = gjson.ParseBytes(data)
 	}
 
 	state.capture(data)
+	if !res.Get("choices").Exists() && !res.Get("usage").Exists() && (res.Get("id").Exists() || res.Get("model").Exists()) {
+		return [][]byte{state.openAIStreamChunk(false, "")}
+	}
 
 	if state.HasError {
 		state.Finished = true // Mark stream as finished on error
@@ -101,8 +94,28 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 		return [][]byte{data}
 	}
 
-	// 3. Fallback: if it already looks like OpenAI (has choices), pass through.
-	if res.Get("choices").Exists() {
+	// 3. Fallback: if it already looks like OpenAI (has choices), process for thought extraction.
+	if choices := res.Get("choices"); choices.Exists() && choices.IsArray() {
+		var output [][]byte
+		choices.ForEach(func(_, choice gjson.Result) bool {
+			deltas := state.splitLingmaDelta(choice)
+			for _, delta := range deltas {
+				chunk := map[string]any{
+					"id":      state.ID,
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   state.Model,
+					"choices": []any{delta},
+				}
+				if encoded, err := json.Marshal(chunk); err == nil {
+					output = append(output, encoded)
+				}
+			}
+			return true
+		})
+		if len(output) > 0 {
+			return output
+		}
 		return [][]byte{data}
 	}
 
@@ -160,9 +173,11 @@ type lingmaNonStreamAggregate struct {
 	Usage        json.RawMessage
 	ToolCalls    []json.RawMessage
 	HasToolCalls bool
-	HasError     bool
-	ErrorMsg     string
-	ErrorType    string
+	ReasoningContent strings.Builder
+	InThought        bool
+	HasError         bool
+	ErrorMsg         string
+	ErrorType        string
 }
 
 func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
@@ -208,6 +223,40 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 	message := map[string]any{
 		"role":    "assistant",
 		"content": agg.Content.String(),
+	}
+	if reasoning := agg.ReasoningContent.String(); reasoning != "" {
+		message["reasoning_content"] = reasoning
+	}
+
+	// Post-process merged thought blocks
+	if strings.Contains(message["content"].(string), "<thought>") {
+		content := message["content"].(string)
+		var newContent, newReasoning strings.Builder
+		
+		for {
+			startIdx := strings.Index(content, "<thought>")
+			if startIdx == -1 {
+				newContent.WriteString(content)
+				break
+			}
+			newContent.WriteString(content[:startIdx])
+			content = content[startIdx+len("<thought>"):]
+			
+			endIdx := strings.Index(content, "</thought>")
+			if endIdx == -1 {
+				newReasoning.WriteString(content)
+				break
+			}
+			newReasoning.WriteString(content[:endIdx])
+			content = content[endIdx+len("</thought>"):]
+		}
+		
+		message["content"] = strings.TrimSpace(newContent.String())
+		if existingReasoning := agg.ReasoningContent.String(); existingReasoning != "" {
+			message["reasoning_content"] = existingReasoning + "\n\n" + strings.TrimSpace(newReasoning.String())
+		} else {
+			message["reasoning_content"] = strings.TrimSpace(newReasoning.String())
+		}
 	}
 	if agg.HasToolCalls && len(agg.ToolCalls) > 0 {
 		message["tool_calls"] = agg.ToolCalls
@@ -280,6 +329,12 @@ func collectLingmaOpenAIFragment(agg *lingmaNonStreamAggregate, data []byte) {
 		}
 		if content := choice.Get("message.content").String(); content != "" {
 			agg.Content.WriteString(content)
+		}
+		if reasoning := choice.Get("delta.reasoning_content").String(); reasoning != "" {
+			agg.ReasoningContent.WriteString(reasoning)
+		}
+		if reasoning := choice.Get("message.reasoning_content").String(); reasoning != "" {
+			agg.ReasoningContent.WriteString(reasoning)
 		}
 		if finishReason := strings.TrimSpace(choice.Get("finish_reason").String()); finishReason != "" {
 			agg.FinishReason = finishReason
@@ -357,6 +412,7 @@ type lingmaStreamState struct {
 	HasError     bool
 	ErrorMsg     string
 	ErrorType    string
+	InThought    bool
 }
 
 func lingmaStreamStateFromParam(param *any, modelName string) *lingmaStreamState {
@@ -456,4 +512,75 @@ func (s *lingmaStreamState) openAIStreamChunk(finished bool, finishReason string
 		return nil
 	}
 	return encoded
+}
+
+func (s *lingmaStreamState) splitLingmaDelta(choice gjson.Result) []map[string]any {
+	var results []map[string]any
+
+	// 1. Handle native reasoning_content first (future-proof)
+	if reasoning := choice.Get("delta.reasoning_content").String(); reasoning != "" {
+		results = append(results, map[string]any{
+			"index": 0,
+			"delta": map[string]any{"reasoning_content": reasoning},
+		})
+	}
+
+	content := choice.Get("delta.content").String()
+	if content == "" {
+		// If there was a finish_reason or tool_calls, preserve it
+		if choice.Get("finish_reason").Exists() || choice.Get("delta.tool_calls").Exists() {
+			resMap := make(map[string]any)
+			for k, v := range choice.Map() {
+				resMap[k] = v.Value()
+			}
+			results = append(results, resMap)
+		}
+		return results
+	}
+
+	// 2. Stateful tag extraction
+	remaining := content
+	for len(remaining) > 0 {
+		if !s.InThought {
+			startIdx := strings.Index(remaining, "<thought>")
+			if startIdx == -1 {
+				// No start tag found.
+				results = append(results, map[string]any{
+					"index": 0,
+					"delta": map[string]any{"content": remaining},
+				})
+				return results
+			}
+			// Found start tag
+			if startIdx > 0 {
+				results = append(results, map[string]any{
+					"index": 0,
+					"delta": map[string]any{"content": remaining[:startIdx]},
+				})
+			}
+			s.InThought = true
+			remaining = remaining[startIdx+len("<thought>"):]
+		} else {
+			endIdx := strings.Index(remaining, "</thought>")
+			if endIdx == -1 {
+				// No end tag found
+				results = append(results, map[string]any{
+					"index": 0,
+					"delta": map[string]any{"reasoning_content": remaining},
+				})
+				return results
+			}
+			// Found end tag
+			if endIdx > 0 {
+				results = append(results, map[string]any{
+					"index": 0,
+					"delta": map[string]any{"reasoning_content": remaining[:endIdx]},
+				})
+			}
+			s.InThought = false
+			remaining = remaining[endIdx+len("</thought>"):]
+		}
+	}
+
+	return results
 }

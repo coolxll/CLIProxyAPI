@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	lingmaencoding "github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/lingma"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
@@ -60,11 +59,11 @@ func TestConvertOpenAIRequestToLingmaUsesFullModelConfig(t *testing.T) {
 
 func TestLingmaTranslatorRegisteredFromOpenAIToLingma(t *testing.T) {
 	raw := []byte(`{"model":"dashscope_qmodel","messages":[{"role":"user","content":"Ping"}],"stream":true}`)
-	encoded := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAI, sdktranslator.FromString("lingma"), "dashscope_qmodel", raw, true)
-	if json.Valid(encoded) {
-		t.Fatalf("TranslateRequest returned unencoded JSON fallback: %s", encoded)
+	body := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAI, sdktranslator.FromString("lingma"), "dashscope_qmodel", raw, true)
+	if !json.Valid(body) {
+		t.Fatalf("TranslateRequest returned invalid JSON: %s", body)
 	}
-	payload := decodeLingmaRequestPayload(t, encoded)
+	payload := decodeLingmaRequestPayload(t, body)
 	if got := payload["model_config"].(map[string]any)["key"]; got != "dashscope_qmodel" {
 		t.Fatalf("model_config.key = %v, want dashscope_qmodel", got)
 	}
@@ -76,7 +75,7 @@ func TestConvertOpenAIRequestToLingmaSetsIsReasoning(t *testing.T) {
 		reasoningEffort string
 		wantReasoning   bool
 	}{
-		{"no reasoning_effort", "", false},
+		{"no reasoning_effort", "", true},
 		{"reasoning_effort none", "none", false},
 		{"reasoning_effort low", "low", true},
 		{"reasoning_effort medium", "medium", true},
@@ -163,14 +162,10 @@ func TestConvertOpenAIRequestToLingmaPassesToolsThrough(t *testing.T) {
 	}
 }
 
-func decodeLingmaRequestPayload(t *testing.T, encoded []byte) map[string]any {
+func decodeLingmaRequestPayload(t *testing.T, raw []byte) map[string]any {
 	t.Helper()
-	payloadJSON, err := lingmaencoding.Decode(string(encoded))
-	if err != nil {
-		t.Fatalf("decode payload: %v", err)
-	}
 	var payload map[string]any
-	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
 	return payload

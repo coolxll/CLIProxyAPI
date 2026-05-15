@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
 )
 
 const lingmaMaxTokensHardLimit = 16384
@@ -126,7 +128,7 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 	sessionID := generateSessionID(inputRawJSON)
 
 	// 3. Build inner Lingma agent_chat_generation body
-	isReasoning := true
+	isReasoning := !helpers.IsAgentCommonModel(modelName)
 	if re := res.Get("reasoning_effort"); re.Exists() && re.String() == "none" {
 		isReasoning = false
 	}
@@ -148,7 +150,7 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		"version":          "3",
 		"chat_prompt":      "",
 		"aliyun_user_type": "enterprise_standard",
-		"agent_id":         "agent_common",
+		"agent_id":         helpers.AgentID(modelName),
 		"task_id":          "question_refine",
 		"model_config": map[string]any{
 			"key":                   modelName,
@@ -159,7 +161,7 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 			"is_reasoning":          isReasoning,
 			"api_key":               "",
 			"url":                   "",
-			"source":                "",
+			"source":                helpers.ModelConfigSource(modelName),
 			"max_input_tokens":      0,
 			"enable":                false,
 			"price_factor":          0,

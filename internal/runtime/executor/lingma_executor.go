@@ -24,12 +24,21 @@ import (
 	"github.com/tidwall/sjson"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
 )
 
 const (
-	lingmaChatURL      = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
-	lingmaModelListURL = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/model/list"
+	lingmaChatURLAgentChat   = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_chat&Encode=1"
+	lingmaChatURLAgentCommon = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
+	lingmaModelListURL       = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/model/list"
 )
+
+func lingmaChatURLForModel(modelName string) string {
+	if helpers.IsAgentCommonModel(modelName) {
+		return lingmaChatURLAgentCommon
+	}
+	return lingmaChatURLAgentChat
+}
 
 // LingmaExecutor is a stateless executor for the Lingma API.
 type LingmaExecutor struct {
@@ -76,6 +85,7 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "lingma: openai-response format is not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	chatURL := lingmaChatURLForModel(baseModel)
 	creds, err := e.getLingmaCreds(auth)
 	if err != nil {
 		return resp, err
@@ -96,12 +106,12 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Final encoding after thinking application
 	encodedBody := lingmaencoding.Encode(body)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, lingmaChatURL, strings.NewReader(encodedBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, strings.NewReader(encodedBody))
 	if err != nil {
 		return resp, err
 	}
 
-	headers, err := lingma.BuildHeaders(creds, encodedBody, lingmaChatURL)
+	headers, err := lingma.BuildHeaders(creds, encodedBody, chatURL)
 	if err != nil {
 		return resp, err
 	}
@@ -117,7 +127,7 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		authType, authValue = auth.AccountInfo()
 	}
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       lingmaChatURL,
+		URL:       chatURL,
 		Method:    http.MethodPost,
 		Headers:   httpReq.Header.Clone(),
 		Body:      body,
@@ -164,6 +174,7 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "lingma: openai-response format is not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	chatURL := lingmaChatURLForModel(baseModel)
 	creds, err := e.getLingmaCreds(auth)
 	if err != nil {
 		return nil, err
@@ -182,12 +193,12 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Final encoding after thinking application
 	encodedBody := lingmaencoding.Encode(body)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, lingmaChatURL, strings.NewReader(encodedBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, strings.NewReader(encodedBody))
 	if err != nil {
 		return nil, err
 	}
 
-	headers, err := lingma.BuildHeaders(creds, encodedBody, lingmaChatURL)
+	headers, err := lingma.BuildHeaders(creds, encodedBody, chatURL)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +214,7 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		authType, authValue = auth.AccountInfo()
 	}
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       lingmaChatURL,
+		URL:       chatURL,
 		Method:    http.MethodPost,
 		Headers:   httpReq.Header.Clone(),
 		Body:      body,

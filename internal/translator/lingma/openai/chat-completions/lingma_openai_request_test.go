@@ -55,6 +55,12 @@ func TestConvertOpenAIRequestToLingmaUsesFullModelConfig(t *testing.T) {
 	if got := payload["stream"]; got != true {
 		t.Fatalf("stream = %v, want true", got)
 	}
+	if got := payload["agent_id"]; got != "agent_chat" {
+		t.Fatalf("agent_id = %v, want agent_chat", got)
+	}
+	if got := modelConfig["source"]; got != "system" {
+		t.Fatalf("model_config.source = %v, want system", got)
+	}
 }
 
 func TestLingmaTranslatorRegisteredFromOpenAIToLingma(t *testing.T) {
@@ -159,6 +165,44 @@ func TestConvertOpenAIRequestToLingmaPassesToolsThrough(t *testing.T) {
 	}
 	if fn["name"] != "get_weather" {
 		t.Fatalf("tool.function.name = %v, want get_weather", fn["name"])
+	}
+}
+
+func TestConvertOpenAIRequestToLingmaAgentChatModel(t *testing.T) {
+	raw := []byte(`{"model":"dashscope_qmodel","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	payload := decodeLingmaRequestPayload(t, ConvertOpenAIRequestToLingma("dashscope_qmodel", raw, true))
+
+	if got := payload["agent_id"]; got != "agent_chat" {
+		t.Fatalf("agent_id = %v, want agent_chat", got)
+	}
+	modelConfig, ok := payload["model_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("model_config = %T, want object", payload["model_config"])
+	}
+	if got := modelConfig["source"]; got != "system" {
+		t.Fatalf("model_config.source = %v, want system", got)
+	}
+	if got := modelConfig["is_reasoning"]; got != true {
+		t.Fatalf("is_reasoning = %v, want true", got)
+	}
+}
+
+func TestConvertOpenAIRequestToLingmaAgentCommonModel(t *testing.T) {
+	raw := []byte(`{"model":"kmodel","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	payload := decodeLingmaRequestPayload(t, ConvertOpenAIRequestToLingma("kmodel", raw, true))
+
+	if got := payload["agent_id"]; got != "agent_common" {
+		t.Fatalf("agent_id = %v, want agent_common", got)
+	}
+	modelConfig, ok := payload["model_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("model_config = %T, want object", payload["model_config"])
+	}
+	if got := modelConfig["source"]; got != "" {
+		t.Fatalf("model_config.source = %v, want empty string", got)
+	}
+	if got := modelConfig["is_reasoning"]; got != false {
+		t.Fatalf("is_reasoning = %v, want false", got)
 	}
 }
 

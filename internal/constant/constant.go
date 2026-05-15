@@ -24,4 +24,7 @@ const (
 
 	// Antigravity represents the Antigravity response format identifier.
 	Antigravity = "antigravity"
+
+	// Lingma represents the Lingma provider identifier.
+	Lingma = "lingma"
 )

@@ -108,6 +108,9 @@ type Config struct {
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
 
+	// LingmaKey defines Lingma API key (CosyKey/securityOauthToken) configurations.
+	LingmaKey []LingmaKey `yaml:"lingma-api-key" json:"lingma-api-key"`
+
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
@@ -523,6 +526,48 @@ type GeminiModel struct {
 func (m GeminiModel) GetName() string  { return m.Name }
 func (m GeminiModel) GetAlias() string { return m.Alias }
 
+// LingmaKey represents the configuration for a Lingma API credential.
+type LingmaKey struct {
+	// APIKey is the explicit CosyKey for accessing Lingma API services.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// MachineID is the Lingma client machine identifier used for signed requests.
+	MachineID string `yaml:"machine-id,omitempty" json:"machine-id,omitempty"`
+
+	// UID is the Lingma user ID required by signed requests.
+	UID string `yaml:"uid,omitempty" json:"uid,omitempty"`
+
+	// OrganizationID is the Lingma organization ID used by signed requests.
+	OrganizationID string `yaml:"organization-id,omitempty" json:"organization-id,omitempty"`
+
+	// EncryptUserInfo is the encrypted Lingma user info payload used in request signatures.
+	EncryptUserInfo string `yaml:"encrypt-user-info,omitempty" json:"encrypt-user-info,omitempty"`
+
+	// UserType is the Lingma user type returned by credential import.
+	UserType string `yaml:"user-type,omitempty" json:"user-type,omitempty"`
+
+	// SecurityOAuthToken is the Lingma security OAuth token used during refresh.
+	SecurityOAuthToken string `yaml:"security-oauth-token,omitempty" json:"security-oauth-token,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential (e.g., "teamA/dashscope_qmodel").
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// ProxyURL optionally overrides the global proxy for this API key.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+}
+
+func (k LingmaKey) GetAPIKey() string { return k.APIKey }
+
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
 type OpenAICompatibility struct {
@@ -700,6 +745,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.
 	cfg.SanitizeGeminiKeys()
+
+	// Sanitize Lingma API keys.
+	cfg.SanitizeLingmaKeys()
 
 	// Sanitize Vertex-compatible API keys.
 	cfg.SanitizeVertexCompatKeys()
@@ -919,6 +967,33 @@ func (cfg *Config) SanitizeClaudeKeys() {
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 	}
+}
+
+// SanitizeLingmaKeys trims and validates Lingma API key entries.
+func (cfg *Config) SanitizeLingmaKeys() {
+	if cfg == nil || len(cfg.LingmaKey) == 0 {
+		return
+	}
+	out := make([]LingmaKey, 0, len(cfg.LingmaKey))
+	for i := range cfg.LingmaKey {
+		entry := cfg.LingmaKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		entry.MachineID = strings.TrimSpace(entry.MachineID)
+		entry.UID = strings.TrimSpace(entry.UID)
+		entry.OrganizationID = strings.TrimSpace(entry.OrganizationID)
+		entry.EncryptUserInfo = strings.TrimSpace(entry.EncryptUserInfo)
+		entry.UserType = strings.TrimSpace(entry.UserType)
+		entry.SecurityOAuthToken = strings.TrimSpace(entry.SecurityOAuthToken)
+		entry.Prefix = strings.TrimSpace(entry.Prefix)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+
+		if entry.APIKey == "" {
+			continue
+		}
+
+		out = append(out, entry)
+	}
+	cfg.LingmaKey = out
 }
 
 // SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.

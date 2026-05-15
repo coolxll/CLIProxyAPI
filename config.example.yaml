@@ -173,6 +173,21 @@ nonstream-keepalive-interval: 0
 #       - "*flash*"            # wildcard matching substring (e.g. gemini-2.5-flash-lite)
 #   - api-key: "AIzaSy...02"
 
+# Lingma API keys (Aliyun)
+# lingma-api-key:
+#   - api-key: "CosyKey..." # explicit CosyKey from an imported Lingma credential
+#     uid: "user-id" # required for config-defined credentials
+#     machine-id: "machine-id" # required for signed requests
+#     organization-id: "org-id" # optional, but usually present in imported credentials
+#     encrypt-user-info: "..." # optional, but usually present in imported credentials
+#     security-oauth-token: "..." # optional; used for refresh when available
+#     prefix: "test" # optional: require calls like "test/dashscope_qmodel" to target this credential
+#     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
+#     proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
+#     # proxy-url: "direct" # optional: explicit direct connect for this credential
+#     excluded-models:
+#       - "mmodel"         # exclude specific models from this provider (exact match)
+
 # Codex API keys
 # codex-api-key:
 #   - api-key: "sk-atSM..."

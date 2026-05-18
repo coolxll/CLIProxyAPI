@@ -170,7 +170,7 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 						param.ThinkingContentBlockIndex = param.NextContentBlockIndex
 						param.NextContentBlockIndex++
 					}
-					contentBlockStartJSON := `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`
+					contentBlockStartJSON := `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`
 					contentBlockStartJSONBytes := []byte(contentBlockStartJSON)
 					contentBlockStartJSONBytes, _ = sjson.SetBytes(contentBlockStartJSONBytes, "index", param.ThinkingContentBlockIndex)
 					results = append(results, translatorcommon.AppendSSEEventBytes(nil, "content_block_start", contentBlockStartJSONBytes, 2))
@@ -402,7 +402,7 @@ func convertOpenAINonStreamingToAnthropic(rawJSON []byte) [][]byte {
 			if reasoningText == "" {
 				continue
 			}
-			block := []byte(`{"type":"thinking","thinking":"","signature":""}`)
+			block := []byte(`{"type":"thinking","thinking":""}`)
 			block, _ = sjson.SetBytes(block, "thinking", reasoningText)
 			out, _ = sjson.SetRawBytes(out, "content.-1", block)
 		}
@@ -584,7 +584,7 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 					if reasoningText == "" {
 						continue
 					}
-					block := []byte(`{"type":"thinking","thinking":"","signature":""}`)
+					block := []byte(`{"type":"thinking","thinking":""}`)
 					block, _ = sjson.SetBytes(block, "thinking", reasoningText)
 					out, _ = sjson.SetRawBytes(out, "content.-1", block)
 				}
@@ -609,7 +609,7 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 						if thinkingBuilder.Len() == 0 {
 							return
 						}
-						block := []byte(`{"type":"thinking","thinking":"","signature":""}`)
+						block := []byte(`{"type":"thinking","thinking":""}`)
 						block, _ = sjson.SetBytes(block, "thinking", thinkingBuilder.String())
 						out, _ = sjson.SetRawBytes(out, "content.-1", block)
 						thinkingBuilder.Reset()

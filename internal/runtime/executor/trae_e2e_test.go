@@ -327,11 +327,75 @@ func TestTraeE2E_V3_NonStreaming(t *testing.T) {
 	t.Logf("V3 glm-5 non-stream payload: %s", truncate(payload, 500))
 
 	content := gjson.GetBytes(resp.Payload, "choices.0.message.content").String()
+	reasoning := gjson.GetBytes(resp.Payload, "choices.0.message.reasoning_content").String()
 	t.Logf("V3 glm-5 content: %q", content)
+	t.Logf("V3 glm-5 reasoning length: %d", len(reasoning))
 
 	if strings.TrimSpace(content) == "" {
-		// V3 agent API may return empty for simple prompts; not a code bug
-		t.Skip("V3 glm-5 returned empty content — agent API may need different prompting")
+		t.Fatal("V3 glm-5 non-stream returned empty content")
+	}
+}
+
+func TestTraeE2E_V3_Streaming(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+
+	rawRequest := []byte(`{
+		"model": "glm-5",
+		"messages": [
+			{"role": "user", "content": "Reply with exactly: E2E_V3_STREAM"}
+		],
+		"stream": true
+	}`)
+
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "glm-5",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var rawChunks []string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+		rawChunks = append(rawChunks, string(chunk.Payload))
+	}
+
+	t.Logf("V3 glm-5 streaming got %d raw chunks", len(rawChunks))
+	for i, c := range rawChunks {
+		t.Logf("  raw[%d]: %s", i, truncate(c, 300))
+	}
+
+	var aggContent, aggReasoning strings.Builder
+	for _, c := range rawChunks {
+		dataStr := c
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		if val := gjson.Get(dataStr, "choices.0.delta.content"); val.Exists() && val.String() != "" {
+			aggContent.WriteString(val.String())
+		}
+		if val := gjson.Get(dataStr, "choices.0.delta.reasoning_content"); val.Exists() && val.String() != "" {
+			aggReasoning.WriteString(val.String())
+		}
+	}
+
+	t.Logf("V3 glm-5 streaming content: %q", aggContent.String())
+	t.Logf("V3 glm-5 streaming reasoning length: %d", len(aggReasoning.String()))
+
+	if strings.TrimSpace(aggContent.String()) == "" {
+		t.Fatal("V3 glm-5 streaming returned empty content")
 	}
 }
 

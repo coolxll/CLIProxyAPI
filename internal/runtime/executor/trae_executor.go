@@ -175,6 +175,7 @@ func (e *TraeExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Auth)
 	}
 	models := parseTraeModels(data, time.Now().Unix())
 	models = appendTraeNoThinkingModel(models, time.Now().Unix())
+	models = appendTraeV3AgentModels(models, time.Now().Unix())
 	return models, nil
 }
 
@@ -1262,6 +1263,40 @@ func appendTraeNoThinkingModel(models []*registry.ModelInfo, now int64) []*regis
 		MaxCompletionTokens: 65536,
 		SupportedParameters: []string{"tools"},
 	})
+}
+
+func appendTraeV3AgentModels(models []*registry.ModelInfo, now int64) []*registry.ModelInfo {
+	v3Models := []struct {
+		id          string
+		displayName string
+		context     int
+	}{
+		{"glm-5", "GLM-5", 32000},
+	}
+	existing := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		if m != nil {
+			existing[strings.ToLower(strings.TrimSpace(m.ID))] = struct{}{}
+		}
+	}
+	for _, v := range v3Models {
+		if _, ok := existing[strings.ToLower(v.id)]; ok {
+			continue
+		}
+		models = append(models, &registry.ModelInfo{
+			ID:                  v.id,
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "trae",
+			Type:                "trae",
+			DisplayName:         v.displayName,
+			Name:                v.id,
+			ContextLength:       v.context,
+			MaxCompletionTokens: 65536,
+			SupportedParameters: []string{"tools"},
+		})
+	}
+	return models
 }
 
 func openAIUsageFromResult(result gjson.Result) openaiUsage {

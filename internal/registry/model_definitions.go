@@ -176,6 +176,7 @@ func traeModelInfos() []*ModelInfo {
 		{"deepseek-V3", "DeepSeek V3", 40000},
 		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000},
 		{"no_thinking_model", "Trae No Thinking Model", 40000},
+		{"glm-5", "GLM-5", 32000},
 	}
 
 	out := make([]*ModelInfo, 0, len(models))

@@ -1,0 +1,258 @@
+package executor
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	traeenc "github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/trae"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/tidwall/gjson"
+)
+
+func TestTraeExecutorCountTokensReturnsApproximation(t *testing.T) {
+	e := &TraeExecutor{}
+	resp, err := e.CountTokens(context.Background(), nil, cliproxyexecutor.Request{
+		Model:   "glm-5",
+		Payload: []byte(`{"model":"glm-5","messages":[{"role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("CountTokens returned error: %v", err)
+	}
+
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got <= 0 {
+		t.Fatalf("usage.total_tokens = %d, want positive token count; payload=%s", got, string(resp.Payload))
+	}
+}
+
+func TestOpenAIUsageFromTraeTokenUsage(t *testing.T) {
+	usageData := openAIUsageFromResult(gjson.Parse(`{
+		"prompt_tokens": 11,
+		"completion_tokens": 7,
+		"total_tokens": 18,
+		"cache_creation_input_tokens": 3,
+		"cache_read_input_tokens": 5,
+		"reasoning_tokens": 2
+	}`))
+
+	raw, err := json.Marshal(usageData)
+	if err != nil {
+		t.Fatalf("marshal usage: %v", err)
+	}
+	if got := gjson.GetBytes(raw, "prompt_tokens").Int(); got != 11 {
+		t.Fatalf("prompt_tokens = %d, want 11", got)
+	}
+	if got := gjson.GetBytes(raw, "completion_tokens").Int(); got != 7 {
+		t.Fatalf("completion_tokens = %d, want 7", got)
+	}
+	if got := gjson.GetBytes(raw, "total_tokens").Int(); got != 18 {
+		t.Fatalf("total_tokens = %d, want 18", got)
+	}
+	if got := gjson.GetBytes(raw, "prompt_tokens_details.cached_tokens").Int(); got != 8 {
+		t.Fatalf("cached_tokens = %d, want 8", got)
+	}
+	if got := gjson.GetBytes(raw, "completion_tokens_details.reasoning_tokens").Int(); got != 2 {
+		t.Fatalf("reasoning_tokens = %d, want 2", got)
+	}
+}
+
+func TestTraeExecutorStreamReturnsSSEError(t *testing.T) {
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := "event: error\n" +
+			"data: {\"code\":4001,\"message\":\"failed to get summary config\"}\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"doubao-seed-2.0-code","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	result, err := NewTraeExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "trae",
+		Attributes: map[string]string{
+			"jwt_token": "not-a-real-jwt",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "doubao-seed-2.0-code",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			break
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected stream error from Trae error event")
+	}
+	if !strings.Contains(streamErr.Error(), "trae error event 4001") {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+}
+
+func TestResolveTraeProtocolByModelName(t *testing.T) {
+	tests := []struct {
+		model        string
+		wantProtocol string
+		wantModel    string
+	}{
+		{"glm-5", traeProtocolV3, "glm-5"},
+		{"deepseek-R1", traeProtocolV1, "deepseek-R1"},
+		{"deepseek-V3", traeProtocolV1, "deepseek-V3"},
+		{"Doubao_1_5_thinking_pro", traeProtocolV1, "Doubao_1_5_thinking_pro"},
+		{"no_thinking_model", traeProtocolV2, "no_thinking_model"},
+		{"glm-5__dev", traeProtocolV3, "glm-5__dev"},
+		{"custom_model_gpt-5__dev", traeProtocolV3, "custom_model_gpt-5__dev"},
+		{"trae/glm-5", traeProtocolV3, "glm-5"},
+		{"trae/deepseek-R1", traeProtocolV1, "deepseek-R1"},
+		{"trae/deepseek-V3", traeProtocolV1, "deepseek-V3"},
+		{"trae/no_thinking_model", traeProtocolV2, "no_thinking_model"},
+	}
+
+	for _, tt := range tests {
+		gotProtocol, gotModel := resolveTraeProtocol(tt.model, nil)
+		if gotProtocol != tt.wantProtocol || gotModel != tt.wantModel {
+			t.Fatalf("resolveTraeProtocol(%q) = (%q, %q), want (%q, %q)",
+				tt.model, gotProtocol, gotModel, tt.wantProtocol, tt.wantModel)
+		}
+	}
+}
+
+func TestParseTraeModels(t *testing.T) {
+	models := parseTraeModels([]byte(`{
+		"model_configs": [
+			{"name":"seed_m8","display_name":"Doubao-1.5-pro","status":true,"prompt_max_tokens":28000},
+			{"name":"Doubao_1_5_thinking_pro","display_name":"Doubao-1.5-thinking-pro","status":true,"prompt_max_tokens":40000},
+			{"name":"disabled_model","display_name":"Disabled","status":false,"prompt_max_tokens":40000},
+			{"name":"deepseek-R1","display_name":"DeepSeek-Reasoner（R1）","status":true,"prompt_max_tokens":40000},
+			{"name":"deepseek-V3","display_name":"DeepSeek-V3","status":true,"prompt_max_tokens":40000},
+			{"name":"deepseek-V3-0324","display_name":"DeepSeek-V3-0324","status":true,"prompt_max_tokens":40000}
+		]
+	}`), 123)
+
+	if len(models) != 5 {
+		t.Fatalf("len(models) = %d, want 5", len(models))
+	}
+	if got := models[0].ID; got != "seed_m8" {
+		t.Fatalf("first model ID = %q, want seed_m8", got)
+	}
+	if got := models[0].DisplayName; got != "Doubao-1.5-pro" {
+		t.Fatalf("first model display = %q, want Doubao-1.5-pro", got)
+	}
+	if got := models[0].ContextLength; got != 28000 {
+		t.Fatalf("first model context = %d, want 28000", got)
+	}
+	for _, model := range models {
+		if model.ID == "disabled_model" {
+			t.Fatal("disabled model should be excluded")
+		}
+	}
+}
+
+func TestAppendTraeNoThinkingModel(t *testing.T) {
+	models := appendTraeNoThinkingModel(parseTraeModels([]byte(`{"model_configs":[{"name":"seed_m8","status":true}]}`), 123), 123)
+	if len(models) != 2 {
+		t.Fatalf("len(models) = %d, want 2", len(models))
+	}
+	if got := models[1].ID; got != "no_thinking_model" {
+		t.Fatalf("appended model ID = %q, want no_thinking_model", got)
+	}
+}
+
+func TestBuildTraeRawChatRequestV1(t *testing.T) {
+	req, err := buildTraeRawChatRequest(traeProtocolV1, "deepseek-R1", []byte(`{
+		"model":"deepseek-R1",
+		"messages":[{"role":"user","content":"hello"}]
+	}`), cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("buildTraeRawChatRequest v1 error: %v", err)
+	}
+
+	if !strings.HasSuffix(req.TargetURL, "/api/ide/v1/llm_raw_chat") {
+		t.Fatalf("TargetURL = %q, want v1 llm_raw_chat", req.TargetURL)
+	}
+	if got := gjson.GetBytes(req.RequestBody, "model_name").String(); got != "deepseek-R1" {
+		t.Fatalf("model_name = %q, want deepseek-R1", got)
+	}
+
+	plain, err := traeenc.DecryptMessage(gjson.GetBytes(req.RequestBody, "message").String(), req.RequestPin, req.RequestAt)
+	if err != nil {
+		t.Fatalf("decrypt v1 raw chat payload: %v", err)
+	}
+	if got := gjson.GetBytes(plain, "0.content.0.text").String(); got != "hello" {
+		t.Fatalf("v1 encrypted message text = %q, want hello; payload=%s", got, string(plain))
+	}
+}
+
+func TestBuildTraeRawChatRequestV2NoThinkingModel(t *testing.T) {
+	req, err := buildTraeRawChatRequest(traeProtocolV2, "no_thinking_model", []byte(`{
+		"model":"no_thinking_model",
+		"messages":[{"role":"system","content":"brief"},{"role":"user","content":"hello"}]
+	}`), cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("buildTraeRawChatRequest v2 error: %v", err)
+	}
+
+	if !strings.HasSuffix(req.TargetURL, "/api/ide/v2/llm_raw_chat") {
+		t.Fatalf("TargetURL = %q, want v2 llm_raw_chat", req.TargetURL)
+	}
+	if got := gjson.GetBytes(req.RequestBody, "model_name").String(); got != "no_thinking_model" {
+		t.Fatalf("model_name = %q, want no_thinking_model", got)
+	}
+	if got := gjson.GetBytes(req.RequestBody, "config_name").String(); got != "title_generation" {
+		t.Fatalf("config_name = %q, want title_generation", got)
+	}
+	if got := gjson.GetBytes(req.RequestBody, "messages").Array(); len(got) != 0 {
+		t.Fatalf("outer messages len = %d, want 0", len(got))
+	}
+	if got := req.ExtraHeaders.Get("X-App-Function"); got != "utils" {
+		t.Fatalf("X-App-Function = %q, want utils", got)
+	}
+
+	plain, err := traeenc.DecryptMessage(gjson.GetBytes(req.RequestBody, "message").String(), req.RequestPin, req.RequestAt)
+	if err != nil {
+		t.Fatalf("decrypt v2 raw chat payload: %v", err)
+	}
+	if got := gjson.GetBytes(plain, "1.content.0.text").String(); got != "hello" {
+		t.Fatalf("v2 encrypted message text = %q, want hello; payload=%s", got, string(plain))
+	}
+}
+
+func TestAppendTraeV3AgentModels(t *testing.T) {
+	models := appendTraeV3AgentModels(nil, 123)
+	if len(models) != 6 {
+		t.Fatalf("len(models) = %d, want 6", len(models))
+	}
+	if got := models[0].ID; got != "glm-5" {
+		t.Fatalf("first model ID = %q, want glm-5", got)
+	}
+
+	// Should not duplicate
+	models = appendTraeV3AgentModels(models, 123)
+	if len(models) != 6 {
+		t.Fatalf("after dedup len(models) = %d, want 6", len(models))
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}

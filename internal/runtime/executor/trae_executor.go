@@ -1271,7 +1271,12 @@ func appendTraeV3AgentModels(models []*registry.ModelInfo, now int64) []*registr
 		displayName string
 		context     int
 	}{
-		{"glm-5", "GLM-5", 32000},
+		{"glm-5", "GLM-5", 16000},
+		{"glm-5.1", "GLM-5.1", 16000},
+		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 16000},
+		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash", 16000},
+		{"kimi-k2.6", "Kimi K2.6", 16000},
+		{"qwen-3.6-plus", "Qwen 3.6 Plus", 16000},
 	}
 	existing := make(map[string]struct{}, len(models))
 	for _, m := range models {

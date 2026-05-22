@@ -49,6 +49,14 @@ func TestWithXAIBuiltinsAddsVideoModel(t *testing.T) {
 	}
 }
 
+func TestTraeModelsExcludeUnavailableCustomConfigs(t *testing.T) {
+	for _, id := range []string{"claude-3.7-sonnet", "claude-4-sonnet", "gemini-2.5-pro"} {
+		if model := findModelInfo(GetTraeModels(), id); model != nil {
+			t.Fatalf("expected Trae models to exclude unavailable custom config %q", id)
+		}
+	}
+}
+
 func TestValidateModelsCatalogAllowsMissingSections(t *testing.T) {
 	data := validTestModelsCatalog()
 	data.XAI = nil
@@ -141,6 +149,19 @@ func assertGPT55ModelInfo(t *testing.T, source string, model *ModelInfo) {
 	for i, level := range want {
 		if model.Thinking.Levels[i] != level {
 			t.Fatalf("%s thinking level %d mismatch: got %q, want %q", source, i, model.Thinking.Levels[i], level)
+		}
+	}
+}
+
+func TestLookupStaticModelInfoCaseInsensitive(t *testing.T) {
+	// "gpt-5.5" is in models.json, let's try "GPT-5.5" and "Gpt-5.5"
+	for _, id := range []string{"GPT-5.5", "Gpt-5.5", "gpt-5.5"} {
+		model := LookupStaticModelInfo(id)
+		if model == nil {
+			t.Fatalf("expected LookupStaticModelInfo to find %q case-insensitively", id)
+		}
+		if model.ID != "gpt-5.5" {
+			t.Fatalf("expected found model ID to be \"gpt-5.5\", got %q", model.ID)
 		}
 	}
 }

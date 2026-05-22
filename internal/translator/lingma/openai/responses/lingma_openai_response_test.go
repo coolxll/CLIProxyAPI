@@ -175,7 +175,7 @@ func TestConvertLingmaResponseToOpenAIExtractsThought(t *testing.T) {
 	t.Run("non-stream", func(t *testing.T) {
 		raw := []byte(`data:{"body":"{\"choices\":[{\"delta\":{\"content\":\"<thought>I should say hello.</thought>Hello!\"}}]}"}`)
 		out := ConvertLingmaResponseToOpenAINonStream(context.Background(), "test", nil, nil, raw, nil)
-		
+
 		if got := gjson.GetBytes(out, "choices.0.message.content").String(); got != "Hello!" {
 			t.Fatalf("content = %q, want Hello!; out=%s", got, out)
 		}
@@ -188,11 +188,11 @@ func TestConvertLingmaResponseToOpenAIExtractsThought(t *testing.T) {
 		var param any
 		raw := []byte(`data:{"choices":[{"delta":{"content":"<thought>thinking</thought>content"}}]}`)
 		chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, raw, &param)
-		
+
 		if len(chunks) != 2 {
 			t.Fatalf("len(chunks) = %d, want 2", len(chunks))
 		}
-		
+
 		if got := gjson.GetBytes(chunks[0], "choices.0.delta.reasoning_content").String(); got != "thinking" {
 			t.Fatalf("chunk[0] reasoning_content = %q, want thinking; chunk=%s", got, chunks[0])
 		}
@@ -205,7 +205,7 @@ func TestConvertLingmaResponseToOpenAIExtractsThought(t *testing.T) {
 		var param any
 		chunk1 := []byte(`data:{"choices":[{"delta":{"content":"<thought>part1"}}]}`)
 		chunk2 := []byte(`data:{"choices":[{"delta":{"content":" part2</thought>final"}}]}`)
-		
+
 		res1 := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, chunk1, &param)
 		if len(res1) != 1 {
 			t.Fatalf("len(res1) = %d, want 1", len(res1))
@@ -213,7 +213,7 @@ func TestConvertLingmaResponseToOpenAIExtractsThought(t *testing.T) {
 		if got := gjson.GetBytes(res1[0], "choices.0.delta.reasoning_content").String(); got != "part1" {
 			t.Fatalf("res1 reasoning_content = %q, want part1", got)
 		}
-		
+
 		res2 := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, chunk2, &param)
 		if len(res2) != 2 {
 			t.Fatalf("len(res2) = %d, want 2", len(res2))
@@ -230,11 +230,11 @@ func TestConvertLingmaResponseToOpenAIExtractsThought(t *testing.T) {
 		var param any
 		raw := []byte(`data:{"headers":{},"body":"{\"choices\":[{\"delta\":{\"content\":\"<thought>thinking</thought>content\"}}]}"}`)
 		chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, raw, &param)
-		
+
 		if len(chunks) != 2 {
 			t.Fatalf("len(chunks) = %d, want 2", len(chunks))
 		}
-		
+
 		if got := gjson.GetBytes(chunks[0], "choices.0.delta.reasoning_content").String(); got != "thinking" {
 			t.Fatalf("chunk[0] reasoning_content = %q, want thinking; chunk=%s", got, chunks[0])
 		}

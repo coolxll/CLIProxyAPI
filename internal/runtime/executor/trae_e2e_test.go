@@ -1,3 +1,5 @@
+//go:build e2e
+
 package executor
 
 import (
@@ -53,11 +55,11 @@ func loadTraeTestAuth(t *testing.T) *cliproxyauth.Auth {
 	}
 
 	var authData struct {
-		DeviceID   string `json:"device_id"`
-		JWTToken   string `json:"jwt_token"`
-		MachineID  string `json:"machine_id"`
-		UserID     string `json:"user_id"`
-		Name       string `json:"name"`
+		DeviceID  string `json:"device_id"`
+		JWTToken  string `json:"jwt_token"`
+		MachineID string `json:"machine_id"`
+		UserID    string `json:"user_id"`
+		Name      string `json:"name"`
 	}
 	if err := json.Unmarshal(raw, &authData); err != nil {
 		t.Fatalf("parse auth json: %v", err)

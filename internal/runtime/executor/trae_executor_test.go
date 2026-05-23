@@ -116,7 +116,6 @@ func TestResolveTraeProtocolByModelName(t *testing.T) {
 		{"glm-5", traeProtocolV3, "glm-5"},
 		{"deepseek-R1", traeProtocolV1, "deepseek-R1"},
 		{"deepseek-V3", traeProtocolV1, "deepseek-V3"},
-		{"Doubao_1_5_thinking_pro", traeProtocolV1, "Doubao_1_5_thinking_pro"},
 		{"no_thinking_model", traeProtocolV2, "no_thinking_model"},
 		{"glm-5__dev", traeProtocolV3, "glm-5__dev"},
 		{"custom_model_gpt-5__dev", traeProtocolV3, "custom_model_gpt-5__dev"},
@@ -139,7 +138,6 @@ func TestParseTraeModels(t *testing.T) {
 	models := parseTraeModels([]byte(`{
 		"model_configs": [
 			{"name":"seed_m8","display_name":"Doubao-1.5-pro","status":true,"prompt_max_tokens":28000},
-			{"name":"Doubao_1_5_thinking_pro","display_name":"Doubao-1.5-thinking-pro","status":true,"prompt_max_tokens":40000},
 			{"name":"disabled_model","display_name":"Disabled","status":false,"prompt_max_tokens":40000},
 			{"name":"deepseek-R1","display_name":"DeepSeek-Reasoner（R1）","status":true,"prompt_max_tokens":40000},
 			{"name":"deepseek-V3","display_name":"DeepSeek-V3","status":true,"prompt_max_tokens":40000},
@@ -147,8 +145,8 @@ func TestParseTraeModels(t *testing.T) {
 		]
 	}`), 123)
 
-	if len(models) != 5 {
-		t.Fatalf("len(models) = %d, want 5", len(models))
+	if len(models) != 4 {
+		t.Fatalf("len(models) = %d, want 4", len(models))
 	}
 	if got := models[0].ID; got != "seed_m8" {
 		t.Fatalf("first model ID = %q, want seed_m8", got)

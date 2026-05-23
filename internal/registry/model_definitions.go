@@ -171,7 +171,6 @@ func traeModelInfos() []*ModelInfo {
 		context     int
 	}{
 		{"seed_m8", "Doubao 1.5 Pro", 28000},
-		{"Doubao_1_5_thinking_pro", "Doubao 1.5 Thinking Pro", 40000},
 		{"deepseek-R1", "DeepSeek Reasoner R1", 40000},
 		{"deepseek-V3", "DeepSeek V3", 40000},
 		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000},

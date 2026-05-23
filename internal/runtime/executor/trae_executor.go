@@ -1111,7 +1111,7 @@ func resolveTraeProtocol(model string, metadata map[string]any) (string, string)
 
 func isTraeV1RawChatModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "seed_m8", "doubao_1_5_thinking_pro", "deepseek-r1", "deepseek-v3", "deepseek-v3-0324":
+	case "seed_m8", "deepseek-r1", "deepseek-v3", "deepseek-v3-0324":
 		return true
 	default:
 		return false
@@ -1215,6 +1215,9 @@ func parseTraeModels(data []byte, now int64) []*registry.ModelInfo {
 		}
 		id := strings.TrimSpace(item.Get("name").String())
 		if id == "" {
+			continue
+		}
+		if strings.EqualFold(id, "Doubao_1_5_thinking_pro") {
 			continue
 		}
 		key := strings.ToLower(id)

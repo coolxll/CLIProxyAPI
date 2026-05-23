@@ -53,3 +53,11 @@ _bmad-output/*
 .gocache/
 
 lingma_api_manual_test.go
+
+# --- Local/dev files (remove this block to commit these) ---
+.env.docker
+*.code-workspace
+cmd/test-models/
+scripts/
+tasks/
+# --- End local/dev files ---

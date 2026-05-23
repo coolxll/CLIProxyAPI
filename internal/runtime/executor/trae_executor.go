@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -553,6 +554,11 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		hasToolCall := false
 		finishReason := "stop"
 
+		inQueue := false
+		queueDone := make(chan struct{})
+		var queuePosition atomic.Int64
+		var queueID string
+
 		var currentEvent string
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -612,6 +618,37 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				if aRunID := gjson.Get(dataStr, "agent_run_id").String(); aRunID != "" {
 					agentRunID = aRunID
 				}
+			}
+
+			if evt == "request_wait_in_queue" {
+				pos := gjson.Get(dataStr, "position").Int()
+				queuePosition.Store(pos)
+				if !inQueue {
+					inQueue = true
+					queueID = gjson.Get(dataStr, "queue_id").String()
+					go func() {
+						ticker := time.NewTicker(15 * time.Second)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-ticker.C:
+								heartbeat := fmt.Sprintf(": queue-heartbeat position=%d queue_id=%s\n\n", queuePosition.Load(), queueID)
+								select {
+								case out <- cliproxyexecutor.StreamChunk{Payload: []byte(heartbeat)}:
+								case <-queueDone:
+									return
+								case <-ctx.Done():
+									return
+								}
+							case <-queueDone:
+								return
+							case <-ctx.Done():
+								return
+							}
+						}
+					}()
+				}
+				continue
 			}
 
 			content := ""
@@ -689,6 +726,11 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 			if val := gjson.Get(dataStr, "finish_reason"); val.Exists() && val.String() != "" {
 				finishReason = val.String()
+			}
+
+			if inQueue && (content != "" || reasoning != "" || toolName != "") {
+				inQueue = false
+				close(queueDone)
 			}
 
 			if content != "" || reasoning != "" || toolName != "" {

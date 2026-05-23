@@ -166,13 +166,13 @@ func lingmaSSEData(raw []byte) ([]byte, bool) {
 }
 
 type lingmaNonStreamAggregate struct {
-	ID           string
-	Model        string
-	Content      strings.Builder
-	FinishReason string
-	Usage        json.RawMessage
-	ToolCalls    []json.RawMessage
-	HasToolCalls bool
+	ID               string
+	Model            string
+	Content          strings.Builder
+	FinishReason     string
+	Usage            json.RawMessage
+	ToolCalls        []json.RawMessage
+	HasToolCalls     bool
 	ReasoningContent strings.Builder
 	InThought        bool
 	HasError         bool
@@ -232,7 +232,7 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 	if strings.Contains(message["content"].(string), "<thought>") {
 		content := message["content"].(string)
 		var newContent, newReasoning strings.Builder
-		
+
 		for {
 			startIdx := strings.Index(content, "<thought>")
 			if startIdx == -1 {
@@ -241,7 +241,7 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 			}
 			newContent.WriteString(content[:startIdx])
 			content = content[startIdx+len("<thought>"):]
-			
+
 			endIdx := strings.Index(content, "</thought>")
 			if endIdx == -1 {
 				newReasoning.WriteString(content)
@@ -250,7 +250,7 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 			newReasoning.WriteString(content[:endIdx])
 			content = content[endIdx+len("</thought>"):]
 		}
-		
+
 		message["content"] = strings.TrimSpace(newContent.String())
 		if existingReasoning := agg.ReasoningContent.String(); existingReasoning != "" {
 			message["reasoning_content"] = existingReasoning + "\n\n" + strings.TrimSpace(newReasoning.String())

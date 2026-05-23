@@ -434,6 +434,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
 	case "kimi":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
+	case "trae":
+		s.coreManager.RegisterExecutor(executor.NewTraeExecutor(s.cfg))
 	case "lingma":
 		s.coreManager.RegisterExecutor(executor.NewLingmaExecutor(s.cfg))
 	case "xai":
@@ -594,6 +596,7 @@ func (s *Service) registerHomeExecutors() {
 	s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, "", s.wsGateway))
 	s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewTraeExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewLingmaExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
 }
@@ -1162,6 +1165,29 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
+	case "trae":
+		var fetchErr error
+		if s.coreManager != nil {
+			if exec, ok := s.coreManager.Executor("trae"); ok {
+				if fetcher, ok := exec.(interface {
+					FetchModels(ctx context.Context, auth *coreauth.Auth) ([]*registry.ModelInfo, error)
+				}); ok {
+					if dynamicModels, err := fetcher.FetchModels(context.Background(), a); err == nil && len(dynamicModels) > 0 {
+						models = dynamicModels
+					} else if err != nil {
+						fetchErr = err
+					}
+				}
+			}
+		}
+		models = applyExcludedModels(models, excluded)
+		if len(models) == 0 {
+			if fetchErr != nil {
+				log.Warnf("failed to fetch Trae models for auth %s; skipping model registration: %v", a.ID, fetchErr)
+			} else {
+				log.Warnf("Trae model fetch returned no models for auth %s; skipping model registration", a.ID)
+			}
+		}
 	case "lingma":
 		// Dynamic model fetching from Lingma API
 		var fetchErr error

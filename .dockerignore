@@ -20,6 +20,9 @@ auths/*
 logs/*
 conv/*
 config.yaml
+trae-*.json
+lingma-*.json
+*_import.json
 
 # Development/editor
 bin/*

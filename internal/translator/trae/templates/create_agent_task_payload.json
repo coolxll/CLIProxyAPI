@@ -1,0 +1,80 @@
+{
+  "agent_id": null,
+  "tunnel_id": null,
+  "is_custom_model": false,
+  "provider": "",
+  "conversation_id": "",
+  "session_id": "",
+  "plugin_channel": null,
+  "user_id": "",
+  "device_id": "",
+  "agent_type": "builder_v3",
+  "config_name": "",
+  "model_name": "",
+  "ide_version": "3.3.55",
+  "config_source": 1,
+  "user_input": {
+    "id": "",
+    "messages": []
+  },
+  "history_id_list": [],
+  "missing_history": null,
+  "available_tool_list": [
+    "todo_write",
+    "search_codebase",
+    "file_search",
+    "search_by_regex",
+    "view_files",
+    "list_dir",
+    "update_file",
+    "apply_patch",
+    "run_command",
+    "check_command_status",
+    "stop_command",
+    "finish"
+  ],
+  "mcp_tool_name": null,
+  "mcp_tool_list": [],
+  "render_context": {
+    "variables": "{\"agent_name\":\"Builder\",\"agent_type\":\"builder_v3\",\"finish_tool_name\":\"finish\",\"response_can_be_text\":false,\"workspace_folder\":\"\",\"workspace_folders\":\"\",\"workspace_rule\":\"\",\"global_rule\":\"\",\"system_type\":\"\",\"locale\":\"en\",\"language_settings\":\"en\",\"enable_todo_list\":true,\"empty_todo_list\":true,\"brand\":\"Trae\",\"workspace_path\":\"\",\"file_path\":null,\"raw_input\":\"\",\"input\":\"\",\"unique_user_id\":\"\",\"current_time\":\"\"}",
+    "references": {
+      "current_file": {
+        "file_path": "",
+        "content": "",
+        "cursor_line": 0,
+        "select_range": null,
+        "visible_range": null,
+        "workspace_path": ""
+      },
+      "hash_files": [],
+      "hash_codes": []
+    }
+  },
+  "request_seq": 1,
+  "queue_id": null,
+  "custom_agent_list": [],
+  "agent_version": "v3",
+  "ab_info": null,
+  "mode_type": 0,
+  "custom_subagent_info": {},
+  "extra_config": {
+    "disable_parallel_agent": true,
+    "enable_todo_list": true,
+    "enable_core_memory": false,
+    "enable_ask_user_question_tool_user_config": true,
+    "enable_init_command_user_config": false,
+    "enable_chat_memory_user_config": false,
+    "disable_exit_plan_mode_tool": true,
+    "visible_session_ids": null
+  },
+  "skill_list": [],
+  "agent_dsl": null,
+  "agent_static_dsl_name": "",
+  "access_type": 0,
+  "is_remote_req": false,
+  "mcp_folder_base_path": "",
+  "enable_decouple_model_extra_config": true,
+  "history_message_limit": 600,
+  "function": "builder_v3",
+  "raw_rules": []
+}

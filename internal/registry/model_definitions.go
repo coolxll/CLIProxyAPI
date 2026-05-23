@@ -80,6 +80,11 @@ func GetKimiModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Kimi)
 }
 
+// GetTraeModels returns the standard Trae model definitions.
+func GetTraeModels() []*ModelInfo {
+	return cloneModelInfos(traeModelInfos())
+}
+
 // GetAntigravityModels returns the standard Antigravity model definitions.
 func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
@@ -159,6 +164,43 @@ func xaiBuiltinVideoModelInfo() *ModelInfo {
 	}
 }
 
+func traeModelInfos() []*ModelInfo {
+	models := []struct {
+		id          string
+		displayName string
+		context     int
+	}{
+		{"seed_m8", "Doubao 1.5 Pro", 28000},
+		{"deepseek-R1", "DeepSeek Reasoner R1", 40000},
+		{"deepseek-V3", "DeepSeek V3", 40000},
+		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000},
+		{"no_thinking_model", "Trae No Thinking Model", 40000},
+		{"glm-5", "GLM-5", 16000},
+		{"glm-5.1", "GLM-5.1", 16000},
+		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 16000},
+		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash", 16000},
+		{"kimi-k2.6", "Kimi K2.6", 16000},
+		{"qwen-3.6-plus", "Qwen 3.6 Plus", 16000},
+	}
+
+	out := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		out = append(out, &ModelInfo{
+			ID:                  model.id,
+			Object:              "model",
+			Created:             1704067200,
+			OwnedBy:             "trae",
+			Type:                "trae",
+			DisplayName:         model.displayName,
+			Name:                model.id,
+			ContextLength:       model.context,
+			MaxCompletionTokens: 65536,
+			SupportedParameters: []string{"tools"},
+		})
+	}
+	return out
+}
+
 func upsertModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {
 	if len(extras) == 0 {
 		return models
@@ -228,7 +270,9 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - aistudio
 //   - codex
 //   - kimi
+//   - trae
 //   - antigravity
+//   - lingma
 //   - xai
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -247,6 +291,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetCodexProModels()
 	case "kimi":
 		return GetKimiModels()
+	case "trae":
+		return GetTraeModels()
 	case "antigravity":
 		return GetAntigravityModels()
 	case "lingma":
@@ -274,13 +320,14 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.AIStudio,
 		data.CodexPro,
 		data.Kimi,
+		traeModelInfos(),
 		data.Antigravity,
 		data.Lingma,
 		data.XAI,
 	}
 	for _, models := range allModels {
 		for _, m := range models {
-			if m != nil && m.ID == modelID {
+			if m != nil && strings.EqualFold(m.ID, modelID) {
 				return cloneModelInfo(m)
 			}
 		}

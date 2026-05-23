@@ -25,7 +25,7 @@ func init() {
 //
 // Lingma-specific behavior:
 //   - Target field: model_config.is_reasoning (boolean)
-//   - Also respects reasoning_effort if present in the input (passed through to OpenAI-compatible upstreams if applicable, 
+//   - Also respects reasoning_effort if present in the input (passed through to OpenAI-compatible upstreams if applicable,
 //     but here we primarily control the native is_reasoning flag).
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {

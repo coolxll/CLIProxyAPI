@@ -181,7 +181,6 @@ func authDirCandidates() []string {
 	return candidates
 }
 
-
 func decryptUser(b64, machineID string) ([]byte, error) {
 	ciphertext, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {

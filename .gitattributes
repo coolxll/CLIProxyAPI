@@ -1,0 +1,48 @@
+# Auto detect text files and normalize line endings to LF in repo
+* text=auto
+
+# Go
+*.go text
+*.mod text
+*.sum text
+
+# Config / data
+*.yaml text
+*.yml text
+*.json text
+*.toml text
+*.xml text
+*.md text
+*.txt text
+
+# Shell scripts must stay LF
+*.sh text eol=lf
+
+# Windows scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Docker
+Dockerfile text
+.dockerignore text
+
+# Web
+*.html text
+*.css text
+*.js text
+*.ts text
+
+# Binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary

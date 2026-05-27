@@ -161,7 +161,14 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, body, data, &param)
-	reporter.PublishNonZero(ctx, helps.ParseUsageForFormat(from.String(), out))
+	// Extract usage from raw Lingma SSE data (not from translated output) to preserve
+	// Lingma-format input_tokens which includes cached tokens, matching cpa-usage-keeper's
+	// cost formula: promptTokens = inputTokens - cachedTokens.
+	if detail, ok := helps.ParseLingmaStreamUsageFromAggregate(data); ok {
+		reporter.PublishNonZero(ctx, detail)
+	} else {
+		reporter.PublishNonZero(ctx, helps.ParseUsageForFormat(from.String(), out))
+	}
 	reporter.EnsurePublished(ctx)
 	return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
 }

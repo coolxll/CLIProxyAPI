@@ -218,10 +218,9 @@ func TestLingmaExecutorClaudeStreamE2EFullUsage(t *testing.T) {
 func TestLingmaExecutorClaudeNonStreamE2EFullUsage(t *testing.T) {
 	setupExecutorUsageQueue(t)
 
-	// Non-stream path: Lingma SSE -> aggregate -> OpenAI JSON -> Claude JSON
-	// The Claude translator subtracts cached_tokens from input_tokens per Claude API semantics,
-	// and does not pass reasoning_tokens or cache_creation_input_tokens through.
-	// So the recorded usage reflects Claude-format values, not the raw Lingma values.
+	// Non-stream path now extracts usage from raw Lingma SSE data (not translated output),
+	// preserving Lingma-format input_tokens which includes cached tokens.
+	// This matches cpa-usage-keeper's cost formula: promptTokens = inputTokens - cachedTokens.
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Hello world\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":30},\"output_tokens_details\":{\"reasoning_tokens\":10},\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
 		return &http.Response{
@@ -258,16 +257,15 @@ func TestLingmaExecutorClaudeNonStreamE2EFullUsage(t *testing.T) {
 	if got.Failed {
 		t.Fatalf("queued usage failed = true, want false")
 	}
-	// Claude format: input_tokens excludes cache_read tokens (100 - 30 = 70)
-	if got.Tokens.InputTokens != 70 {
-		t.Fatalf("input_tokens = %d, want 70", got.Tokens.InputTokens)
+	// Raw Lingma format: input_tokens includes cached tokens (100, not 70)
+	if got.Tokens.InputTokens != 100 {
+		t.Fatalf("input_tokens = %d, want 100", got.Tokens.InputTokens)
 	}
 	if got.Tokens.OutputTokens != 50 {
 		t.Fatalf("output_tokens = %d, want 50", got.Tokens.OutputTokens)
 	}
-	// Claude translator does not pass reasoning_tokens through
-	if got.Tokens.ReasoningTokens != 0 {
-		t.Fatalf("reasoning_tokens = %d, want 0 (not passed through Claude translator)", got.Tokens.ReasoningTokens)
+	if got.Tokens.ReasoningTokens != 10 {
+		t.Fatalf("reasoning_tokens = %d, want 10", got.Tokens.ReasoningTokens)
 	}
 	if got.Tokens.CachedTokens != 30 {
 		t.Fatalf("cached_tokens = %d, want 30", got.Tokens.CachedTokens)
@@ -275,13 +273,11 @@ func TestLingmaExecutorClaudeNonStreamE2EFullUsage(t *testing.T) {
 	if got.Tokens.CacheReadTokens != 30 {
 		t.Fatalf("cache_read_tokens = %d, want 30", got.Tokens.CacheReadTokens)
 	}
-	// Claude translator does not pass cache_creation_input_tokens through
-	if got.Tokens.CacheCreationTokens != 0 {
-		t.Fatalf("cache_creation_tokens = %d, want 0 (not passed through Claude translator)", got.Tokens.CacheCreationTokens)
+	if got.Tokens.CacheCreationTokens != 5 {
+		t.Fatalf("cache_creation_tokens = %d, want 5", got.Tokens.CacheCreationTokens)
 	}
-	// TotalTokens = InputTokens + OutputTokens + ReasoningTokens = 70 + 50 + 0 = 120
-	if got.Tokens.TotalTokens != 120 {
-		t.Fatalf("total_tokens = %d, want 120", got.Tokens.TotalTokens)
+	if got.Tokens.TotalTokens != 150 {
+		t.Fatalf("total_tokens = %d, want 150", got.Tokens.TotalTokens)
 	}
 }
 

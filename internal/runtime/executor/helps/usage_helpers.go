@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -396,6 +397,20 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 func ParseLingmaStreamUsage(line []byte) (usage.Detail, bool) {
 	payload := jsonPayload(line)
 	return parseLingmaUsagePayload(payload, 0)
+}
+
+func ParseLingmaStreamUsageFromAggregate(data []byte) (usage.Detail, bool) {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(nil, 5*1024*1024)
+	var last usage.Detail
+	found := false
+	for scanner.Scan() {
+		if detail, ok := ParseLingmaStreamUsage(scanner.Bytes()); ok {
+			last = detail
+			found = true
+		}
+	}
+	return last, found
 }
 
 func parseLingmaUsagePayload(payload []byte, depth int) (usage.Detail, bool) {

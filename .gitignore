@@ -37,6 +37,7 @@ GEMINI.md
 .codex/*
 .claude/*
 .gemini/*
+.antigravitycli/*
 .serena/*
 .agent/*
 .agents/*

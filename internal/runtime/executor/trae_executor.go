@@ -420,15 +420,17 @@ type TraeCommitPayload struct {
 	IsRemoteReq     bool                 `json:"is_remote_req"`
 }
 
-func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	protocol, upstreamModel := resolveTraeProtocol(baseModel, opts.Metadata)
+	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
 	creds, err := traeauth.CredentialsFromAuth(auth)
 	if err != nil {
 		return nil, fmt.Errorf("trae auth check failed: %w", err)
 	}
 
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	protocol, upstreamModel := resolveTraeProtocol(baseModel, opts.Metadata)
-	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	from := opts.SourceFormat
 	openaiFormat := sdktranslator.FromString("openai")
 	openaiReq := sdktranslator.TranslateRequest(from, openaiFormat, upstreamModel, req.Payload, true)
@@ -603,9 +605,11 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				} else {
 					message = fmt.Sprintf("trae error event: %s", message)
 				}
-				helps.RecordAPIResponseError(ctx, e.cfg, errors.New(message))
+				streamErr := traeStatusErr{code: http.StatusBadGateway, msg: message}
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Err: traeStatusErr{code: http.StatusBadGateway, msg: message}}:
+				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 				case <-ctx.Done():
 				}
 				return
@@ -793,6 +797,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -840,6 +845,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				return
 			}
 		}
+		reporter.EnsurePublished(ctx)
 	}()
 
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

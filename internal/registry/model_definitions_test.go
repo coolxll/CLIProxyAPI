@@ -154,7 +154,6 @@ func assertGPT55ModelInfo(t *testing.T, source string, model *ModelInfo) {
 }
 
 func TestLookupStaticModelInfoCaseInsensitive(t *testing.T) {
-	// "gpt-5.5" is in models.json, let's try "GPT-5.5" and "Gpt-5.5"
 	for _, id := range []string{"GPT-5.5", "Gpt-5.5", "gpt-5.5"} {
 		model := LookupStaticModelInfo(id)
 		if model == nil {

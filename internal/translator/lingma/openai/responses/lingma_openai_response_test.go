@@ -153,6 +153,94 @@ data:{"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[{\"d
 	}
 }
 
+func TestConvertLingmaResponseToOpenAIExtractsUsageWithChoices(t *testing.T) {
+	var param any
+	// Lingma sends usage inside the body alongside choices (double-JSON envelope)
+	raw := []byte(`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}","statusCodeValue":200,"statusCode":"OK"}`)
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, raw, &param)
+
+	// Should produce 2 chunks: one for content, one for usage
+	if len(chunks) < 2 {
+		t.Fatalf("len(chunks) = %d, want at least 2; chunks=%v", len(chunks), chunks)
+	}
+
+	// Find the usage chunk (the one with empty choices and usage field)
+	var usageChunk []byte
+	for _, c := range chunks {
+		if gjson.GetBytes(c, "usage").Exists() && len(gjson.GetBytes(c, "choices").Array()) == 0 {
+			usageChunk = c
+			break
+		}
+	}
+	if usageChunk == nil {
+		t.Fatalf("no usage chunk found among %d chunks", len(chunks))
+	}
+	if got := gjson.GetBytes(usageChunk, "usage.prompt_tokens").Int(); got != 10 {
+		t.Fatalf("usage.prompt_tokens = %d, want 10; chunk=%s", got, usageChunk)
+	}
+	if got := gjson.GetBytes(usageChunk, "usage.completion_tokens").Int(); got != 20 {
+		t.Fatalf("usage.completion_tokens = %d, want 20; chunk=%s", got, usageChunk)
+	}
+	if got := gjson.GetBytes(usageChunk, "usage.total_tokens").Int(); got != 30 {
+		t.Fatalf("usage.total_tokens = %d, want 30; chunk=%s", got, usageChunk)
+	}
+}
+
+func TestConvertLingmaResponseToOpenAIExtractsUsageWithChoicesDirectFormat(t *testing.T) {
+	var param any
+	// Direct OpenAI format with usage alongside choices (no envelope)
+	raw := []byte(`data:{"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":15,"total_tokens":20}}`)
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, raw, &param)
+
+	if len(chunks) < 2 {
+		t.Fatalf("len(chunks) = %d, want at least 2; chunks=%v", len(chunks), chunks)
+	}
+
+	var usageChunk []byte
+	for _, c := range chunks {
+		if gjson.GetBytes(c, "usage").Exists() && len(gjson.GetBytes(c, "choices").Array()) == 0 {
+			usageChunk = c
+			break
+		}
+	}
+	if usageChunk == nil {
+		t.Fatalf("no usage chunk found among %d chunks", len(chunks))
+	}
+	if got := gjson.GetBytes(usageChunk, "usage.prompt_tokens").Int(); got != 5 {
+		t.Fatalf("usage.prompt_tokens = %d, want 5; chunk=%s", got, usageChunk)
+	}
+	if got := gjson.GetBytes(usageChunk, "usage.completion_tokens").Int(); got != 15 {
+		t.Fatalf("usage.completion_tokens = %d, want 15; chunk=%s", got, usageChunk)
+	}
+}
+
+func TestConvertLingmaResponseToOpenAISkipsNullUsageWithChoices(t *testing.T) {
+	var param any
+	// OpenAI-style streaming sends "usage":null on intermediate frames before the final usage
+	raw := []byte(`data:{"choices":[{"delta":{"content":"Hi"},"finish_reason":null}],"usage":null}`)
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, raw, &param)
+
+	// Should produce only content chunks, no usage chunk
+	for _, c := range chunks {
+		if gjson.GetBytes(c, "usage").Exists() && len(gjson.GetBytes(c, "choices").Array()) == 0 {
+			t.Fatalf("unexpected usage chunk from null usage: %s", c)
+		}
+	}
+}
+
+func TestConvertLingmaResponseToOpenAISkipsZeroTokenUsageWithChoices(t *testing.T) {
+	var param any
+	// Empty usage object with all-zero fields should not emit a usage chunk
+	raw := []byte(`data:{"choices":[{"delta":{"content":"Hi"}}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`)
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, raw, &param)
+
+	for _, c := range chunks {
+		if gjson.GetBytes(c, "usage").Exists() && len(gjson.GetBytes(c, "choices").Array()) == 0 {
+			t.Fatalf("unexpected usage chunk from zero-token usage: %s", c)
+		}
+	}
+}
+
 func TestConvertLingmaResponseToOpenAINonStreamConsolidatesLingmaUsage(t *testing.T) {
 	raw := []byte(`data: {"headers":{},"body":"{\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}]}","statusCodeValue":200,"statusCode":"OK"}
 data: {"firstTokenDuration":100,"totalDuration":200,"serverDuration":150,"usage":{"input_tokens":10,"output_tokens":20}}`)

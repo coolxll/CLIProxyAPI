@@ -113,6 +113,28 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 			}
 			return true
 		})
+		// Extract usage when co-located with choices (Lingma double-JSON envelope).
+		// Skip null/placeholder usage (e.g. "usage":null or empty object) that appears
+		// on intermediate streaming frames before the final token count.
+		if usage := res.Get("usage"); usage.Exists() && usage.Type != gjson.Null && hasNonZeroUsageFields(usage) {
+			normalizedUsage := normalizeLingmaUsage(usage)
+			if normalizedUsage != nil {
+				usageChunk := map[string]any{
+					"id":      state.ID,
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   state.Model,
+					"choices": []map[string]any{},
+				}
+				var usageVal any
+				if err := json.Unmarshal(normalizedUsage, &usageVal); err == nil {
+					usageChunk["usage"] = usageVal
+				}
+				if encoded, err := json.Marshal(usageChunk); err == nil {
+					output = append(output, encoded)
+				}
+			}
+		}
 		if len(output) > 0 {
 			return output
 		}
@@ -356,6 +378,23 @@ func collectLingmaOpenAIFragment(agg *lingmaNonStreamAggregate, data []byte) {
 		}
 		return true
 	})
+}
+
+func hasNonZeroUsageFields(usage gjson.Result) bool {
+	for _, key := range []string{
+		"prompt_tokens", "input_tokens",
+		"completion_tokens", "output_tokens",
+		"total_tokens",
+		"cached_tokens", "reasoning_tokens",
+		"prompt_tokens_details.cached_tokens",
+		"completion_tokens_details.reasoning_tokens",
+		"cache_read_input_tokens", "cache_creation_input_tokens",
+	} {
+		if v := usage.Get(key); v.Exists() && v.Int() > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeLingmaUsage(usage gjson.Result) json.RawMessage {

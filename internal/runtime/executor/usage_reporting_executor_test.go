@@ -151,6 +151,140 @@ func TestLingmaExecutorClaudeNonStreamPublishesCacheUsage(t *testing.T) {
 	}
 }
 
+func TestLingmaExecutorClaudeStreamE2EFullUsage(t *testing.T) {
+	setupExecutorUsageQueue(t)
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":null}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":30},\"output_tokens_details\":{\"reasoning_tokens\":10},\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"Hi"}],"max_tokens":1024,"stream":true}`)
+	result, err := NewLingmaExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "lingma",
+		Metadata: map[string]any{
+			"uid":             "test-user",
+			"key":             "test-cosy-key",
+			"organization_id": "test-org",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "gm51model",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+	drainStream(t, result)
+
+	got := waitForExecutorQueuedUsage(t, "lingma", "gm51model")
+	if got.Failed {
+		t.Fatalf("queued usage failed = true, want false")
+	}
+	if got.Tokens.InputTokens != 100 {
+		t.Fatalf("input_tokens = %d, want 100", got.Tokens.InputTokens)
+	}
+	if got.Tokens.OutputTokens != 50 {
+		t.Fatalf("output_tokens = %d, want 50", got.Tokens.OutputTokens)
+	}
+	if got.Tokens.ReasoningTokens != 10 {
+		t.Fatalf("reasoning_tokens = %d, want 10", got.Tokens.ReasoningTokens)
+	}
+	if got.Tokens.CachedTokens != 30 {
+		t.Fatalf("cached_tokens = %d, want 30", got.Tokens.CachedTokens)
+	}
+	if got.Tokens.CacheReadTokens != 30 {
+		t.Fatalf("cache_read_tokens = %d, want 30", got.Tokens.CacheReadTokens)
+	}
+	if got.Tokens.CacheCreationTokens != 5 {
+		t.Fatalf("cache_creation_tokens = %d, want 5", got.Tokens.CacheCreationTokens)
+	}
+	if got.Tokens.TotalTokens != 150 {
+		t.Fatalf("total_tokens = %d, want 150", got.Tokens.TotalTokens)
+	}
+}
+
+func TestLingmaExecutorClaudeNonStreamE2EFullUsage(t *testing.T) {
+	setupExecutorUsageQueue(t)
+
+	// Non-stream path: Lingma SSE -> aggregate -> OpenAI JSON -> Claude JSON
+	// The Claude translator subtracts cached_tokens from input_tokens per Claude API semantics,
+	// and does not pass reasoning_tokens or cache_creation_input_tokens through.
+	// So the recorded usage reflects Claude-format values, not the raw Lingma values.
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Hello world\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":30},\"output_tokens_details\":{\"reasoning_tokens\":10},\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"Hi"}],"max_tokens":1024,"stream":false}`)
+	resp, err := NewLingmaExecutor(nil).Execute(ctx, &cliproxyauth.Auth{
+		Provider: "lingma",
+		Metadata: map[string]any{
+			"uid":             "test-user",
+			"key":             "test-cosy-key",
+			"organization_id": "test-org",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "gm51model",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(resp.Payload) == 0 {
+		t.Fatal("response payload is empty")
+	}
+
+	got := waitForExecutorQueuedUsage(t, "lingma", "gm51model")
+	if got.Failed {
+		t.Fatalf("queued usage failed = true, want false")
+	}
+	// Claude format: input_tokens excludes cache_read tokens (100 - 30 = 70)
+	if got.Tokens.InputTokens != 70 {
+		t.Fatalf("input_tokens = %d, want 70", got.Tokens.InputTokens)
+	}
+	if got.Tokens.OutputTokens != 50 {
+		t.Fatalf("output_tokens = %d, want 50", got.Tokens.OutputTokens)
+	}
+	// Claude translator does not pass reasoning_tokens through
+	if got.Tokens.ReasoningTokens != 0 {
+		t.Fatalf("reasoning_tokens = %d, want 0 (not passed through Claude translator)", got.Tokens.ReasoningTokens)
+	}
+	if got.Tokens.CachedTokens != 30 {
+		t.Fatalf("cached_tokens = %d, want 30", got.Tokens.CachedTokens)
+	}
+	if got.Tokens.CacheReadTokens != 30 {
+		t.Fatalf("cache_read_tokens = %d, want 30", got.Tokens.CacheReadTokens)
+	}
+	// Claude translator does not pass cache_creation_input_tokens through
+	if got.Tokens.CacheCreationTokens != 0 {
+		t.Fatalf("cache_creation_tokens = %d, want 0 (not passed through Claude translator)", got.Tokens.CacheCreationTokens)
+	}
+	// TotalTokens = InputTokens + OutputTokens + ReasoningTokens = 70 + 50 + 0 = 120
+	if got.Tokens.TotalTokens != 120 {
+		t.Fatalf("total_tokens = %d, want 120", got.Tokens.TotalTokens)
+	}
+}
+
 func TestTraeExecutorStreamPublishesUsageWithoutTokenUsageFrame(t *testing.T) {
 	setupExecutorUsageQueue(t)
 
@@ -298,9 +432,13 @@ type executorQueuedUsagePayload struct {
 	Model    string `json:"model"`
 	Failed   bool   `json:"failed"`
 	Tokens   struct {
-		CachedTokens    int64 `json:"cached_tokens"`
-		CacheReadTokens int64 `json:"cache_read_tokens"`
-		TotalTokens     int64 `json:"total_tokens"`
+		InputTokens         int64 `json:"input_tokens"`
+		OutputTokens        int64 `json:"output_tokens"`
+		ReasoningTokens     int64 `json:"reasoning_tokens"`
+		CachedTokens        int64 `json:"cached_tokens"`
+		CacheReadTokens     int64 `json:"cache_read_tokens"`
+		CacheCreationTokens int64 `json:"cache_creation_tokens"`
+		TotalTokens         int64 `json:"total_tokens"`
 	} `json:"tokens"`
 	Fail struct {
 		StatusCode int    `json:"status_code"`

@@ -56,6 +56,33 @@ func TestParseOpenAIUsageIgnoresNullUsage(t *testing.T) {
 	}
 }
 
+func TestParseUsageForFormatClaudeNonStream(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":10,"output_tokens":4,"cache_read_input_tokens":3,"cache_creation_input_tokens":2}}`)
+	detail := ParseUsageForFormat("claude", data)
+	if detail.InputTokens != 10 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 10)
+	}
+	if detail.OutputTokens != 4 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 4)
+	}
+	if detail.CacheReadTokens != 3 {
+		t.Fatalf("cache read tokens = %d, want %d", detail.CacheReadTokens, 3)
+	}
+	if detail.CacheCreationTokens != 2 {
+		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 2)
+	}
+	if detail.TotalTokens != 14 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 14)
+	}
+}
+
+func TestParseUsageForFormatUnknownReturnsZero(t *testing.T) {
+	data := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`)
+	if detail := ParseUsageForFormat("trae", data); detail != (usage.Detail{}) {
+		t.Fatalf("detail = %+v, want zero detail for unknown format", detail)
+	}
+}
+
 func TestParseOpenAIStreamUsageIgnoresNullUsage(t *testing.T) {
 	line := []byte(`data: {"id":"chunk_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}],"usage":null}`)
 	if detail, ok := ParseOpenAIStreamUsage(line); ok {
@@ -83,6 +110,71 @@ func TestParseOpenAIStreamUsageResponsesFields(t *testing.T) {
 	}
 	if detail.ReasoningTokens != 2 {
 		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 2)
+	}
+}
+
+func TestParseLingmaStreamUsageDoubleJSONEnvelope(t *testing.T) {
+	line := []byte(`data: {"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[],\"usage\":{\"input_tokens\":8,\"output_tokens\":5,\"total_tokens\":13,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":2}}}","statusCodeValue":200}`)
+	detail, ok := ParseLingmaStreamUsage(line)
+	if !ok {
+		t.Fatal("ParseLingmaStreamUsage() ok = false, want true")
+	}
+	if detail.InputTokens != 8 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 8)
+	}
+	if detail.OutputTokens != 5 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 5)
+	}
+	if detail.TotalTokens != 13 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 13)
+	}
+	if detail.CachedTokens != 3 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 3)
+	}
+	if detail.ReasoningTokens != 2 {
+		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 2)
+	}
+}
+
+func TestParseLingmaStreamUsageSkipsNullAndZeroUsage(t *testing.T) {
+	lines := [][]byte{
+		[]byte(`data: {"choices":[{"delta":{"content":"hi"}}],"usage":null}`),
+		[]byte(`data: {"headers":{},"body":"{\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}"}`),
+	}
+	for _, line := range lines {
+		if detail, ok := ParseLingmaStreamUsage(line); ok {
+			t.Fatalf("ParseLingmaStreamUsage(%s) = (%+v, true), want false", line, detail)
+		}
+	}
+}
+
+func TestParseStreamUsageForFormatClaude(t *testing.T) {
+	line := []byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":13,"output_tokens":4,"cache_read_input_tokens":22,"cache_creation_input_tokens":3}}`)
+	detail, ok := ParseStreamUsageForFormat("claude", line)
+	if !ok {
+		t.Fatal("ParseStreamUsageForFormat() ok = false, want true")
+	}
+	if detail.InputTokens != 13 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 13)
+	}
+	if detail.OutputTokens != 4 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 4)
+	}
+	if detail.TotalTokens != 17 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 17)
+	}
+	if detail.CachedTokens != 22 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 22)
+	}
+	if detail.CacheCreationTokens != 3 {
+		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 3)
+	}
+}
+
+func TestParseStreamUsageForFormatUnknownReturnsFalse(t *testing.T) {
+	line := []byte(`data: {"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`)
+	if detail, ok := ParseStreamUsageForFormat("trae", line); ok {
+		t.Fatalf("ParseStreamUsageForFormat() = (%+v, true), want false for unknown format", detail)
 	}
 }
 

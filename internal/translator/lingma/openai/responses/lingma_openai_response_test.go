@@ -241,6 +241,53 @@ func TestConvertLingmaResponseToOpenAISkipsZeroTokenUsageWithChoices(t *testing.
 	}
 }
 
+func TestNormalizeLingmaUsagePrefersExistingPromptAndCompletionFields(t *testing.T) {
+	usage := gjson.Parse(`{"prompt_tokens":0,"input_tokens":5,"completion_tokens":0,"output_tokens":7,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":2}}`)
+	normalized := normalizeLingmaUsage(usage)
+
+	if got := gjson.GetBytes(normalized, "prompt_tokens").Int(); got != 0 {
+		t.Fatalf("prompt_tokens = %d, want 0; usage=%s", got, normalized)
+	}
+	if got := gjson.GetBytes(normalized, "completion_tokens").Int(); got != 0 {
+		t.Fatalf("completion_tokens = %d, want 0; usage=%s", got, normalized)
+	}
+	if got := gjson.GetBytes(normalized, "prompt_tokens_details.cached_tokens").Int(); got != 3 {
+		t.Fatalf("cached_tokens = %d, want 3; usage=%s", got, normalized)
+	}
+	if got := gjson.GetBytes(normalized, "completion_tokens_details.reasoning_tokens").Int(); got != 2 {
+		t.Fatalf("reasoning_tokens = %d, want 2; usage=%s", got, normalized)
+	}
+}
+
+func TestNormalizeLingmaUsageRecalculatesContradictoryZeroTotal(t *testing.T) {
+	usage := gjson.Parse(`{"prompt_tokens":10,"completion_tokens":5,"total_tokens":0}`)
+	normalized := normalizeLingmaUsage(usage)
+
+	if got := gjson.GetBytes(normalized, "total_tokens").Int(); got != 15 {
+		t.Fatalf("total_tokens = %d, want 15; usage=%s", got, normalized)
+	}
+}
+
+func TestConvertLingmaResponseToOpenAIExtractsOutputTokenDetailsUsageWithChoices(t *testing.T) {
+	var param any
+	raw := []byte(`data:{"choices":[{"delta":{"content":"Hi"}}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"output_tokens_details":{"reasoning_tokens":5}}}`)
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "test", nil, nil, raw, &param)
+
+	var usageChunk []byte
+	for _, c := range chunks {
+		if gjson.GetBytes(c, "usage").Exists() && len(gjson.GetBytes(c, "choices").Array()) == 0 {
+			usageChunk = c
+			break
+		}
+	}
+	if usageChunk == nil {
+		t.Fatalf("no usage chunk found among %d chunks", len(chunks))
+	}
+	if got := gjson.GetBytes(usageChunk, "usage.completion_tokens_details.reasoning_tokens").Int(); got != 5 {
+		t.Fatalf("reasoning_tokens = %d, want 5; chunk=%s", got, usageChunk)
+	}
+}
+
 func TestConvertLingmaResponseToOpenAINonStreamConsolidatesLingmaUsage(t *testing.T) {
 	raw := []byte(`data: {"headers":{},"body":"{\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}]}","statusCodeValue":200,"statusCode":"OK"}
 data: {"firstTokenDuration":100,"totalDuration":200,"serverDuration":150,"usage":{"input_tokens":10,"output_tokens":20}}`)

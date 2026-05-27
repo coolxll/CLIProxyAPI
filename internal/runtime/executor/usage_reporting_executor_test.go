@@ -59,6 +59,98 @@ func TestLingmaExecutorStreamPublishesUsageWithoutUsageFrame(t *testing.T) {
 	}
 }
 
+func TestLingmaExecutorClaudeStreamPublishesFinalUsage(t *testing.T) {
+	setupExecutorUsageQueue(t)
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":null}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"Ping"}],"max_tokens":1024,"stream":true}`)
+	result, err := NewLingmaExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "lingma",
+		Metadata: map[string]any{
+			"uid":             "test-user",
+			"key":             "test-cosy-key",
+			"organization_id": "test-org",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "gm51model",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+	drainStream(t, result)
+
+	got := waitForExecutorQueuedUsage(t, "lingma", "gm51model")
+	if got.Failed {
+		t.Fatalf("queued usage failed = true, want false")
+	}
+	if got.Tokens.TotalTokens != 18 {
+		t.Fatalf("queued usage total tokens = %d, want 18", got.Tokens.TotalTokens)
+	}
+}
+
+func TestLingmaExecutorClaudeNonStreamPublishesCacheUsage(t *testing.T) {
+	setupExecutorUsageQueue(t)
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"cache_read_input_tokens\":3}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"Ping"}],"max_tokens":1024,"stream":false}`)
+	resp, err := NewLingmaExecutor(nil).Execute(ctx, &cliproxyauth.Auth{
+		Provider: "lingma",
+		Metadata: map[string]any{
+			"uid":             "test-user",
+			"key":             "test-cosy-key",
+			"organization_id": "test-org",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "gm51model",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(resp.Payload) == 0 {
+		t.Fatal("response payload is empty")
+	}
+
+	got := waitForExecutorQueuedUsage(t, "lingma", "gm51model")
+	if got.Failed {
+		t.Fatalf("queued usage failed = true, want false")
+	}
+	if got.Tokens.CacheReadTokens != 3 {
+		t.Fatalf("queued usage cache read tokens = %d, want 3", got.Tokens.CacheReadTokens)
+	}
+	if got.Tokens.CachedTokens != 3 {
+		t.Fatalf("queued usage cached tokens = %d, want 3", got.Tokens.CachedTokens)
+	}
+}
+
 func TestTraeExecutorStreamPublishesUsageWithoutTokenUsageFrame(t *testing.T) {
 	setupExecutorUsageQueue(t)
 
@@ -206,7 +298,9 @@ type executorQueuedUsagePayload struct {
 	Model    string `json:"model"`
 	Failed   bool   `json:"failed"`
 	Tokens   struct {
-		TotalTokens int64 `json:"total_tokens"`
+		CachedTokens    int64 `json:"cached_tokens"`
+		CacheReadTokens int64 `json:"cache_read_tokens"`
+		TotalTokens     int64 `json:"total_tokens"`
 	} `json:"tokens"`
 	Fail struct {
 		StatusCode int    `json:"status_code"`

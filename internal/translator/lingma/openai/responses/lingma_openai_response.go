@@ -387,7 +387,9 @@ func hasNonZeroUsageFields(usage gjson.Result) bool {
 		"total_tokens",
 		"cached_tokens", "reasoning_tokens",
 		"prompt_tokens_details.cached_tokens",
+		"input_tokens_details.cached_tokens",
 		"completion_tokens_details.reasoning_tokens",
+		"output_tokens_details.reasoning_tokens",
 		"cache_read_input_tokens", "cache_creation_input_tokens",
 	} {
 		if v := usage.Get(key); v.Exists() && v.Int() > 0 {
@@ -401,16 +403,19 @@ func normalizeLingmaUsage(usage gjson.Result) json.RawMessage {
 	if !usage.Exists() {
 		return nil
 	}
-	promptTokens := usage.Get("prompt_tokens").Int()
-	if promptTokens == 0 {
-		promptTokens = usage.Get("input_tokens").Int()
+	promptNode := usage.Get("prompt_tokens")
+	if !promptNode.Exists() {
+		promptNode = usage.Get("input_tokens")
 	}
-	completionTokens := usage.Get("completion_tokens").Int()
-	if completionTokens == 0 {
-		completionTokens = usage.Get("output_tokens").Int()
+	promptTokens := promptNode.Int()
+	completionNode := usage.Get("completion_tokens")
+	if !completionNode.Exists() {
+		completionNode = usage.Get("output_tokens")
 	}
-	totalTokens := usage.Get("total_tokens").Int()
-	if totalTokens == 0 {
+	completionTokens := completionNode.Int()
+	totalNode := usage.Get("total_tokens")
+	totalTokens := totalNode.Int()
+	if !totalNode.Exists() || (totalTokens == 0 && promptTokens+completionTokens > 0) {
 		totalTokens = promptTokens + completionTokens
 	}
 	out := map[string]any{
@@ -422,6 +427,8 @@ func normalizeLingmaUsage(usage gjson.Result) json.RawMessage {
 	// Map cached tokens from various possible locations
 	if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
 		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
+	} else if v := usage.Get("input_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
+		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
 	} else if v := usage.Get("cached_tokens"); v.Exists() && v.Int() > 0 {
 		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
 	} else if v := usage.Get("cache_read_input_tokens"); v.Exists() && v.Int() > 0 {
@@ -430,6 +437,8 @@ func normalizeLingmaUsage(usage gjson.Result) json.RawMessage {
 
 	// Map reasoning tokens
 	if v := usage.Get("completion_tokens_details.reasoning_tokens"); v.Exists() && v.Int() > 0 {
+		out["completion_tokens_details"] = map[string]any{"reasoning_tokens": v.Int()}
+	} else if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() && v.Int() > 0 {
 		out["completion_tokens_details"] = map[string]any{"reasoning_tokens": v.Int()}
 	} else if v := usage.Get("reasoning_tokens"); v.Exists() && v.Int() > 0 {
 		out["completion_tokens_details"] = map[string]any{"reasoning_tokens": v.Int()}

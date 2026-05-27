@@ -161,7 +161,7 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, body, data, &param)
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(out))
+	reporter.PublishNonZero(ctx, helps.ParseUsageForFormat(from.String(), out))
 	reporter.EnsurePublished(ctx)
 	return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
 }
@@ -254,11 +254,14 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				continue
 			}
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			if detail, ok := helps.ParseLingmaStreamUsage(line); ok {
+				reporter.PublishNonZero(ctx, detail)
+			}
 
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
 			for i := range chunks {
-				if detail, ok := helps.ParseOpenAIStreamUsage(chunks[i]); ok {
-					reporter.Publish(ctx, detail)
+				if detail, ok := helps.ParseStreamUsageForFormat(from.String(), chunks[i]); ok {
+					reporter.PublishNonZero(ctx, detail)
 				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:

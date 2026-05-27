@@ -58,6 +58,17 @@ func (r *UsageReporter) Publish(ctx context.Context, detail usage.Detail) {
 	r.publishWithOutcome(ctx, detail, false, usage.Failure{})
 }
 
+func (r *UsageReporter) PublishNonZero(ctx context.Context, detail usage.Detail) {
+	if r == nil {
+		return
+	}
+	detail = normalizeUsageDetailTotal(detail)
+	if !hasNonZeroTokenUsage(detail) {
+		return
+	}
+	r.publishWithOutcome(ctx, detail, false, usage.Failure{})
+}
+
 func (r *UsageReporter) PublishAdditionalModel(ctx context.Context, model string, detail usage.Detail) {
 	record, ok := r.buildAdditionalModelRecord(model, detail)
 	if !ok {
@@ -304,6 +315,26 @@ func ParseOpenAIUsage(data []byte) usage.Detail {
 	return parseOpenAIStyleUsageNode(usageNode)
 }
 
+func ParseUsageForFormat(format string, data []byte) usage.Detail {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "claude":
+		return ParseClaudeUsage(data)
+	case "gemini":
+		return ParseGeminiUsage(data)
+	case "gemini-cli":
+		return ParseGeminiCLIUsage(data)
+	case "codex":
+		if detail, ok := ParseCodexUsage(data); ok {
+			return detail
+		}
+		return usage.Detail{}
+	case "openai", "openai-response":
+		return ParseOpenAIUsage(data)
+	default:
+		return usage.Detail{}
+	}
+}
+
 func hasOpenAIStyleUsageTokenFields(usageNode gjson.Result) bool {
 	if !usageNode.Exists() || !usageNode.IsObject() {
 		return false
@@ -360,6 +391,71 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 		return usage.Detail{}, false
 	}
 	return parseOpenAIStyleUsageNode(usageNode), true
+}
+
+func ParseLingmaStreamUsage(line []byte) (usage.Detail, bool) {
+	payload := jsonPayload(line)
+	return parseLingmaUsagePayload(payload, 0)
+}
+
+func parseLingmaUsagePayload(payload []byte, depth int) (usage.Detail, bool) {
+	if depth > 4 || len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return usage.Detail{}, false
+	}
+	root := gjson.ParseBytes(payload)
+	if body := root.Get("body"); body.Exists() && body.Type == gjson.String {
+		inner := strings.TrimSpace(body.String())
+		if inner != "" && inner != "[DONE]" {
+			return parseLingmaUsagePayload([]byte(inner), depth+1)
+		}
+	}
+	usageNode := root.Get("usage")
+	if !usageNode.Exists() || !usageNode.IsObject() {
+		return usage.Detail{}, false
+	}
+	detail := parseLingmaUsageNode(usageNode)
+	if !hasNonZeroTokenUsage(detail) {
+		return usage.Detail{}, false
+	}
+	return detail, true
+}
+
+func parseLingmaUsageNode(usageNode gjson.Result) usage.Detail {
+	detail := parseOpenAIStyleUsageNode(usageNode)
+	if detail.CachedTokens == 0 {
+		if v := usageNode.Get("cached_tokens"); v.Exists() {
+			detail.CachedTokens = v.Int()
+		} else if v := usageNode.Get("cache_read_input_tokens"); v.Exists() {
+			detail.CachedTokens = v.Int()
+		}
+	}
+	if v := usageNode.Get("cache_read_input_tokens"); v.Exists() {
+		detail.CacheReadTokens = v.Int()
+	}
+	if v := usageNode.Get("cache_creation_input_tokens"); v.Exists() {
+		detail.CacheCreationTokens = v.Int()
+	}
+	if detail.ReasoningTokens == 0 {
+		if v := usageNode.Get("reasoning_tokens"); v.Exists() {
+			detail.ReasoningTokens = v.Int()
+		}
+	}
+	return normalizeUsageDetailTotal(detail)
+}
+
+func ParseStreamUsageForFormat(format string, line []byte) (usage.Detail, bool) {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "claude":
+		return ParseClaudeStreamUsage(line)
+	case "gemini":
+		return ParseGeminiStreamUsage(line)
+	case "gemini-cli":
+		return ParseGeminiCLIStreamUsage(line)
+	case "openai", "openai-response", "codex":
+		return ParseOpenAIStreamUsage(line)
+	default:
+		return usage.Detail{}, false
+	}
 }
 
 func ParseClaudeUsage(data []byte) usage.Detail {

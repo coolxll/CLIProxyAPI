@@ -206,6 +206,7 @@ func (e *TraeExecutor) fetchModelsFromDetailParam(ctx context.Context, creds *tr
 	}
 	e.replaceTraeDetailModelConfigs(auth, configs)
 	models = appendTraeV1RawChatModels(models, now)
+	models = appendTraeV3AgentModels(models, now)
 	return models, nil
 }
 
@@ -332,14 +333,8 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	// Standard stream translator parameter
 	openaiFormat := sdktranslator.FromString("openai")
 	from := opts.SourceFormat
-	streamReq := req
-	if from != openaiFormat {
-		streamReq.Payload = sdktranslator.TranslateRequest(from, openaiFormat, req.Model, req.Payload, true)
-		streamOpts.SourceFormat = openaiFormat
-		streamOpts.OriginalRequest = streamReq.Payload
-	}
 
-	res, err := e.ExecuteStream(ctx, auth, streamReq, streamOpts)
+	res, err := e.ExecuteStream(ctx, auth, req, streamOpts)
 	if err != nil {
 		return resp, err
 	}

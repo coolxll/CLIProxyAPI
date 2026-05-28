@@ -88,16 +88,25 @@ type TraeExecutor struct {
 	translatorOnce sync.Once
 	translator     *traetranslator.Translator
 	translatorErr  error
+
+	detailConfigMu sync.RWMutex
+	detailConfigs  map[string]map[string]traeDetailModelConfig
+}
+
+type traeDetailModelConfig struct {
+	ModelName  string
+	ConfigName string
 }
 
 const (
-	traeProtocolV1    = "v1"
-	traeProtocolV2    = "v2"
-	traeProtocolV3    = "v3"
-	traeProtocolMeta  = "trae_protocol"
-	traeModelNameMeta = "trae_model_name"
-	traeConfigMeta    = "trae_config_name"
-	traeModelListURL  = "https://trae-api-cn.mchost.guru/api/ide/v1/model_list?type=llm_raw_chat"
+	traeProtocolV1     = "v1"
+	traeProtocolV2     = "v2"
+	traeProtocolV3     = "v3"
+	traeProtocolMeta   = "trae_protocol"
+	traeModelNameMeta  = "trae_model_name"
+	traeConfigMeta     = "trae_config_name"
+	traeModelListURL   = "https://trae-api-cn.mchost.guru/api/ide/v1/model_list?type=llm_raw_chat"
+	traeDetailParamURL = "https://trae-api-cn.mchost.guru/api/ide/v1/get_detail_param"
 )
 
 type traeRequestBuildResult struct {
@@ -147,7 +156,60 @@ func (e *TraeExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Auth)
 	if err != nil {
 		return nil, err
 	}
+	e.replaceTraeDetailModelConfigs(auth, nil)
 
+	now := time.Now().Unix()
+	models, err := e.fetchModelsFromDetailParam(ctx, creds, auth, now)
+	if err != nil {
+		log.Warnf("trae get_detail_param failed, falling back to model_list: %v", err)
+		models, err = e.fetchModelsFromModelList(ctx, creds, auth, now)
+		if err != nil {
+			return nil, err
+		}
+	}
+	models = appendTraeNoThinkingModel(models, now)
+	return models, nil
+}
+
+func (e *TraeExecutor) fetchModelsFromDetailParam(ctx context.Context, creds *traeauth.TraeCredentials, auth *cliproxyauth.Auth, now int64) ([]*registry.ModelInfo, error) {
+	body := []byte(`{"function":"chat_v3","config_names":null,"need_prompt":false,"current_config_info":null,"poly_prompt":true,"mode_type":null,"agent_type":"builder_v3","ab_force_vids":null,"ab_autotest_advanced_mode":null,"access_type":0}`)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, traeDetailParamURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	setTraeCommonHeaders(httpReq.Header, creds)
+
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("trae executor: close detail param response body error: %v", errClose)
+		}
+	}()
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		return nil, fmt.Errorf("get_detail_param API error (%d): %s", httpResp.StatusCode, string(b))
+	}
+
+	data, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, err
+	}
+	models, configs := parseTraeDetailParamWithConfigs(data, now)
+	if len(models) == 0 {
+		return nil, fmt.Errorf("get_detail_param returned no usable chat_completion configs")
+	}
+	e.replaceTraeDetailModelConfigs(auth, configs)
+	models = appendTraeV1RawChatModels(models, now)
+	return models, nil
+}
+
+func (e *TraeExecutor) fetchModelsFromModelList(ctx context.Context, creds *traeauth.TraeCredentials, auth *cliproxyauth.Auth, now int64) ([]*registry.ModelInfo, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, traeModelListURL, nil)
 	if err != nil {
 		return nil, err
@@ -174,9 +236,8 @@ func (e *TraeExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Auth)
 	if err != nil {
 		return nil, err
 	}
-	models := parseTraeModels(data, time.Now().Unix())
-	models = appendTraeNoThinkingModel(models, time.Now().Unix())
-	models = appendTraeV3AgentModels(models, time.Now().Unix())
+	models := parseTraeModels(data, now)
+	models = appendTraeV3AgentModels(models, now)
 	return models, nil
 }
 
@@ -260,11 +321,6 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	streamOpts := opts
 	streamOpts.Stream = true
 
-	res, err := e.ExecuteStream(ctx, auth, req, streamOpts)
-	if err != nil {
-		return resp, err
-	}
-
 	var aggregatedContent strings.Builder
 	var aggregatedReasoning strings.Builder
 	var toolCalls []openaiToolCall
@@ -276,6 +332,17 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	// Standard stream translator parameter
 	openaiFormat := sdktranslator.FromString("openai")
 	from := opts.SourceFormat
+	streamReq := req
+	if from != openaiFormat {
+		streamReq.Payload = sdktranslator.TranslateRequest(from, openaiFormat, req.Model, req.Payload, true)
+		streamOpts.SourceFormat = openaiFormat
+		streamOpts.OriginalRequest = streamReq.Payload
+	}
+
+	res, err := e.ExecuteStream(ctx, auth, streamReq, streamOpts)
+	if err != nil {
+		return resp, err
+	}
 
 	if res != nil {
 		var parseParam any
@@ -284,7 +351,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 				return resp, chunk.Err
 			}
 			// Translate chunk back to standard OpenAI
-			openaiChunks := sdktranslator.TranslateStream(ctx, from, openaiFormat, req.Model, opts.OriginalRequest, nil, chunk.Payload, &parseParam)
+			openaiChunks := sdktranslator.TranslateStream(ctx, streamOpts.SourceFormat, openaiFormat, req.Model, streamOpts.OriginalRequest, nil, chunk.Payload, &parseParam)
 			for _, oc := range openaiChunks {
 				dataStr := string(oc)
 				if strings.HasPrefix(dataStr, "data:") {
@@ -558,8 +625,14 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 		inQueue := false
 		queueDone := make(chan struct{})
-		var queuePosition atomic.Int64
-		var queueID string
+		var queueDoneOnce sync.Once
+		var queueHeartbeatStarted atomic.Bool
+		closeQueueHeartbeat := func() {
+			queueDoneOnce.Do(func() {
+				close(queueDone)
+			})
+		}
+		defer closeQueueHeartbeat()
 
 		var currentEvent string
 		for scanner.Scan() {
@@ -625,24 +698,38 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 
 			if evt == "request_wait_in_queue" {
-				pos := gjson.Get(dataStr, "position").Int()
-				queuePosition.Store(pos)
-				if !inQueue {
-					inQueue = true
-					queueID = gjson.Get(dataStr, "queue_id").String()
+				inQueue = true
+				if queueHeartbeatStarted.CompareAndSwap(false, true) {
 					go func() {
 						ticker := time.NewTicker(15 * time.Second)
 						defer ticker.Stop()
+						var heartbeatTranslateParam any
 						for {
 							select {
 							case <-ticker.C:
-								heartbeat := fmt.Sprintf(": queue-heartbeat position=%d queue_id=%s\n\n", queuePosition.Load(), queueID)
-								select {
-								case out <- cliproxyexecutor.StreamChunk{Payload: []byte(heartbeat)}:
-								case <-queueDone:
-									return
-								case <-ctx.Done():
-									return
+								heartbeatChunk := openaiChunk{
+									ID:      chatID,
+									Object:  "chat.completion.chunk",
+									Created: time.Now().Unix(),
+									Model:   req.Model,
+									Choices: []openaiChoice{
+										{
+											Index: 0,
+											Delta: openaiDelta{},
+										},
+									},
+								}
+								heartbeatJSON, _ := json.Marshal(heartbeatChunk)
+								heartbeatBytes := []byte("data: " + string(heartbeatJSON))
+								translatedChunks := sdktranslator.TranslateStream(ctx, openaiFormat, from, req.Model, opts.OriginalRequest, nil, heartbeatBytes, &heartbeatTranslateParam)
+								for _, tc := range translatedChunks {
+									select {
+									case out <- cliproxyexecutor.StreamChunk{Payload: tc}:
+									case <-queueDone:
+										return
+									case <-ctx.Done():
+										return
+									}
 								}
 							case <-queueDone:
 								return
@@ -734,7 +821,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 			if inQueue && (content != "" || reasoning != "" || toolName != "") {
 				inQueue = false
-				close(queueDone)
+				closeQueueHeartbeat()
 			}
 
 			if content != "" || reasoning != "" || toolName != "" {
@@ -941,6 +1028,10 @@ func (e *TraeExecutor) buildTraeV3CreateTaskRequest(
 	activeSessionID := strings.ReplaceAll(uuid.New().String(), "-", "")[:24]
 	activeConvID := strings.ReplaceAll(uuid.New().String(), "-", "")[:24]
 	modelConfig := traetranslator.ResolveModelConfig(upstreamModel)
+	if detailConfig, ok := e.traeDetailModelConfig(auth, upstreamModel); ok {
+		modelConfig.ModelName = detailConfig.ModelName
+		modelConfig.ConfigName = detailConfig.ConfigName
+	}
 	if modelName := metadataString(opts.Metadata, traeModelNameMeta); modelName != "" {
 		modelConfig.ModelName = modelName
 	}
@@ -1227,6 +1318,61 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func (e *TraeExecutor) replaceTraeDetailModelConfigs(auth *cliproxyauth.Auth, configs map[string]traeDetailModelConfig) {
+	authID := traeAuthID(auth)
+	if authID == "" {
+		return
+	}
+	e.detailConfigMu.Lock()
+	defer e.detailConfigMu.Unlock()
+	if len(configs) == 0 {
+		delete(e.detailConfigs, authID)
+		return
+	}
+	if e.detailConfigs == nil {
+		e.detailConfigs = make(map[string]map[string]traeDetailModelConfig)
+	}
+	copied := make(map[string]traeDetailModelConfig, len(configs))
+	for key, config := range configs {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" || strings.TrimSpace(config.ModelName) == "" || strings.TrimSpace(config.ConfigName) == "" {
+			continue
+		}
+		copied[key] = traeDetailModelConfig{
+			ModelName:  strings.TrimSpace(config.ModelName),
+			ConfigName: strings.TrimSpace(config.ConfigName),
+		}
+	}
+	if len(copied) == 0 {
+		delete(e.detailConfigs, authID)
+		return
+	}
+	e.detailConfigs[authID] = copied
+}
+
+func (e *TraeExecutor) traeDetailModelConfig(auth *cliproxyauth.Auth, configName string) (traeDetailModelConfig, bool) {
+	authID := traeAuthID(auth)
+	configName = strings.ToLower(strings.TrimSpace(configName))
+	if authID == "" || configName == "" {
+		return traeDetailModelConfig{}, false
+	}
+	e.detailConfigMu.RLock()
+	defer e.detailConfigMu.RUnlock()
+	configs := e.detailConfigs[authID]
+	if len(configs) == 0 {
+		return traeDetailModelConfig{}, false
+	}
+	config, ok := configs[configName]
+	return config, ok
+}
+
+func traeAuthID(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	return strings.TrimSpace(auth.ID)
+}
+
 func setTraeCommonHeaders(header http.Header, creds *traeauth.TraeCredentials) {
 	header.Set("Authorization", "Cloud-IDE-JWT "+creds.JWTToken)
 	header.Set("X-App-Id", "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8")
@@ -1336,6 +1482,128 @@ func appendTraeV3AgentModels(models []*registry.ModelInfo, now int64) []*registr
 		}
 	}
 	for _, v := range v3Models {
+		if _, ok := existing[strings.ToLower(v.id)]; ok {
+			continue
+		}
+		models = append(models, &registry.ModelInfo{
+			ID:                  v.id,
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "trae",
+			Type:                "trae",
+			DisplayName:         v.displayName,
+			Name:                v.id,
+			ContextLength:       v.context,
+			MaxCompletionTokens: 65536,
+			SupportedParameters: []string{"tools"},
+		})
+	}
+	return models
+}
+
+func parseTraeDetailParam(data []byte, now int64) []*registry.ModelInfo {
+	models, _ := parseTraeDetailParamWithConfigs(data, now)
+	return models
+}
+
+func parseTraeDetailParamWithConfigs(data []byte, now int64) ([]*registry.ModelInfo, map[string]traeDetailModelConfig) {
+	root := gjson.ParseBytes(data)
+	configs := root.Get("config_info_list")
+	if !configs.Exists() {
+		configs = root.Get("data.config_info_list")
+	}
+	if !configs.Exists() || !configs.IsArray() {
+		return nil, nil
+	}
+
+	models := make([]*registry.ModelInfo, 0, len(configs.Array()))
+	detailConfigs := make(map[string]traeDetailModelConfig)
+	seen := make(map[string]struct{})
+	for _, item := range configs.Array() {
+		if usage := item.Get("usage").String(); usage != "chat_completion" {
+			continue
+		}
+		if !item.Get("config_switch").Bool() {
+			continue
+		}
+		if item.Get("is_invisible_to_user").Bool() {
+			continue
+		}
+		configName := strings.TrimSpace(item.Get("config_name").String())
+		if configName == "" {
+			continue
+		}
+		lower := strings.ToLower(configName)
+		if strings.HasPrefix(lower, "custom_model_") || strings.HasPrefix(lower, "custom_claude") || strings.HasPrefix(lower, "custom_gemini") {
+			continue
+		}
+		if strings.HasSuffix(lower, "-auto") || strings.HasSuffix(lower, "_auto") {
+			continue
+		}
+		detail := item.Get("model_detail_list.0")
+		modelName := strings.TrimSpace(detail.Get("model_name").String())
+		if modelName == "" {
+			continue
+		}
+		if _, ok := seen[lower]; ok {
+			continue
+		}
+		seen[lower] = struct{}{}
+
+		displayConfig := item.Get("display_config")
+		displayName := displayConfig.Get("display_name").String()
+		if displayName == "" {
+			displayName = configName
+		}
+
+		contextLength := int(detail.Get("prompt_max_tokens").Int())
+		maxTokens := int(detail.Get("max_tokens").Int())
+		if maxTokens <= 0 {
+			maxTokens = 16000
+		}
+
+		model := &registry.ModelInfo{
+			ID:                  configName,
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "trae",
+			Type:                "trae",
+			DisplayName:         displayName,
+			Name:                configName,
+			ContextLength:       contextLength,
+			MaxCompletionTokens: maxTokens,
+			SupportedParameters: []string{"tools"},
+		}
+		if displayConfig.Get("multimodal").Bool() {
+			model.SupportedInputModalities = []string{"text", "image"}
+		}
+		models = append(models, model)
+		detailConfigs[lower] = traeDetailModelConfig{
+			ModelName:  modelName,
+			ConfigName: configName,
+		}
+	}
+	return models, detailConfigs
+}
+
+func appendTraeV1RawChatModels(models []*registry.ModelInfo, now int64) []*registry.ModelInfo {
+	v1Models := []struct {
+		id          string
+		displayName string
+		context     int
+	}{
+		{"seed_m8", "Doubao 1.5 Pro", 28000},
+		{"deepseek-R1", "DeepSeek Reasoner R1", 40000},
+		{"deepseek-V3", "DeepSeek V3", 40000},
+		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000},
+	}
+	existing := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		if m != nil {
+			existing[strings.ToLower(strings.TrimSpace(m.ID))] = struct{}{}
+		}
+	}
+	for _, v := range v1Models {
 		if _, ok := existing[strings.ToLower(v.id)]; ok {
 			continue
 		}

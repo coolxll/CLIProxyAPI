@@ -169,23 +169,40 @@ func traeModelInfos() []*ModelInfo {
 		id          string
 		displayName string
 		context     int
+		maxTokens   int
+		multimodal  bool
 	}{
-		{"seed_m8", "Doubao 1.5 Pro", 28000},
-		{"deepseek-R1", "DeepSeek Reasoner R1", 40000},
-		{"deepseek-V3", "DeepSeek V3", 40000},
-		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000},
-		{"no_thinking_model", "Trae No Thinking Model", 40000},
-		{"glm-5", "GLM-5", 16000},
-		{"glm-5.1", "GLM-5.1", 16000},
-		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 16000},
-		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash", 16000},
-		{"kimi-k2.6", "Kimi K2.6", 16000},
-		{"qwen-3.6-plus", "Qwen 3.6 Plus", 16000},
+		// V1 raw chat models
+		{"seed_m8", "Doubao 1.5 Pro", 28000, 65536, false},
+		{"deepseek-R1", "DeepSeek Reasoner R1", 40000, 65536, false},
+		{"deepseek-V3", "DeepSeek V3", 40000, 65536, false},
+		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000, 65536, false},
+		// V2 synthetic
+		{"no_thinking_model", "Trae No Thinking Model", 40000, 65536, false},
+		// V3 core models
+		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 100000, 16000, false},
+		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash", 100000, 16000, false},
+		{"Doubao-Seed-2.0-Code", "Doubao-Seed-2.0-Code", 100000, 16000, true},
+		{"glm-5.1", "GLM-5.1", 100000, 16000, false},
+		{"glm-5v-turbo", "GLM-5v-Turbo", 100000, 16000, true},
+		{"kimi-k2.6", "Kimi K2.6", 100000, 16000, true},
+		{"qwen-3.6-plus", "Qwen 3.6 Plus", 100000, 16000, true},
+		{"qwen3-coder", "Qwen3 Coder", 100000, 16000, false},
+		{"minimax-m2.7", "MiniMax M2.7", 100000, 16000, false},
+		// V3 optional models
+		{"glm-5", "GLM-5", 100000, 16000, false},
+		{"glm-4.7", "GLM-4.7", 100000, 16000, false},
+		{"kimi-k2.5", "Kimi K2.5", 100000, 16000, true},
+		{"kimi-k2", "Kimi K2", 100000, 16000, false},
+		{"qwen-3.5", "Qwen 3.5", 100000, 16000, true},
+		{"doubao_1_8", "Doubao 1.8", 100000, 16000, true},
+		{"Doubao_1_6", "Doubao 1.6", 100000, 16000, true},
+		{"minimax-m2.5", "MiniMax M2.5", 100000, 16000, false},
 	}
 
 	out := make([]*ModelInfo, 0, len(models))
 	for _, model := range models {
-		out = append(out, &ModelInfo{
+		info := &ModelInfo{
 			ID:                  model.id,
 			Object:              "model",
 			Created:             1704067200,
@@ -194,9 +211,13 @@ func traeModelInfos() []*ModelInfo {
 			DisplayName:         model.displayName,
 			Name:                model.id,
 			ContextLength:       model.context,
-			MaxCompletionTokens: 65536,
+			MaxCompletionTokens: model.maxTokens,
 			SupportedParameters: []string{"tools"},
-		})
+		}
+		if model.multimodal {
+			info.SupportedInputModalities = []string{"text", "image"}
+		}
+		out = append(out, info)
 	}
 	return out
 }

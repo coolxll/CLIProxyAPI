@@ -1166,6 +1166,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
 	case "trae":
+		models = registry.GetTraeModels()
 		var fetchErr error
 		if s.coreManager != nil {
 			if exec, ok := s.coreManager.Executor("trae"); ok {
@@ -1181,12 +1182,11 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			}
 		}
 		models = applyExcludedModels(models, excluded)
-		if len(models) == 0 {
-			if fetchErr != nil {
-				log.Warnf("failed to fetch Trae models for auth %s; skipping model registration: %v", a.ID, fetchErr)
-			} else {
-				log.Warnf("Trae model fetch returned no models for auth %s; skipping model registration", a.ID)
-			}
+		if fetchErr != nil {
+			log.Warnf("failed to fetch Trae models for auth %s; using static model definitions: %v", a.ID, fetchErr)
+		} else if len(models) == 0 {
+			log.Warnf("Trae model fetch returned no models for auth %s; using static model definitions", a.ID)
+			models = applyExcludedModels(registry.GetTraeModels(), excluded)
 		}
 	case "lingma":
 		// Dynamic model fetching from Lingma API

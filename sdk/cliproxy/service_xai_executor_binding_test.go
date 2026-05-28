@@ -60,7 +60,7 @@ func TestEnsureExecutorsForAuth_TraeBindsIndependentExecutor(t *testing.T) {
 	}
 }
 
-func TestRegisterModelsForAuth_TraeSkipsWhenDynamicFetchUnavailable(t *testing.T) {
+func TestRegisterModelsForAuth_TraeUsesStaticFallbackWhenDynamicFetchUnavailable(t *testing.T) {
 	service := &Service{cfg: &config.Config{}}
 	auth := &coreauth.Auth{
 		ID:       "trae-auth-models",
@@ -74,8 +74,10 @@ func TestRegisterModelsForAuth_TraeSkipsWhenDynamicFetchUnavailable(t *testing.T
 	service.registerModelsForAuth(auth)
 
 	models := registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
-	if len(models) == 0 {
-		return
+	for _, model := range models {
+		if model != nil && model.ID == "no_thinking_model" {
+			return
+		}
 	}
-	t.Fatalf("expected no Trae models without a dynamic fetcher, got %v", models)
+	t.Fatalf("expected static Trae fallback to include no_thinking_model, got %v", models)
 }

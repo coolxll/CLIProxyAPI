@@ -26,27 +26,39 @@ import (
 // loadTraeTestAuth loads Trae credentials from the local JSON auth file.
 func loadTraeTestAuth(t *testing.T) *cliproxyauth.Auth {
 	t.Helper()
-	// Walk up from the test file to the repo root to find the auth JSON.
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	// The test file is in internal/runtime/executor/, repo root is 3 levels up.
 	repoRoot := filepath.Join(wd, "..", "..", "..")
 
-	var authFile string
-	entries, err := os.ReadDir(repoRoot)
-	if err != nil {
-		t.Fatalf("read repo root: %v", err)
+	authFile := strings.TrimSpace(os.Getenv("TRAE_E2E_AUTH_FILE"))
+	if authFile != "" && !filepath.IsAbs(authFile) {
+		authFile = filepath.Join(repoRoot, authFile)
 	}
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasPrefix(e.Name(), "trae-") && strings.HasSuffix(e.Name(), ".json") {
-			authFile = filepath.Join(repoRoot, e.Name())
-			break
+	if authFile == "" {
+		for _, dir := range []string{filepath.Join(repoRoot, "auths"), repoRoot} {
+			entries, errRead := os.ReadDir(dir)
+			if errRead != nil {
+				continue
+			}
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+					continue
+				}
+				path := filepath.Join(dir, e.Name())
+				if isTraeE2EAuthFile(t, path) {
+					authFile = path
+					break
+				}
+			}
+			if authFile != "" {
+				break
+			}
 		}
 	}
 	if authFile == "" {
-		t.Skip("no trae-*.json auth file found in repo root, skipping E2E test")
+		t.Skip("no Trae auth JSON found; set TRAE_E2E_AUTH_FILE or place a Trae auth JSON in auths/")
 	}
 
 	raw, err := os.ReadFile(authFile)
@@ -60,6 +72,8 @@ func loadTraeTestAuth(t *testing.T) *cliproxyauth.Auth {
 		MachineID string `json:"machine_id"`
 		UserID    string `json:"user_id"`
 		Name      string `json:"name"`
+		Type      string `json:"type"`
+		Workspace string `json:"workspace_path"`
 	}
 	if err := json.Unmarshal(raw, &authData); err != nil {
 		t.Fatalf("parse auth json: %v", err)
@@ -71,11 +85,28 @@ func loadTraeTestAuth(t *testing.T) *cliproxyauth.Auth {
 	return &cliproxyauth.Auth{
 		Provider: "trae",
 		Attributes: map[string]string{
-			"jwt_token":  authData.JWTToken,
-			"machine_id": authData.MachineID,
-			"device_id":  authData.DeviceID,
+			"jwt_token":      authData.JWTToken,
+			"machine_id":     authData.MachineID,
+			"device_id":      authData.DeviceID,
+			"workspace_path": authData.Workspace,
 		},
 	}
+}
+
+func isTraeE2EAuthFile(t *testing.T, path string) bool {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var authData struct {
+		Type     string `json:"type"`
+		JWTToken string `json:"jwt_token"`
+	}
+	if err := json.Unmarshal(raw, &authData); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(authData.Type), "trae") || strings.TrimSpace(authData.JWTToken) != ""
 }
 
 // collectStreamContent drains a stream result and returns aggregated content and reasoning.
@@ -98,6 +129,7 @@ func collectStreamContent(t *testing.T, result *cliproxyexecutor.StreamResult, s
 		if chunk.Err != nil {
 			t.Fatalf("stream error: %v", chunk.Err)
 		}
+		requireOpenAIStreamPayload(t, chunk.Payload)
 		_ = e // suppress unused
 		chunks := sdktranslator.TranslateStream(ctx, sourceFmt, openaiFormat, req.Model, opts.OriginalRequest, nil, chunk.Payload, &parseParam)
 		for _, oc := range chunks {
@@ -154,6 +186,7 @@ func TestTraeE2E_V1_RawChat_DeepSeekR1(t *testing.T) {
 		if chunk.Err != nil {
 			t.Fatalf("stream error: %v", chunk.Err)
 		}
+		requireOpenAIStreamPayload(t, chunk.Payload)
 		rawChunks = append(rawChunks, string(chunk.Payload))
 	}
 
@@ -368,6 +401,7 @@ func TestTraeE2E_V3_Streaming(t *testing.T) {
 		if chunk.Err != nil {
 			t.Fatalf("stream error: %v", chunk.Err)
 		}
+		requireOpenAIStreamPayload(t, chunk.Payload)
 		rawChunks = append(rawChunks, string(chunk.Payload))
 	}
 
@@ -431,6 +465,7 @@ func TestTraeE2E_V1_NonStreaming_DeepSeekV3(t *testing.T) {
 		if chunk.Err != nil {
 			t.Fatalf("stream error: %v", chunk.Err)
 		}
+		requireOpenAIStreamPayload(t, chunk.Payload)
 		streamChunks = append(streamChunks, string(chunk.Payload))
 	}
 	t.Logf("V1 deepseek-V3 streaming got %d chunks", len(streamChunks))
@@ -547,4 +582,23 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func requireOpenAIStreamPayload(t *testing.T, payload []byte) {
+	t.Helper()
+	for _, line := range strings.Split(string(payload), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		}
+		if line == "[DONE]" {
+			continue
+		}
+		if !gjson.Valid(line) {
+			t.Fatalf("stream payload is not valid OpenAI JSON data: %q", truncate(line, 300))
+		}
+	}
 }

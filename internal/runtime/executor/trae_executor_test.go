@@ -599,17 +599,17 @@ func TestBuildTraeRawChatRequestV2OmitsTools(t *testing.T) {
 
 func TestAppendTraeV3AgentModels(t *testing.T) {
 	models := appendTraeV3AgentModels(nil, 123)
-	if len(models) != 6 {
-		t.Fatalf("len(models) = %d, want 6", len(models))
+	if len(models) != 7 {
+		t.Fatalf("len(models) = %d, want 7", len(models))
 	}
-	if got := models[0].ID; got != "glm-5" {
-		t.Fatalf("first model ID = %q, want glm-5", got)
+	if got := models[0].ID; got != "glm-4.7" {
+		t.Fatalf("first model ID = %q, want glm-4.7", got)
 	}
 
 	// Should not duplicate
 	models = appendTraeV3AgentModels(models, 123)
-	if len(models) != 6 {
-		t.Fatalf("after dedup len(models) = %d, want 6", len(models))
+	if len(models) != 7 {
+		t.Fatalf("after dedup len(models) = %d, want 7", len(models))
 	}
 }
 

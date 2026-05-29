@@ -1651,6 +1651,7 @@ func appendTraeV3AgentModels(models []*registry.ModelInfo, now int64) []*registr
 		displayName string
 		context     int
 	}{
+		{"glm-4.7", "GLM-4.7", 16000},
 		{"glm-5", "GLM-5", 16000},
 		{"glm-5.1", "GLM-5.1", 16000},
 		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 16000},

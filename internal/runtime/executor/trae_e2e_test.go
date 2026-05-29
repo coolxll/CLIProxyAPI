@@ -514,7 +514,7 @@ func TestTraeE2E_V3_DebugRawResponse(t *testing.T) {
 		]
 	}`)
 
-	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model,
+	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model, rawRequest,
 		gjson.GetBytes(rawRequest, "messages").Array(),
 		cliproxyexecutor.Options{OriginalRequest: rawRequest},
 	)
@@ -599,7 +599,7 @@ func TestTraeE2E_V3_DebugRawToolCall(t *testing.T) {
 		]
 	}`)
 
-	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model,
+	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model, rawRequest,
 		gjson.GetBytes(rawRequest, "messages").Array(),
 		cliproxyexecutor.Options{OriginalRequest: rawRequest},
 	)
@@ -739,7 +739,7 @@ func TestTraeE2E_V3_MinimalThoughtToolCommit(t *testing.T) {
 		]
 	}`)
 
-	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model,
+	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model, rawRequest,
 		gjson.GetBytes(rawRequest, "messages").Array(),
 		cliproxyexecutor.Options{OriginalRequest: rawRequest},
 	)
@@ -994,6 +994,303 @@ func TestTraeE2E_V3_ToolCallViaExecutor(t *testing.T) {
 	}
 }
 
+func TestTraeE2E_V3_ClaudeProtocolToolUse(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+
+	model := traeE2EV3DebugModel()
+	rawRequest := []byte(`{
+		"model": "` + model + `",
+		"max_tokens": 1024,
+		"stream": true,
+		"tools": [
+			{
+				"name": "Bash",
+				"description": "Run a shell command in the current working directory.",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"command": {"type": "string"}
+					},
+					"required": ["command"]
+				}
+			}
+		],
+		"messages": [
+				{
+					"role": "user",
+					"content": "Use the Bash tool to run exactly ls -la in the current working directory. Do not answer from memory; call the tool first."
+				}
+		]
+	}`)
+
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var text strings.Builder
+	var toolUseNames []string
+	var toolUseIDs []string
+	var toolInput strings.Builder
+	stopReason := ""
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+		for _, event := range parseClaudeSSEEvents(string(chunk.Payload)) {
+			payload := gjson.Parse(event.data)
+			switch event.typ {
+			case "content_block_start":
+				if payload.Get("content_block.type").String() == "tool_use" {
+					toolUseNames = append(toolUseNames, payload.Get("content_block.name").String())
+					toolUseIDs = append(toolUseIDs, payload.Get("content_block.id").String())
+				}
+			case "content_block_delta":
+				switch payload.Get("delta.type").String() {
+				case "text_delta":
+					text.WriteString(payload.Get("delta.text").String())
+				case "input_json_delta":
+					toolInput.WriteString(payload.Get("delta.partial_json").String())
+				}
+			case "message_delta":
+				if sr := payload.Get("delta.stop_reason").String(); sr != "" {
+					stopReason = sr
+				}
+			}
+		}
+	}
+
+	t.Logf("Claude protocol tool_use count=%d names=%v stop_reason=%q text_len=%d input=%s",
+		len(toolUseNames), toolUseNames, stopReason, text.Len(), truncate(toolInput.String(), 300))
+
+	if len(toolUseNames) == 0 {
+		t.Fatalf("expected Claude tool_use for directory listing request, got none; stop_reason=%q text=%q",
+			stopReason, truncate(text.String(), 500))
+	}
+	if stopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", stopReason)
+	}
+	for i, id := range toolUseIDs {
+		if !strings.HasPrefix(id, "trae_") {
+			t.Fatalf("tool_use id[%d] = %q, want trae_ encoded id", i, id)
+		}
+		if _, errDecode := decodeTraeToolID(id); errDecode != nil {
+			t.Fatalf("decode tool_use id[%d]: %v", i, errDecode)
+		}
+	}
+}
+
+func TestTraeE2E_V3_ClaudeProtocolMCPWeatherToolUse(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+
+	model := traeE2EV3DebugModel()
+	rawRequest := []byte(`{
+		"model": "` + model + `",
+		"max_tokens": 1024,
+		"stream": true,
+		"tools": [
+			{
+				"name": "mcp__weather__get_current_weather",
+				"description": "Get the current weather for a city.",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"location": {"type": "string"}
+					},
+					"required": ["location"]
+				}
+			}
+		],
+		"messages": [
+				{
+					"role": "user",
+					"content": "Use the mcp__weather__get_current_weather tool to check the current weather in San Francisco. Do not answer from memory; call the tool first."
+				}
+		]
+	}`)
+
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var text strings.Builder
+	var toolUseNames []string
+	var toolInput strings.Builder
+	var rawChunks []string
+	stopReason := ""
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+		rawChunks = append(rawChunks, string(chunk.Payload))
+		for _, event := range parseClaudeSSEEvents(string(chunk.Payload)) {
+			payload := gjson.Parse(event.data)
+			switch event.typ {
+			case "content_block_start":
+				if payload.Get("content_block.type").String() == "tool_use" {
+					toolUseNames = append(toolUseNames, payload.Get("content_block.name").String())
+				}
+			case "content_block_delta":
+				switch payload.Get("delta.type").String() {
+				case "text_delta":
+					text.WriteString(payload.Get("delta.text").String())
+				case "input_json_delta":
+					toolInput.WriteString(payload.Get("delta.partial_json").String())
+				}
+			case "message_delta":
+				if sr := payload.Get("delta.stop_reason").String(); sr != "" {
+					stopReason = sr
+				}
+			}
+		}
+	}
+
+	t.Logf("Claude MCP weather tool_use count=%d names=%v stop_reason=%q input=%s",
+		len(toolUseNames), toolUseNames, stopReason, truncate(toolInput.String(), 300))
+
+	if len(toolUseNames) == 0 {
+		for i, raw := range rawChunks {
+			t.Logf("  raw[%d]=%s", i, truncate(raw, 500))
+		}
+		t.Fatalf("expected Claude tool_use for MCP weather request, got none; stop_reason=%q text=%q",
+			stopReason, truncate(text.String(), 500))
+	}
+	if got := toolUseNames[0]; got != "mcp__weather__get_current_weather" {
+		t.Fatalf("tool_use name = %q, want mcp__weather__get_current_weather", got)
+	}
+	if stopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", stopReason)
+	}
+}
+
+func TestTraeE2E_V3_OpenAIProtocolMCPWeatherToolCall(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+
+	model := traeE2EV3DebugModel()
+	rawRequest := []byte(`{
+		"model": "` + model + `",
+		"stream": true,
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "mcp__weather__get_current_weather",
+					"description": "Get the current weather for a city.",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"location": {"type": "string"}
+						},
+						"required": ["location"]
+					}
+				}
+			}
+		],
+		"messages": [
+			{
+				"role": "user",
+				"content": "Use the mcp__weather__get_current_weather tool to check the current weather in San Francisco. Do not answer from memory; call the tool first."
+			}
+		]
+	}`)
+
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var toolCallNames []string
+	var toolCallIDs []string
+	var arguments strings.Builder
+	var content strings.Builder
+	finishReason := ""
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+		requireOpenAIStreamPayload(t, chunk.Payload)
+		dataStr := string(chunk.Payload)
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		if c := gjson.Get(dataStr, "choices.0.delta.content"); c.Exists() && c.String() != "" {
+			content.WriteString(c.String())
+		}
+		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() {
+			for _, item := range tc.Array() {
+				if name := item.Get("function.name").String(); name != "" {
+					toolCallNames = append(toolCallNames, name)
+				}
+				if id := item.Get("id").String(); id != "" {
+					toolCallIDs = append(toolCallIDs, id)
+				}
+				if args := item.Get("function.arguments").String(); args != "" {
+					arguments.WriteString(args)
+				}
+			}
+		}
+		if fr := gjson.Get(dataStr, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
+			finishReason = fr.String()
+		}
+	}
+
+	t.Logf("OpenAI MCP weather tool_calls=%d names=%v finish_reason=%q args=%s",
+		len(toolCallNames), toolCallNames, finishReason, truncate(arguments.String(), 300))
+
+	if len(toolCallNames) == 0 {
+		t.Fatalf("expected OpenAI tool_calls for MCP weather request, got none; finish_reason=%q content=%q",
+			finishReason, truncate(content.String(), 500))
+	}
+	if got := toolCallNames[0]; got != "mcp__weather__get_current_weather" {
+		t.Fatalf("tool call name = %q, want mcp__weather__get_current_weather", got)
+	}
+	if got := gjson.Get(arguments.String(), "location").String(); got != "San Francisco" {
+		t.Fatalf("tool call location = %q, want San Francisco; args=%q", got, arguments.String())
+	}
+	if finishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", finishReason)
+	}
+	for i, id := range toolCallIDs {
+		if !strings.HasPrefix(id, "trae_") {
+			t.Fatalf("tool_call id[%d] = %q, want trae_ encoded id", i, id)
+		}
+		if _, errDecode := decodeTraeToolID(id); errDecode != nil {
+			t.Fatalf("decode tool_call id[%d]: %v", i, errDecode)
+		}
+	}
+}
+
 // TestTraeE2E_V3_ToolCommitFlow tests the full v3 tool call → commit → continue flow.
 // Step 1: Send a request that triggers a tool call
 // Step 2: If a tool call is received, commit a mock result
@@ -1197,4 +1494,31 @@ func requireOpenAIStreamPayload(t *testing.T, payload []byte) {
 			t.Fatalf("stream payload is not valid OpenAI JSON data: %q", truncate(line, 300))
 		}
 	}
+}
+
+type traeE2EClaudeEvent struct {
+	typ  string
+	data string
+}
+
+func parseClaudeSSEEvents(payload string) []traeE2EClaudeEvent {
+	var events []traeE2EClaudeEvent
+	currentEvent := ""
+	for _, line := range strings.Split(payload, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data != "" {
+				events = append(events, traeE2EClaudeEvent{typ: currentEvent, data: data})
+			}
+		}
+	}
+	return events
 }

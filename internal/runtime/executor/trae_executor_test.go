@@ -230,6 +230,125 @@ func TestTraeThoughtToolParserBoundsIncompleteToolBuffer(t *testing.T) {
 	}
 }
 
+func TestTraeInlineToolCallParser(t *testing.T) {
+	tests := []struct {
+		name      string
+		chunks    []string
+		wantText  string
+		wantTools []traeThoughtToolCall
+	}{
+		{
+			name:     "single chunk",
+			chunks:   []string{`I will inspect the directory. Bash tool_calls=[{"name":"Bash","arguments":{"command":"ls -la"}}]`},
+			wantText: "I will inspect the directory. ",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "Bash",
+				Arguments: `{"command":"ls -la"}`,
+			}},
+		},
+		{
+			name:     "split chunk",
+			chunks:   []string{`Bash tool_calls=[{"name":"Bash","arguments":{"command"`, `:"ls -la"}}]`},
+			wantText: "",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "Bash",
+				Arguments: `{"command":"ls -la"}`,
+			}},
+		},
+		{
+			name:     "openai shape",
+			chunks:   []string{`prefix Read tool_calls=[{"function":{"name":"Read","arguments":"{\"path\":\"/tmp/a.go\"}"}}] suffix`},
+			wantText: "prefix  suffix",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "Read",
+				Arguments: `{"path":"/tmp/a.go"}`,
+			}},
+		},
+		{
+			name:     "run command markup",
+			chunks:   []string{`I will run it. <run_command><command>ls -la</command></run_command>`},
+			wantText: "I will run it. ",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "Bash",
+				Arguments: `{"command":"ls -la"}`,
+			}},
+		},
+		{
+			name:     "split run command markup",
+			chunks:   []string{`<run_command><command>ls`, ` -la</command></run_command>`},
+			wantText: "",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "Bash",
+				Arguments: `{"command":"ls -la"}`,
+			}},
+		},
+		{
+			name:      "no tool call",
+			chunks:    []string{"plain content"},
+			wantText:  "plain content",
+			wantTools: nil,
+		},
+		{
+			name:      "malformed tool call",
+			chunks:    []string{`Bash tool_calls=[not-json]`},
+			wantText:  `Bash tool_calls=[not-json]`,
+			wantTools: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var parser traeInlineToolCallParser
+			var gotText strings.Builder
+			var gotTools []traeThoughtToolCall
+			for _, chunk := range tt.chunks {
+				got := parser.Append(chunk)
+				gotText.WriteString(got.Content)
+				gotTools = append(gotTools, got.ToolCalls...)
+			}
+			gotText.WriteString(parser.Flush())
+
+			if gotText.String() != tt.wantText {
+				t.Fatalf("content = %q, want %q", gotText.String(), tt.wantText)
+			}
+			if len(gotTools) != len(tt.wantTools) {
+				t.Fatalf("tool count = %d, want %d: %#v", len(gotTools), len(tt.wantTools), gotTools)
+			}
+			for i := range tt.wantTools {
+				if gotTools[i] != tt.wantTools[i] {
+					t.Fatalf("tool[%d] = %#v, want %#v", i, gotTools[i], tt.wantTools[i])
+				}
+			}
+		})
+	}
+}
+
+func TestNextTraeInlineToolMarkerNotFound(t *testing.T) {
+	idx, marker := nextTraeInlineToolMarker("plain content")
+	if idx != -1 || marker != "" {
+		t.Fatalf("marker = (%d, %q), want (-1, \"\")", idx, marker)
+	}
+}
+
+func TestBuildTraeToolShimInstructions(t *testing.T) {
+	instructions := buildTraeToolShimInstructions([]byte(`{
+		"tools": [
+			{"type":"function","function":{"name":"Bash","description":"Run shell","parameters":{"type":"object"}}},
+			{"type":"function","function":{"name":"mcp__weather__get_current_weather","description":"Get weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}}}}
+		]
+	}`))
+
+	if !strings.Contains(instructions, "mcp__weather__get_current_weather") {
+		t.Fatalf("tool instructions missing weather tool: %q", instructions)
+	}
+	if !strings.Contains(instructions, "Bash") {
+		t.Fatalf("tool instructions missing Bash tool: %q", instructions)
+	}
+	if !strings.Contains(instructions, "tool_calls=") {
+		t.Fatalf("tool instructions missing inline tool call protocol: %q", instructions)
+	}
+}
+
 func TestTraeExecutorStreamConvertsThoughtToolCall(t *testing.T) {
 	body := "event: task_created\n" +
 		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
@@ -363,6 +482,177 @@ func TestTraeExecutorStreamKeepsLegacyToolCallEvent(t *testing.T) {
 	}
 	if state.NativeID != "native-123" || state.Name != "Read" {
 		t.Fatalf("decoded state = %#v, want legacy native id and name", state)
+	}
+	if finishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", finishReason)
+	}
+}
+
+func TestTraeExecutorStreamConvertsInlineToolCallForClaude(t *testing.T) {
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"data: {\"content\":\"I will inspect the directory. Bash tool_calls=[{\\\"name\\\":\\\"Bash\\\",\\\"arguments\\\":{\\\"command\\\":\\\"ls -la\\\"}}]\"}\n\n"
+	result := runTraeClaudeStreamWithBody(t, body)
+
+	var text strings.Builder
+	var toolUseBlocks []gjson.Result
+	var toolInput strings.Builder
+	stopReason := ""
+	for _, event := range collectClaudeStreamEvents(t, result) {
+		payload := gjson.Parse(event.data)
+		if event.typ == "content_block_delta" && payload.Get("delta.type").String() == "text_delta" {
+			text.WriteString(payload.Get("delta.text").String())
+		}
+		if event.typ == "content_block_delta" && payload.Get("delta.type").String() == "input_json_delta" {
+			toolInput.WriteString(payload.Get("delta.partial_json").String())
+		}
+		if event.typ == "content_block_start" && payload.Get("content_block.type").String() == "tool_use" {
+			toolUseBlocks = append(toolUseBlocks, payload.Get("content_block"))
+		}
+		if event.typ == "message_delta" {
+			stopReason = payload.Get("delta.stop_reason").String()
+		}
+	}
+
+	if got := text.String(); got != "I will inspect the directory. " {
+		t.Fatalf("text = %q, want assistant text without inline tool call", got)
+	}
+	if strings.Contains(text.String(), "tool_calls=") {
+		t.Fatalf("text leaked inline tool call: %q", text.String())
+	}
+	if len(toolUseBlocks) != 1 {
+		t.Fatalf("tool use count = %d, want 1: %#v", len(toolUseBlocks), toolUseBlocks)
+	}
+	toolUse := toolUseBlocks[0]
+	if got := toolUse.Get("name").String(); got != "Bash" {
+		t.Fatalf("tool name = %q, want Bash", got)
+	}
+	if got := gjson.Get(toolInput.String(), "command").String(); got != "ls -la" {
+		t.Fatalf("tool input command = %q, want ls -la; input_delta=%q block=%s", got, toolInput.String(), toolUse.Raw)
+	}
+	state, err := decodeTraeToolID(toolUse.Get("id").String())
+	if err != nil {
+		t.Fatalf("decode inline tool id: %v", err)
+	}
+	if state.NativeID != "inline-0" || state.Name != "Bash" || state.TaskID != "task-1" || state.AgentRunID != "run-1" {
+		t.Fatalf("decoded state = %#v, want inline synthetic state", state)
+	}
+	if stopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", stopReason)
+	}
+}
+
+func TestTraeExecutorStreamConvertsInlineToolCallFromReasoningForClaude(t *testing.T) {
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"data: {\"reasoning_content\":\"\\ntool_calls=[{\\\"name\\\":\\\"mcp__weather__get_current_weather\\\",\\\"arguments\\\":{\\\"location\\\":\\\"San Francisco\\\"}}]]]\"}\n\n"
+	result := runTraeClaudeStreamWithBody(t, body)
+
+	var toolUseBlocks []gjson.Result
+	var toolInput strings.Builder
+	stopReason := ""
+	for _, event := range collectClaudeStreamEvents(t, result) {
+		payload := gjson.Parse(event.data)
+		if event.typ == "content_block_delta" && payload.Get("delta.type").String() == "input_json_delta" {
+			toolInput.WriteString(payload.Get("delta.partial_json").String())
+		}
+		if event.typ == "content_block_start" && payload.Get("content_block.type").String() == "tool_use" {
+			toolUseBlocks = append(toolUseBlocks, payload.Get("content_block"))
+		}
+		if event.typ == "message_delta" {
+			stopReason = payload.Get("delta.stop_reason").String()
+		}
+	}
+
+	if len(toolUseBlocks) != 1 {
+		t.Fatalf("tool use count = %d, want 1: %#v", len(toolUseBlocks), toolUseBlocks)
+	}
+	toolUse := toolUseBlocks[0]
+	if got := toolUse.Get("name").String(); got != "mcp__weather__get_current_weather" {
+		t.Fatalf("tool name = %q, want MCP weather", got)
+	}
+	if got := gjson.Get(toolInput.String(), "location").String(); got != "San Francisco" {
+		t.Fatalf("tool input location = %q, want San Francisco; input_delta=%q", got, toolInput.String())
+	}
+	if stopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", stopReason)
+	}
+}
+
+func TestTraeExecutorStreamKeepsInlineToolParserStateSeparateForContentAndReasoning(t *testing.T) {
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"data: {\"content\":\"prefix tool_ca\"}\n\n" +
+		"data: {\"reasoning_content\":\"lls=[{\\\"name\\\":\\\"Bash\\\",\\\"arguments\\\":{\\\"command\\\":\\\"pwd\\\"}}]\"}\n\n"
+	result := runTraeStreamWithBody(t, body)
+
+	var content strings.Builder
+	var reasoning strings.Builder
+	var toolCalls []gjson.Result
+	finishReason := ""
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if val := gjson.Get(data, "choices.0.delta.content"); val.Exists() {
+			content.WriteString(val.String())
+		}
+		if val := gjson.Get(data, "choices.0.delta.reasoning_content"); val.Exists() {
+			reasoning.WriteString(val.String())
+		}
+		if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() {
+			toolCalls = append(toolCalls, tc.Array()...)
+		}
+		if fr := gjson.Get(data, "choices.0.finish_reason").String(); fr != "" {
+			finishReason = fr
+		}
+	}
+
+	if got := content.String(); got != "prefix tool_ca" {
+		t.Fatalf("content = %q, want split content marker fragment preserved", got)
+	}
+	if got := reasoning.String(); got != `lls=[{"name":"Bash","arguments":{"command":"pwd"}}]` {
+		t.Fatalf("reasoning = %q, want reasoning marker fragment preserved", got)
+	}
+	if len(toolCalls) != 0 {
+		t.Fatalf("tool call count = %d, want none across content/reasoning boundary: %#v", len(toolCalls), toolCalls)
+	}
+	if finishReason != "stop" {
+		t.Fatalf("finish_reason = %q, want stop", finishReason)
+	}
+}
+
+func TestTraeExecutorStreamDeduplicatesThoughtAndInlineToolCalls(t *testing.T) {
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"event: thought\n" +
+		"data: {\"thought\":\"<tool_call>Bash command=\\\"ls -la\\\" />\"}\n\n" +
+		"data: {\"content\":\"Bash tool_calls=[{\\\"name\\\":\\\"Bash\\\",\\\"arguments\\\":{\\\"command\\\":\\\"ls -la\\\"}}]\"}\n\n"
+	result := runTraeStreamWithBody(t, body)
+
+	var toolCalls []gjson.Result
+	finishReason := ""
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() {
+			toolCalls = append(toolCalls, tc.Array()...)
+		}
+		if fr := gjson.Get(data, "choices.0.finish_reason").String(); fr != "" {
+			finishReason = fr
+		}
+	}
+
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool call count = %d, want 1 after dedupe: %#v", len(toolCalls), toolCalls)
+	}
+	tc := toolCalls[0]
+	if got := tc.Get("function.name").String(); got != "Bash" {
+		t.Fatalf("tool name = %q, want Bash", got)
+	}
+	if got := tc.Get("function.arguments").String(); got != `{"command":"ls -la"}` {
+		t.Fatalf("tool arguments = %q, want command JSON", got)
 	}
 	if finishReason != "tool_calls" {
 		t.Fatalf("finish_reason = %q, want tool_calls", finishReason)
@@ -805,7 +1095,7 @@ func TestTraeV3CreateTaskUsesDetailModelNameForDynamicModel(t *testing.T) {
 		t.Fatalf("CredentialsFromAuth returned error: %v", err)
 	}
 
-	req, err := e.buildTraeV3CreateTaskRequest(auth, creds, "new-dynamic-model", []gjson.Result{
+	req, err := e.buildTraeV3CreateTaskRequest(auth, creds, "new-dynamic-model", nil, []gjson.Result{
 		gjson.Parse(`{"role":"user","content":"hello"}`),
 	}, cliproxyexecutor.Options{})
 	if err != nil {
@@ -840,7 +1130,7 @@ func TestTraeV3CreateTaskMetadataOverridesDetailModelConfig(t *testing.T) {
 		t.Fatalf("CredentialsFromAuth returned error: %v", err)
 	}
 
-	req, err := e.buildTraeV3CreateTaskRequest(auth, creds, "new-dynamic-model", []gjson.Result{
+	req, err := e.buildTraeV3CreateTaskRequest(auth, creds, "new-dynamic-model", nil, []gjson.Result{
 		gjson.Parse(`{"role":"user","content":"hello"}`),
 	}, cliproxyexecutor.Options{Metadata: map[string]any{
 		traeModelNameMeta: "explicit-model",
@@ -928,6 +1218,73 @@ func collectOpenAIStreamData(t *testing.T, result *cliproxyexecutor.StreamResult
 		}
 	}
 	return data
+}
+
+func runTraeClaudeStreamWithBody(t *testing.T, body string) *cliproxyexecutor.StreamResult {
+	t.Helper()
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{
+		"model":"glm-5",
+		"max_tokens":1024,
+		"stream":true,
+		"tools":[{"name":"Bash","description":"Run a shell command","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],
+		"messages":[{"role":"user","content":"list the current directory"}]
+	}`)
+	result, err := NewTraeExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "trae",
+		Attributes: map[string]string{
+			"jwt_token": "not-a-real-jwt",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "glm-5",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+	return result
+}
+
+type claudeStreamEvent struct {
+	typ  string
+	data string
+}
+
+func collectClaudeStreamEvents(t *testing.T, result *cliproxyexecutor.StreamResult) []claudeStreamEvent {
+	t.Helper()
+	var events []claudeStreamEvent
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream returned error: %v", chunk.Err)
+		}
+		var typ string
+		for _, line := range strings.Split(string(chunk.Payload), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "event:") {
+				typ = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+				continue
+			}
+			if strings.HasPrefix(line, "data:") {
+				events = append(events, claudeStreamEvent{
+					typ:  typ,
+					data: strings.TrimSpace(strings.TrimPrefix(line, "data:")),
+				})
+			}
+		}
+	}
+	return events
 }
 
 func TestAppendTraeV1RawChatModels(t *testing.T) {

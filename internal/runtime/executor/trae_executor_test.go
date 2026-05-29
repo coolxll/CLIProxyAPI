@@ -110,6 +110,290 @@ func TestTraeExecutorStreamReturnsSSEError(t *testing.T) {
 	}
 }
 
+func TestTraeThoughtToolParser(t *testing.T) {
+	tests := []struct {
+		name      string
+		chunks    []string
+		wantText  string
+		wantTools []traeThoughtToolCall
+	}{
+		{
+			name:     "single chunk",
+			chunks:   []string{`<tool_call>LS path="/tmp" />`},
+			wantText: "",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "LS",
+				Arguments: `{"path":"/tmp"}`,
+			}},
+		},
+		{
+			name:     "split chunk",
+			chunks:   []string{`<tool_call>LS path`, `="/tmp" />`},
+			wantText: "",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "LS",
+				Arguments: `{"path":"/tmp"}`,
+			}},
+		},
+		{
+			name:     "multiple parameters",
+			chunks:   []string{`<tool_call>Read path="/tmp/a.go" offset="1" limit="20" />`},
+			wantText: "",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "Read",
+				Arguments: `{"limit":"20","offset":"1","path":"/tmp/a.go"}`,
+			}},
+		},
+		{
+			name:     "mixed text",
+			chunks:   []string{`before <tool_call>SearchCodebase query="main" /> after`},
+			wantText: "before  after",
+			wantTools: []traeThoughtToolCall{{
+				Name:      "SearchCodebase",
+				Arguments: `{"query":"main"}`,
+			}},
+		},
+		{
+			name:      "no tool call",
+			chunks:    []string{"plain thought"},
+			wantText:  "plain thought",
+			wantTools: nil,
+		},
+		{
+			name:      "incomplete tool call",
+			chunks:    []string{`prefix <tool_call>LS path`},
+			wantText:  "prefix ",
+			wantTools: nil,
+		},
+		{
+			name:      "malformed tool call",
+			chunks:    []string{`<tool_call>LS path=/tmp />`},
+			wantText:  `<tool_call>LS path=/tmp />`,
+			wantTools: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var parser traeThoughtToolParser
+			var gotText strings.Builder
+			var gotTools []traeThoughtToolCall
+			for _, chunk := range tt.chunks {
+				got := parser.Append(chunk)
+				gotText.WriteString(got.Content)
+				gotTools = append(gotTools, got.ToolCalls...)
+			}
+
+			if gotText.String() != tt.wantText {
+				t.Fatalf("content = %q, want %q", gotText.String(), tt.wantText)
+			}
+			if len(gotTools) != len(tt.wantTools) {
+				t.Fatalf("tool count = %d, want %d: %#v", len(gotTools), len(tt.wantTools), gotTools)
+			}
+			for i := range tt.wantTools {
+				if gotTools[i] != tt.wantTools[i] {
+					t.Fatalf("tool[%d] = %#v, want %#v", i, gotTools[i], tt.wantTools[i])
+				}
+			}
+		})
+	}
+}
+
+func TestTraeThoughtToolParserFlushesIncompleteAtEOF(t *testing.T) {
+	var parser traeThoughtToolParser
+	got := parser.Append(`prefix <tool_call>LS path`)
+	if got.Content != "prefix " {
+		t.Fatalf("content = %q, want prefix", got.Content)
+	}
+	if len(got.ToolCalls) != 0 {
+		t.Fatalf("tool calls = %#v, want none", got.ToolCalls)
+	}
+	if trailing := parser.Flush(); trailing != `<tool_call>LS path` {
+		t.Fatalf("flush = %q, want incomplete markup", trailing)
+	}
+	if trailing := parser.Flush(); trailing != "" {
+		t.Fatalf("second flush = %q, want empty", trailing)
+	}
+}
+
+func TestTraeThoughtToolParserBoundsIncompleteToolBuffer(t *testing.T) {
+	var parser traeThoughtToolParser
+	got := parser.Append(traeThoughtToolMarker + strings.Repeat("x", maxTraeThoughtToolBuffer+1))
+	if got.Content == "" {
+		t.Fatal("expected oversized incomplete tool markup to be flushed as content")
+	}
+	if len(got.ToolCalls) != 0 {
+		t.Fatalf("tool calls = %#v, want none", got.ToolCalls)
+	}
+	if len(parser.buffer) >= maxTraeThoughtToolBuffer {
+		t.Fatalf("buffer len = %d, want bounded below %d", len(parser.buffer), maxTraeThoughtToolBuffer)
+	}
+}
+
+func TestTraeExecutorStreamConvertsThoughtToolCall(t *testing.T) {
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"data: {\"reasoning_content\":\"internal-reasoning\"}\n\n" +
+		"event: thought\n" +
+		"data: {\"thought\":\"checking <tool_call>LS path\"}\n\n" +
+		"event: thought\n" +
+		"data: {\"thought\":\"=\\\"/tmp\\\" /> after\"}\n\n"
+	result := runTraeStreamWithBody(t, body)
+
+	var content strings.Builder
+	var reasoning strings.Builder
+	var toolCalls []gjson.Result
+	finishReason := ""
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if val := gjson.Get(data, "choices.0.delta.content"); val.Exists() {
+			content.WriteString(val.String())
+		}
+		if val := gjson.Get(data, "choices.0.delta.reasoning_content"); val.Exists() {
+			reasoning.WriteString(val.String())
+		}
+		if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() {
+			toolCalls = append(toolCalls, tc.Array()...)
+		}
+		if fr := gjson.Get(data, "choices.0.finish_reason").String(); fr != "" {
+			finishReason = fr
+		}
+	}
+
+	if got := content.String(); got != "checking  after" {
+		t.Fatalf("content = %q, want thought text without tool markup", got)
+	}
+	if strings.Contains(content.String(), "<tool_call>") {
+		t.Fatalf("content leaked tool markup: %q", content.String())
+	}
+	if got := reasoning.String(); got != "internal-reasoning" {
+		t.Fatalf("reasoning = %q, want internal-reasoning", got)
+	}
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool call count = %d, want 1: %#v", len(toolCalls), toolCalls)
+	}
+	tc := toolCalls[0]
+	if got := tc.Get("function.name").String(); got != "LS" {
+		t.Fatalf("tool name = %q, want LS", got)
+	}
+	if got := tc.Get("function.arguments").String(); got != `{"path":"/tmp"}` {
+		t.Fatalf("tool arguments = %q, want path JSON", got)
+	}
+	state, err := decodeTraeToolID(tc.Get("id").String())
+	if err != nil {
+		t.Fatalf("decode thought tool id: %v", err)
+	}
+	if state.NativeID != "thought-0" || state.Name != "LS" || state.TaskID != "task-1" || state.AgentRunID != "run-1" {
+		t.Fatalf("decoded state = %#v, want thought synthetic state", state)
+	}
+	if finishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", finishReason)
+	}
+}
+
+func TestTraeExecutorStreamFlushesIncompleteThoughtToolCallAtEOF(t *testing.T) {
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"event: thought\n" +
+		"data: {\"thought\":\"prefix <tool_call>LS path\"}\n\n"
+	result := runTraeStreamWithBody(t, body)
+
+	var content strings.Builder
+	var toolCalls []gjson.Result
+	finishReason := ""
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if val := gjson.Get(data, "choices.0.delta.content"); val.Exists() {
+			content.WriteString(val.String())
+		}
+		if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() {
+			toolCalls = append(toolCalls, tc.Array()...)
+		}
+		if fr := gjson.Get(data, "choices.0.finish_reason").String(); fr != "" {
+			finishReason = fr
+		}
+	}
+
+	if got := content.String(); got != `prefix <tool_call>LS path` {
+		t.Fatalf("content = %q, want incomplete tool markup flushed at EOF", got)
+	}
+	if len(toolCalls) != 0 {
+		t.Fatalf("tool call count = %d, want 0: %#v", len(toolCalls), toolCalls)
+	}
+	if finishReason != "stop" {
+		t.Fatalf("finish_reason = %q, want stop", finishReason)
+	}
+}
+
+func TestTraeExecutorStreamKeepsLegacyToolCallEvent(t *testing.T) {
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"event: tool_call\n" +
+		"data: {\"tool_name\":\"Read\",\"toolcall_payload\":\"{\\\"path\\\":\\\"/tmp/a.go\\\"}\",\"toolcall_id\":\"native-123\"}\n\n"
+	result := runTraeStreamWithBody(t, body)
+
+	var toolCalls []gjson.Result
+	finishReason := ""
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() {
+			toolCalls = append(toolCalls, tc.Array()...)
+		}
+		if fr := gjson.Get(data, "choices.0.finish_reason").String(); fr != "" {
+			finishReason = fr
+		}
+	}
+
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool call count = %d, want 1: %#v", len(toolCalls), toolCalls)
+	}
+	tc := toolCalls[0]
+	if got := tc.Get("function.name").String(); got != "Read" {
+		t.Fatalf("tool name = %q, want Read", got)
+	}
+	state, err := decodeTraeToolID(tc.Get("id").String())
+	if err != nil {
+		t.Fatalf("decode legacy tool id: %v", err)
+	}
+	if state.NativeID != "native-123" || state.Name != "Read" {
+		t.Fatalf("decoded state = %#v, want legacy native id and name", state)
+	}
+	if finishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", finishReason)
+	}
+}
+
+func TestBuildTraeToolCommitRequestUsesEncodedToolName(t *testing.T) {
+	creds := &traeauth.TraeCredentials{UserID: "user-1"}
+	encodedID, err := encodeTraeToolID(traeToolState{
+		SessionID:      "session-1",
+		ConversationID: "conversation-1",
+		TaskID:         "task-1",
+		AgentRunID:     "run-1",
+		NativeID:       "thought-0",
+		Name:           "LS",
+	})
+	if err != nil {
+		t.Fatalf("encode tool id: %v", err)
+	}
+
+	req, err := buildTraeToolCommitRequest(creds, []gjson.Result{
+		gjson.Parse(`{"role":"tool","tool_call_id":"` + encodedID + `","name":"rewritten","content":"ok"}`),
+	})
+	if err != nil {
+		t.Fatalf("build commit request: %v", err)
+	}
+	if got := gjson.GetBytes(req.LogBody, "toolcall_results.0.toolcall_name").String(); got != "LS" {
+		t.Fatalf("toolcall_name = %q, want encoded state name LS; body=%s", got, string(req.LogBody))
+	}
+}
+
 func TestResolveTraeProtocolByModelName(t *testing.T) {
 	tests := []struct {
 		model        string
@@ -591,6 +875,59 @@ func modelIDs(models []*registry.ModelInfo) []string {
 		}
 	}
 	return ids
+}
+
+func runTraeStreamWithBody(t *testing.T, body string) *cliproxyexecutor.StreamResult {
+	t.Helper()
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"glm-5","messages":[{"role":"user","content":"list files"}],"stream":true}`)
+	result, err := NewTraeExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "trae",
+		Attributes: map[string]string{
+			"jwt_token": "not-a-real-jwt",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "glm-5",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+	return result
+}
+
+func collectOpenAIStreamData(t *testing.T, result *cliproxyexecutor.StreamResult) []string {
+	t.Helper()
+	var data []string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream returned error: %v", chunk.Err)
+		}
+		payload := strings.TrimSpace(string(chunk.Payload))
+		if payload == "[DONE]" || gjson.Valid(payload) {
+			data = append(data, payload)
+			continue
+		}
+		for _, line := range strings.Split(payload, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+	}
+	return data
 }
 
 func TestAppendTraeV1RawChatModels(t *testing.T) {

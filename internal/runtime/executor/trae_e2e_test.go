@@ -506,14 +506,15 @@ func TestTraeE2E_V3_DebugRawResponse(t *testing.T) {
 	}
 
 	e := NewTraeExecutor(nil)
+	model := traeE2EV3DebugModel()
 	rawRequest := []byte(`{
-		"model": "glm-5",
+		"model": "` + model + `",
 		"messages": [
 			{"role": "user", "content": "Reply with exactly: DEBUG_V3_OK"}
 		]
 	}`)
 
-	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, "glm-5",
+	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model,
 		gjson.GetBytes(rawRequest, "messages").Array(),
 		cliproxyexecutor.Options{OriginalRequest: rawRequest},
 	)
@@ -541,13 +542,14 @@ func TestTraeE2E_V3_DebugRawResponse(t *testing.T) {
 	}
 	defer httpResp.Body.Close()
 
-	t.Logf("V3 debug response status: %d", httpResp.StatusCode)
+	t.Logf("V3 debug model=%s response status: %d", model, httpResp.StatusCode)
 	if httpResp.StatusCode != 200 {
 		body, _ := io.ReadAll(httpResp.Body)
 		t.Fatalf("V3 debug error %d: %s", httpResp.StatusCode, string(body))
 	}
 
 	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	lineCount := 0
 	var currentEvent string
 	for scanner.Scan() {
@@ -572,7 +574,7 @@ func TestTraeE2E_V3_DebugRawResponse(t *testing.T) {
 			currentEvent = ""
 		}
 	}
-	t.Logf("V3 debug total data lines: %d", lineCount)
+	t.Logf("V3 debug model=%s total data lines: %d", model, lineCount)
 	if lineCount == 0 {
 		t.Fatal("V3 debug received 0 data lines")
 	}
@@ -589,15 +591,15 @@ func TestTraeE2E_V3_DebugRawToolCall(t *testing.T) {
 	}
 
 	e := NewTraeExecutor(nil)
-	// Use a prompt that will trigger a tool call (e.g., asking to search code)
+	model := traeE2EV3DebugModel()
 	rawRequest := []byte(`{
-		"model": "glm-5",
+		"model": "` + model + `",
 		"messages": [
-			{"role": "user", "content": "Search for the file main.go in the current workspace and tell me what it contains. Use the search_codebase tool."}
+			{"role": "user", "content": "Use the LS tool to list the current workspace directory. Do not answer from memory; call the tool first."}
 		]
 	}`)
 
-	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, "glm-5",
+	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model,
 		gjson.GetBytes(rawRequest, "messages").Array(),
 		cliproxyexecutor.Options{OriginalRequest: rawRequest},
 	)
@@ -625,17 +627,19 @@ func TestTraeE2E_V3_DebugRawToolCall(t *testing.T) {
 	}
 	defer httpResp.Body.Close()
 
-	t.Logf("V3 tool call debug response status: %d", httpResp.StatusCode)
+	t.Logf("V3 tool call debug model=%s response status: %d", model, httpResp.StatusCode)
 	if httpResp.StatusCode != 200 {
 		body, _ := io.ReadAll(httpResp.Body)
 		t.Fatalf("V3 tool call debug error %d: %s", httpResp.StatusCode, string(body))
 	}
 
 	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	lineCount := 0
 	var currentEvent string
 	var events []string
 	var dataLines []string
+	var toolCallEvents, toolCallFields, thoughtEvents, enqMarkers, xmlParameterMarkers int
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -654,9 +658,26 @@ func TestTraeE2E_V3_DebugRawToolCall(t *testing.T) {
 			}
 			lineCount++
 			dataLines = append(dataLines, data)
+			if currentEvent == "tool_call" {
+				toolCallEvents++
+			}
+			if currentEvent == "thought" {
+				thoughtEvents++
+			}
+			if strings.Contains(data, "tool_name") || strings.Contains(data, "toolcall") || strings.Contains(data, "arguments") {
+				toolCallFields++
+			}
+			if strings.Contains(data, "\x05") || strings.Contains(data, "\\u0005") {
+				enqMarkers++
+			}
+			if strings.Contains(data, "<parameter name=") {
+				xmlParameterMarkers++
+			}
 			// Log all lines for tool call analysis (no truncation limit for key events)
-			if currentEvent == "tool_call" || strings.Contains(data, "tool_name") || strings.Contains(data, "toolcall") {
+			if currentEvent == "tool_call" || strings.Contains(data, "tool_name") || strings.Contains(data, "toolcall") || strings.Contains(data, "arguments") {
 				t.Logf("  DATA[%d] (event=%s) [TOOL]: %s", lineCount, currentEvent, data)
+			} else if strings.Contains(data, "\x05") || strings.Contains(data, "\\u0005") || strings.Contains(data, "<parameter name=") {
+				t.Logf("  DATA[%d] (event=%s) [XML?]: %q", lineCount, currentEvent, truncate(data, 2000))
 			} else if currentEvent == "thought" || currentEvent == "turn_completion" || currentEvent == "required_context" || currentEvent == "history" || currentEvent == "token_usage" {
 				t.Logf("  DATA[%d] (event=%s): %s", lineCount, currentEvent, truncate(data, 1000))
 			} else if lineCount <= 30 {
@@ -665,8 +686,13 @@ func TestTraeE2E_V3_DebugRawToolCall(t *testing.T) {
 			currentEvent = ""
 		}
 	}
-	t.Logf("V3 tool call debug total data lines: %d", lineCount)
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan V3 tool call debug stream: %v", err)
+	}
+	t.Logf("V3 tool call debug model=%s total data lines: %d", model, lineCount)
 	t.Logf("V3 tool call debug events seen: %v", events)
+	t.Logf("V3 tool call debug markers: tool_call_events=%d tool_call_fields=%d thought_events=%d enq_markers=%d xml_parameter_markers=%d",
+		toolCallEvents, toolCallFields, thoughtEvents, enqMarkers, xmlParameterMarkers)
 
 	// Check if we saw a tool_call event
 	hasToolCall := false
@@ -690,6 +716,197 @@ func TestTraeE2E_V3_DebugRawToolCall(t *testing.T) {
 	}
 }
 
+func traeE2EV3DebugModel() string {
+	if model := strings.TrimSpace(os.Getenv("TRAE_E2E_V3_MODEL")); model != "" {
+		return model
+	}
+	return "glm-4.7"
+}
+
+func TestTraeE2E_V3_MinimalThoughtToolCommit(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	creds, err := traeauth.CredentialsFromAuth(auth)
+	if err != nil {
+		t.Fatalf("credentials: %v", err)
+	}
+
+	e := NewTraeExecutor(nil)
+	model := traeE2EV3DebugModel()
+	rawRequest := []byte(`{
+		"model": "` + model + `",
+		"messages": [
+			{"role": "user", "content": "Use the LS tool to list the current workspace directory. Do not answer from memory; call the tool first."}
+		]
+	}`)
+
+	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, model,
+		gjson.GetBytes(rawRequest, "messages").Array(),
+		cliproxyexecutor.Options{OriginalRequest: rawRequest},
+	)
+	if err != nil {
+		t.Fatalf("build v3 request: %v", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, build.TargetURL, bytes.NewReader(build.RequestBody))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	setTraeCommonHeaders(httpReq.Header, creds)
+	httpReq.Header.Set("X-Ide-Session-Id", build.SessionID)
+	httpReq.Header.Set("X-Request-Pin", build.RequestPin)
+	httpReq.Header.Set("X-Requested-At", strconv.FormatInt(build.RequestAt, 10))
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Cache-Control", "no-cache")
+
+	httpClient := &http.Client{Timeout: 120 * time.Second}
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("create task http do: %v", err)
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode != 200 {
+		body, _ := io.ReadAll(httpResp.Body)
+		t.Fatalf("create task error %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	taskID := ""
+	agentRunID := ""
+	toolName := ""
+	toolMarkup := ""
+	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	currentEvent := ""
+	for scanner.Scan() {
+		trimmed := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(trimmed, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if !gjson.Valid(data) {
+			continue
+		}
+		if currentEvent == "task_created" {
+			taskID = gjson.Get(data, "task_id").String()
+			agentRunID = gjson.Get(data, "agent_run_id").String()
+		}
+		if currentEvent == "thought" {
+			thought := gjson.Get(data, "thought").String()
+			if thought != "" {
+				t.Logf("thought: %s", truncate(thought, 500))
+			}
+			if idx := strings.Index(thought, "<tool_call>"); idx >= 0 {
+				toolMarkup = thought[idx:]
+				toolName = parseTraeThoughtToolNameForTest(toolMarkup)
+			}
+		}
+		if currentEvent == "required_context" && toolName != "" {
+			break
+		}
+		currentEvent = ""
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan create task stream: %v", err)
+	}
+	if taskID == "" || agentRunID == "" {
+		t.Fatalf("missing task identifiers: task_id=%q agent_run_id=%q", taskID, agentRunID)
+	}
+	if toolName == "" {
+		t.Fatalf("did not observe thought tool call; last markup=%q", toolMarkup)
+	}
+	t.Logf("observed thought tool call: name=%s markup=%q", toolName, toolMarkup)
+
+	state := traeToolState{
+		SessionID:      build.SessionID,
+		ConversationID: build.ConversationID,
+		TaskID:         taskID,
+		AgentRunID:     agentRunID,
+		NativeID:       "synthetic-0",
+		Name:           toolName,
+	}
+	encodedID, err := encodeTraeToolID(state)
+	if err != nil {
+		t.Fatalf("encode synthetic tool id: %v", err)
+	}
+	toolMessages := []gjson.Result{
+		gjson.Parse(fmt.Sprintf(`{"role":"tool","tool_call_id":"%s","name":"%s","content":"README.md\ncmd\ninternal\nsdk\n"}`,
+			encodedID, toolName)),
+	}
+	commitBuild, err := buildTraeToolCommitRequest(creds, toolMessages)
+	if err != nil {
+		t.Fatalf("build commit request: %v", err)
+	}
+	t.Logf("commit log body: %s", string(commitBuild.LogBody))
+
+	commitReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, commitBuild.TargetURL, bytes.NewReader(commitBuild.RequestBody))
+	if err != nil {
+		t.Fatalf("new commit request: %v", err)
+	}
+	commitReq.Header.Set("Content-Type", "application/json")
+	setTraeCommonHeaders(commitReq.Header, creds)
+	commitReq.Header.Set("X-Ide-Session-Id", commitBuild.SessionID)
+	commitReq.Header.Set("X-Request-Pin", commitBuild.RequestPin)
+	commitReq.Header.Set("X-Requested-At", strconv.FormatInt(commitBuild.RequestAt, 10))
+	commitReq.Header.Set("Accept", "text/event-stream")
+	commitReq.Header.Set("Cache-Control", "no-cache")
+
+	commitResp, err := httpClient.Do(commitReq)
+	if err != nil {
+		t.Fatalf("commit http do: %v", err)
+	}
+	defer commitResp.Body.Close()
+	t.Logf("commit response status: %d", commitResp.StatusCode)
+	if commitResp.StatusCode != 200 {
+		body, _ := io.ReadAll(commitResp.Body)
+		t.Fatalf("commit error %d: %s", commitResp.StatusCode, string(body))
+	}
+
+	commitScanner := bufio.NewScanner(commitResp.Body)
+	commitScanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	lineCount := 0
+	currentEvent = ""
+	for commitScanner.Scan() {
+		trimmed := strings.TrimSpace(commitScanner.Text())
+		if strings.HasPrefix(trimmed, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "data:") {
+			lineCount++
+			data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if lineCount <= 20 {
+				t.Logf("commit DATA[%d] event=%s: %s", lineCount, currentEvent, truncate(data, 800))
+			}
+			currentEvent = ""
+		}
+	}
+	if err := commitScanner.Err(); err != nil {
+		t.Fatalf("scan commit stream: %v", err)
+	}
+	if lineCount == 0 {
+		t.Fatal("commit returned no SSE data")
+	}
+}
+
+func parseTraeThoughtToolNameForTest(markup string) string {
+	rest := strings.TrimSpace(strings.TrimPrefix(markup, "<tool_call>"))
+	if rest == "" {
+		return ""
+	}
+	end := len(rest)
+	for i, r := range rest {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '/' || r == '>' {
+			end = i
+			break
+		}
+	}
+	return rest[:end]
+}
+
 // TestTraeE2E_V3_ToolCallViaExecutor tests the full v3 tool call flow through
 // the executor's ExecuteStream, verifying that tool calls are properly translated
 // into OpenAI tool_calls format in the SSE stream.
@@ -698,17 +915,18 @@ func TestTraeE2E_V3_ToolCallViaExecutor(t *testing.T) {
 	e := NewTraeExecutor(nil)
 	ctx := context.Background()
 
+	model := traeE2EV3DebugModel()
 	// Use a prompt that will trigger a tool call
 	rawRequest := []byte(`{
-		"model": "glm-5",
+		"model": "` + model + `",
 		"messages": [
-			{"role": "user", "content": "Search for the file main.go in the current workspace and tell me what it contains. Use the search_codebase tool."}
+			{"role": "user", "content": "Use the LS tool to list the current workspace directory. Do not answer from memory; call the tool first."}
 		],
 		"stream": true
 	}`)
 
 	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
-		Model:   "glm-5",
+		Model:   model,
 		Payload: rawRequest,
 	}, cliproxyexecutor.Options{
 		Stream:          true,
@@ -789,17 +1007,18 @@ func TestTraeE2E_V3_ToolCommitFlow(t *testing.T) {
 	e := NewTraeExecutor(nil)
 	ctx := context.Background()
 
+	model := traeE2EV3DebugModel()
 	// Step 1: Send request that should trigger a tool call
 	rawRequest := []byte(`{
-		"model": "glm-5",
+		"model": "` + model + `",
 		"messages": [
-			{"role": "user", "content": "List the files in the current directory. Use the list_dir tool."}
+			{"role": "user", "content": "Use the LS tool to list the current workspace directory. Do not answer from memory; call the tool first."}
 		],
 		"stream": true
 	}`)
 
 	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
-		Model:   "glm-5",
+		Model:   model,
 		Payload: rawRequest,
 	}, cliproxyexecutor.Options{
 		Stream:          true,

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -284,6 +285,118 @@ type openaiToolCall struct {
 type openaiFunction struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+}
+
+type traeThoughtToolCall struct {
+	Name      string
+	Arguments string
+}
+
+type traeThoughtParseResult struct {
+	Content   string
+	ToolCalls []traeThoughtToolCall
+}
+
+type traeThoughtToolParser struct {
+	buffer string
+}
+
+const traeThoughtToolMarker = "<tool_call>"
+const maxTraeThoughtToolBuffer = 8192
+
+func (p *traeThoughtToolParser) Append(chunk string) traeThoughtParseResult {
+	p.buffer += chunk
+	var result traeThoughtParseResult
+
+	for {
+		idx := strings.Index(p.buffer, traeThoughtToolMarker)
+		if idx < 0 {
+			flushLen := len(p.buffer) - trailingToolMarkerPrefixLen(p.buffer)
+			if flushLen > 0 {
+				result.Content += p.buffer[:flushLen]
+				p.buffer = p.buffer[flushLen:]
+			}
+			return result
+		}
+
+		if idx > 0 {
+			result.Content += p.buffer[:idx]
+			p.buffer = p.buffer[idx:]
+		}
+
+		closeIdx := strings.Index(p.buffer, "/>")
+		if closeIdx < 0 {
+			if len(p.buffer) > maxTraeThoughtToolBuffer {
+				flushLen := len(p.buffer) - trailingToolMarkerPrefixLen(p.buffer)
+				if flushLen > 0 {
+					result.Content += p.buffer[:flushLen]
+					p.buffer = p.buffer[flushLen:]
+				}
+			}
+			return result
+		}
+
+		markup := p.buffer[:closeIdx+len("/>")]
+		toolCall, ok := parseTraeThoughtToolMarkup(markup)
+		if !ok {
+			result.Content += markup
+			p.buffer = p.buffer[closeIdx+len("/>"):]
+			continue
+		}
+		result.ToolCalls = append(result.ToolCalls, toolCall)
+		p.buffer = p.buffer[closeIdx+len("/>"):]
+	}
+}
+
+func (p *traeThoughtToolParser) Flush() string {
+	content := p.buffer
+	p.buffer = ""
+	return content
+}
+
+func trailingToolMarkerPrefixLen(s string) int {
+	maxLen := len(traeThoughtToolMarker) - 1
+	if len(s) < maxLen {
+		maxLen = len(s)
+	}
+	for n := maxLen; n > 0; n-- {
+		if strings.HasSuffix(s, traeThoughtToolMarker[:n]) {
+			return n
+		}
+	}
+	return 0
+}
+
+func parseTraeThoughtToolMarkup(markup string) (traeThoughtToolCall, bool) {
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(markup, traeThoughtToolMarker), "/>"))
+	if inner == "" || strings.HasPrefix(inner, "<") {
+		return traeThoughtToolCall{}, false
+	}
+
+	xmlSnippet := "<" + inner + "/>"
+	decoder := xml.NewDecoder(strings.NewReader(xmlSnippet))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return traeThoughtToolCall{}, false
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		args := make(map[string]string, len(start.Attr))
+		for _, attr := range start.Attr {
+			args[attr.Name.Local] = attr.Value
+		}
+		argBytes, err := json.Marshal(args)
+		if err != nil {
+			return traeThoughtToolCall{}, false
+		}
+		return traeThoughtToolCall{
+			Name:      start.Name.Local,
+			Arguments: string(argBytes),
+		}, true
+	}
 }
 
 type openaiChoice struct {
@@ -615,8 +728,10 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		taskID := "unknown"
 		agentRunID := "unknown"
 		tcIndex := 0
+		thoughtToolIndex := 0
 		hasToolCall := false
 		finishReason := "stop"
+		var thoughtToolParser traeThoughtToolParser
 
 		inQueue := false
 		queueDone := make(chan struct{})
@@ -754,9 +869,40 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			} else if val := gjson.Get(dataStr, "reasoning_content"); val.Exists() && val.Type == gjson.String {
 				reasoning = val.String()
 			}
+
+			var toolCalls []openaiToolCall
 			if evt == "thought" {
 				if val := gjson.Get(dataStr, "thought"); val.Exists() && val.Type == gjson.String {
-					content += val.String()
+					parsed := thoughtToolParser.Append(val.String())
+					content += parsed.Content
+					for _, toolCall := range parsed.ToolCalls {
+						nativeID := fmt.Sprintf("thought-%d", thoughtToolIndex)
+						thoughtToolIndex++
+						state := traeToolState{
+							SessionID:      build.SessionID,
+							ConversationID: build.ConversationID,
+							TaskID:         taskID,
+							AgentRunID:     agentRunID,
+							NativeID:       nativeID,
+							Name:           toolCall.Name,
+						}
+						encodedID, errEncode := encodeTraeToolID(state)
+						if errEncode != nil {
+							log.Errorf("trae executor: encode thought tool id error: %v", errEncode)
+							continue
+						}
+						hasToolCall = true
+						toolCalls = append(toolCalls, openaiToolCall{
+							Index: tcIndex,
+							ID:    encodedID,
+							Type:  "function",
+							Function: openaiFunction{
+								Name:      toolCall.Name,
+								Arguments: toolCall.Arguments,
+							},
+						})
+						tcIndex++
+					}
 				}
 			}
 
@@ -799,7 +945,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			toolName := ""
 			toolPayload := ""
 			nativeToolCallID := ""
-			if evt == "tool_call" || gjson.Get(dataStr, "tool_name").Exists() {
+			if evt == "tool_call" || gjson.Get(dataStr, "tool_name").Exists() || gjson.Get(dataStr, "toolcall_name").Exists() {
 				toolName = firstNonEmpty(
 					gjson.Get(dataStr, "tool_name").String(),
 					gjson.Get(dataStr, "toolcall_name").String(),
@@ -814,15 +960,16 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				finishReason = val.String()
 			}
 
-			if inQueue && (content != "" || reasoning != "" || toolName != "") {
+			if inQueue && (content != "" || reasoning != "" || toolName != "" || len(toolCalls) > 0) {
 				inQueue = false
 				closeQueueHeartbeat()
 			}
 
-			if content != "" || reasoning != "" || toolName != "" {
+			if content != "" || reasoning != "" || toolName != "" || len(toolCalls) > 0 {
 				delta := openaiDelta{
 					Content:          content,
 					ReasoningContent: reasoning,
+					ToolCalls:        toolCalls,
 				}
 
 				if toolName != "" {
@@ -836,17 +983,15 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 						Name:           toolName,
 					}
 					encodedID, _ := encodeTraeToolID(state)
-					delta.ToolCalls = []openaiToolCall{
-						{
-							Index: tcIndex,
-							ID:    encodedID,
-							Type:  "function",
-							Function: openaiFunction{
-								Name:      toolName,
-								Arguments: toolPayload,
-							},
+					delta.ToolCalls = append(delta.ToolCalls, openaiToolCall{
+						Index: tcIndex,
+						ID:    encodedID,
+						Type:  "function",
+						Function: openaiFunction{
+							Name:      toolName,
+							Arguments: toolPayload,
 						},
-					}
+					})
 					tcIndex++
 				}
 
@@ -885,6 +1030,35 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			case <-ctx.Done():
 			}
 			return
+		}
+
+		if trailingThought := thoughtToolParser.Flush(); trailingThought != "" {
+			trailingOpenAIChunk := openaiChunk{
+				ID:      chatID,
+				Object:  "chat.completion.chunk",
+				Created: time.Now().Unix(),
+				Model:   req.Model,
+				Choices: []openaiChoice{
+					{
+						Index: 0,
+						Delta: openaiDelta{
+							Content: trailingThought,
+						},
+					},
+				},
+			}
+
+			trailingJSON, _ := json.Marshal(trailingOpenAIChunk)
+			trailingChunkBytes := []byte("data: " + string(trailingJSON))
+
+			translatedChunks := sdktranslator.TranslateStream(ctx, openaiFormat, from, req.Model, opts.OriginalRequest, nil, trailingChunkBytes, &translateParam)
+			for _, tc := range translatedChunks {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: tc}:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 
 		// Stream termination chunk
@@ -968,7 +1142,7 @@ func buildTraeToolCommitRequest(creds *traeauth.TraeCredentials, toolMessages []
 		toolcallResults = append(toolcallResults, TraeToolCallResult{
 			AgentRunID:           state.AgentRunID,
 			ToolCallID:           state.NativeID,
-			ToolCallName:         tm.Get("name").String(),
+			ToolCallName:         firstNonEmpty(state.Name, tm.Get("name").String()),
 			ToolCallResp:         tm.Get("content").String(),
 			ToolCallStatus:       "success",
 			ToolCallErrorMessage: "",

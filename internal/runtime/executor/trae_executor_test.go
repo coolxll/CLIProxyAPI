@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -174,6 +175,20 @@ func TestAppendTraeNoThinkingModel(t *testing.T) {
 	if got := models[1].ID; got != "no_thinking_model" {
 		t.Fatalf("appended model ID = %q, want no_thinking_model", got)
 	}
+	if slices.Contains(models[1].SupportedParameters, "tools") {
+		t.Fatalf("no_thinking_model should not advertise tools: %#v", models[1].SupportedParameters)
+	}
+
+	existing := appendTraeNoThinkingModel([]*registry.ModelInfo{{
+		ID:                  "no_thinking_model",
+		SupportedParameters: []string{"tools", "temperature"},
+	}}, 123)
+	if slices.Contains(existing[0].SupportedParameters, "tools") {
+		t.Fatalf("existing no_thinking_model should not advertise tools: %#v", existing[0].SupportedParameters)
+	}
+	if !slices.Contains(existing[0].SupportedParameters, "temperature") {
+		t.Fatalf("existing supported parameter should be preserved: %#v", existing[0].SupportedParameters)
+	}
 }
 
 func TestBuildTraeRawChatRequestV1(t *testing.T) {
@@ -196,6 +211,40 @@ func TestBuildTraeRawChatRequestV1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decrypt v1 raw chat payload: %v", err)
 	}
+	if got := gjson.GetBytes(plain, "0.content.0.text").String(); got != "hello" {
+		t.Fatalf("v1 encrypted message text = %q, want hello; payload=%s", got, string(plain))
+	}
+}
+
+func TestBuildTraeRawChatRequestV1ToolsInOuterEnvelope(t *testing.T) {
+	// V1 raw chat: tools must be plaintext in the outer envelope, NOT inside the encrypted payload.
+	req, err := buildTraeRawChatRequest(traeProtocolV1, "deepseek-R1", []byte(`{
+		"model":"deepseek-R1",
+		"messages":[{"role":"user","content":"hello"}],
+		"tools":[{"type":"function","function":{"name":"bash","description":"Run a command","parameters":{"type":"object"}}}]
+	}`), cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("buildTraeRawChatRequest v1 error: %v", err)
+	}
+
+	// Tools should appear in the outer envelope as plaintext.
+	outerTools := gjson.GetBytes(req.RequestBody, "tools")
+	if !outerTools.Exists() || !outerTools.IsArray() || len(outerTools.Array()) == 0 {
+		t.Fatalf("v1 outer envelope should contain tools; body=%s", string(req.RequestBody))
+	}
+	if got := outerTools.Array()[0].Get("function.name").String(); got != "bash" {
+		t.Fatalf("v1 outer envelope tool name = %q, want bash", got)
+	}
+
+	plain, err := traeenc.DecryptMessage(gjson.GetBytes(req.RequestBody, "message").String(), req.RequestPin, req.RequestAt)
+	if err != nil {
+		t.Fatalf("decrypt v1 raw chat payload: %v", err)
+	}
+	// The decrypted payload should be a plain messages array, NOT a {messages, tools} object.
+	if gjson.GetBytes(plain, "tools").Exists() {
+		t.Fatalf("v1 encrypted payload should NOT contain tools; payload=%s", string(plain))
+	}
+	// It should still contain the messages.
 	if got := gjson.GetBytes(plain, "0.content.0.text").String(); got != "hello" {
 		t.Fatalf("v1 encrypted message text = %q, want hello; payload=%s", got, string(plain))
 	}
@@ -231,6 +280,35 @@ func TestBuildTraeRawChatRequestV2NoThinkingModel(t *testing.T) {
 		t.Fatalf("decrypt v2 raw chat payload: %v", err)
 	}
 	if got := gjson.GetBytes(plain, "1.content.0.text").String(); got != "hello" {
+		t.Fatalf("v2 encrypted message text = %q, want hello; payload=%s", got, string(plain))
+	}
+}
+
+func TestBuildTraeRawChatRequestV2OmitsTools(t *testing.T) {
+	// V2 raw chat does not support tools; they must be omitted from both inner and outer payloads.
+	req, err := buildTraeRawChatRequest(traeProtocolV2, "no_thinking_model", []byte(`{
+		"model":"no_thinking_model",
+		"messages":[{"role":"user","content":"hello"}],
+		"tools":[{"type":"function","function":{"name":"bash","description":"Run a command","parameters":{"type":"object"}}}]
+	}`), cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("buildTraeRawChatRequest v2 error: %v", err)
+	}
+
+	// Outer envelope should NOT contain tools.
+	if gjson.GetBytes(req.RequestBody, "tools").Exists() {
+		t.Fatalf("v2 outer envelope should NOT contain tools; body=%s", string(req.RequestBody))
+	}
+
+	plain, err := traeenc.DecryptMessage(gjson.GetBytes(req.RequestBody, "message").String(), req.RequestPin, req.RequestAt)
+	if err != nil {
+		t.Fatalf("decrypt v2 raw chat payload: %v", err)
+	}
+	// Inner payload should NOT contain tools.
+	if gjson.GetBytes(plain, "tools").Exists() {
+		t.Fatalf("v2 encrypted payload should NOT contain tools; payload=%s", string(plain))
+	}
+	if got := gjson.GetBytes(plain, "0.content.0.text").String(); got != "hello" {
 		t.Fatalf("v2 encrypted message text = %q, want hello; payload=%s", got, string(plain))
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -574,6 +575,382 @@ func TestTraeE2E_V3_DebugRawResponse(t *testing.T) {
 	t.Logf("V3 debug total data lines: %d", lineCount)
 	if lineCount == 0 {
 		t.Fatal("V3 debug received 0 data lines")
+	}
+}
+
+// TestTraeE2E_V3_DebugRawToolCall captures the raw SSE format when a v3 model
+// calls a tool. This helps us understand the exact event/field structure for
+// v3 tool calls (tool_name vs toolcall_name, toolcall_payload vs arguments, etc.)
+func TestTraeE2E_V3_DebugRawToolCall(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	creds, err := traeauth.CredentialsFromAuth(auth)
+	if err != nil {
+		t.Fatalf("credentials: %v", err)
+	}
+
+	e := NewTraeExecutor(nil)
+	// Use a prompt that will trigger a tool call (e.g., asking to search code)
+	rawRequest := []byte(`{
+		"model": "glm-5",
+		"messages": [
+			{"role": "user", "content": "Search for the file main.go in the current workspace and tell me what it contains. Use the search_codebase tool."}
+		]
+	}`)
+
+	build, err := e.buildTraeV3CreateTaskRequest(auth, creds, "glm-5",
+		gjson.GetBytes(rawRequest, "messages").Array(),
+		cliproxyexecutor.Options{OriginalRequest: rawRequest},
+	)
+	if err != nil {
+		t.Fatalf("build v3 request: %v", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, build.TargetURL, bytes.NewReader(build.RequestBody))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	setTraeCommonHeaders(httpReq.Header, creds)
+	httpReq.Header.Set("X-Ide-Session-Id", build.SessionID)
+	httpReq.Header.Set("X-Request-Pin", build.RequestPin)
+	httpReq.Header.Set("X-Requested-At", strconv.FormatInt(build.RequestAt, 10))
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Cache-Control", "no-cache")
+
+	httpClient := &http.Client{Timeout: 120 * time.Second}
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("http do: %v", err)
+	}
+	defer httpResp.Body.Close()
+
+	t.Logf("V3 tool call debug response status: %d", httpResp.StatusCode)
+	if httpResp.StatusCode != 200 {
+		body, _ := io.ReadAll(httpResp.Body)
+		t.Fatalf("V3 tool call debug error %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	scanner := bufio.NewScanner(httpResp.Body)
+	lineCount := 0
+	var currentEvent string
+	var events []string
+	var dataLines []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+			events = append(events, currentEvent)
+			t.Logf("  EVENT: %s", currentEvent)
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if data == "" {
+				continue
+			}
+			lineCount++
+			dataLines = append(dataLines, data)
+			// Log all lines for tool call analysis (no truncation limit for key events)
+			if currentEvent == "tool_call" || strings.Contains(data, "tool_name") || strings.Contains(data, "toolcall") {
+				t.Logf("  DATA[%d] (event=%s) [TOOL]: %s", lineCount, currentEvent, data)
+			} else if currentEvent == "thought" || currentEvent == "turn_completion" || currentEvent == "required_context" || currentEvent == "history" || currentEvent == "token_usage" {
+				t.Logf("  DATA[%d] (event=%s): %s", lineCount, currentEvent, truncate(data, 1000))
+			} else if lineCount <= 30 {
+				t.Logf("  DATA[%d] (event=%s): %s", lineCount, currentEvent, truncate(data, 500))
+			}
+			currentEvent = ""
+		}
+	}
+	t.Logf("V3 tool call debug total data lines: %d", lineCount)
+	t.Logf("V3 tool call debug events seen: %v", events)
+
+	// Check if we saw a tool_call event
+	hasToolCall := false
+	for _, d := range dataLines {
+		if gjson.Valid(d) {
+			if gjson.Get(d, "tool_name").Exists() || gjson.Get(d, "toolcall_name").Exists() {
+				hasToolCall = true
+				t.Logf("  TOOL CALL DETECTED: tool_name=%s toolcall_name=%s toolcall_payload=%s toolcall_id=%s arguments=%s",
+					gjson.Get(d, "tool_name").String(),
+					gjson.Get(d, "toolcall_name").String(),
+					truncate(gjson.Get(d, "toolcall_payload").String(), 200),
+					gjson.Get(d, "toolcall_id").String(),
+					truncate(gjson.Get(d, "arguments").String(), 200),
+				)
+			}
+		}
+	}
+	t.Logf("V3 tool call detected: %v", hasToolCall)
+	if lineCount == 0 {
+		t.Fatal("V3 tool call debug received 0 data lines")
+	}
+}
+
+// TestTraeE2E_V3_ToolCallViaExecutor tests the full v3 tool call flow through
+// the executor's ExecuteStream, verifying that tool calls are properly translated
+// into OpenAI tool_calls format in the SSE stream.
+func TestTraeE2E_V3_ToolCallViaExecutor(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+
+	// Use a prompt that will trigger a tool call
+	rawRequest := []byte(`{
+		"model": "glm-5",
+		"messages": [
+			{"role": "user", "content": "Search for the file main.go in the current workspace and tell me what it contains. Use the search_codebase tool."}
+		],
+		"stream": true
+	}`)
+
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "glm-5",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var rawChunks []string
+	var toolCalls []string
+	var finishReason string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+		requireOpenAIStreamPayload(t, chunk.Payload)
+		rawChunks = append(rawChunks, string(chunk.Payload))
+
+		dataStr := string(chunk.Payload)
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() {
+			for _, item := range tc.Array() {
+				toolCalls = append(toolCalls, item.String())
+			}
+		}
+		if fr := gjson.Get(dataStr, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
+			finishReason = fr.String()
+		}
+	}
+
+	t.Logf("V3 tool call via executor got %d raw chunks", len(rawChunks))
+	for i, c := range rawChunks {
+		t.Logf("  raw[%d]: %s", i, truncate(c, 300))
+	}
+	t.Logf("V3 tool calls found: %d", len(toolCalls))
+	for i, tc := range toolCalls {
+		t.Logf("  tool_call[%d]: %s", i, tc)
+	}
+	t.Logf("V3 finish_reason: %s", finishReason)
+
+	if len(toolCalls) > 0 {
+		t.Logf("V3 tool call flow works! Model called a tool and executor translated it to OpenAI format.")
+		// Verify the tool call ID is a trae_ base64-encoded state
+		firstTC := toolCalls[0]
+		tcID := gjson.Get(firstTC, "id").String()
+		if !strings.HasPrefix(tcID, "trae_") {
+			t.Fatalf("tool call ID should start with 'trae_', got: %q", tcID)
+		}
+		// Verify we can decode the tool state
+		state, err := decodeTraeToolID(tcID)
+		if err != nil {
+			t.Fatalf("decode tool call ID: %v", err)
+		}
+		t.Logf("  decoded tool state: session_id=%s conversation_id=%s task_id=%s agent_run_id=%s native_id=%s name=%s",
+			state.SessionID, state.ConversationID, state.TaskID, state.AgentRunID, state.NativeID, state.Name)
+	} else {
+		t.Logf("V3 model did not call a tool in this run (may have answered directly). This is acceptable.")
+	}
+}
+
+// TestTraeE2E_V3_ToolCommitFlow tests the full v3 tool call → commit → continue flow.
+// Step 1: Send a request that triggers a tool call
+// Step 2: If a tool call is received, commit a mock result
+// Step 3: Verify the model continues after the tool result
+func TestTraeE2E_V3_ToolCommitFlow(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	creds, err := traeauth.CredentialsFromAuth(auth)
+	if err != nil {
+		t.Fatalf("credentials: %v", err)
+	}
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+
+	// Step 1: Send request that should trigger a tool call
+	rawRequest := []byte(`{
+		"model": "glm-5",
+		"messages": [
+			{"role": "user", "content": "List the files in the current directory. Use the list_dir tool."}
+		],
+		"stream": true
+	}`)
+
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "glm-5",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("Step 1 ExecuteStream error: %v", err)
+	}
+
+	var toolCallIDs []string
+	var toolCallNames []string
+	var toolCallArguments []string
+	var finishReason string
+	var content strings.Builder
+
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("Step 1 stream error: %v", chunk.Err)
+		}
+		dataStr := string(chunk.Payload)
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() {
+			for _, item := range tc.Array() {
+				toolCallIDs = append(toolCallIDs, item.Get("id").String())
+				toolCallNames = append(toolCallNames, item.Get("function.name").String())
+				toolCallArguments = append(toolCallArguments, item.Get("function.arguments").String())
+			}
+		}
+		if c := gjson.Get(dataStr, "choices.0.delta.content"); c.Exists() && c.String() != "" {
+			content.WriteString(c.String())
+		}
+		if fr := gjson.Get(dataStr, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
+			finishReason = fr.String()
+		}
+	}
+
+	t.Logf("Step 1: tool_calls=%d names=%v finish_reason=%s content_len=%d",
+		len(toolCallIDs), toolCallNames, finishReason, content.Len())
+
+	if len(toolCallIDs) == 0 {
+		t.Skip("V3 model did not call a tool; cannot test commit flow. Model may have answered directly.")
+	}
+
+	// Step 2: Commit a mock tool result
+	firstToolID := toolCallIDs[0]
+	state, err := decodeTraeToolID(firstToolID)
+	if err != nil {
+		t.Fatalf("decode tool call ID: %v", err)
+	}
+	t.Logf("Step 2: decoded state: session=%s conv=%s task=%s agent_run=%s native_id=%s name=%s",
+		state.SessionID, state.ConversationID, state.TaskID, state.AgentRunID, state.NativeID, state.Name)
+
+	// Build the commit request using the executor's internal builder
+	toolMessages := []gjson.Result{
+		gjson.Parse(fmt.Sprintf(`{"role":"tool","tool_call_id":"%s","name":"%s","content":"mock result: found files [main.go, config.yaml, README.md]"}`,
+			firstToolID, toolCallNames[0])),
+	}
+
+	commitBuild, err := buildTraeToolCommitRequest(creds, toolMessages)
+	if err != nil {
+		t.Fatalf("build commit request: %v", err)
+	}
+
+	t.Logf("Step 2: commit target URL: %s", commitBuild.TargetURL)
+	t.Logf("Step 2: commit log body: %s", truncate(string(commitBuild.LogBody), 500))
+
+	commitReq, err := http.NewRequestWithContext(ctx, http.MethodPost, commitBuild.TargetURL, bytes.NewReader(commitBuild.RequestBody))
+	if err != nil {
+		t.Fatalf("new commit request: %v", err)
+	}
+	commitReq.Header.Set("Content-Type", "application/json")
+	setTraeCommonHeaders(commitReq.Header, creds)
+	commitReq.Header.Set("X-Ide-Session-Id", commitBuild.SessionID)
+	commitReq.Header.Set("X-Request-Pin", commitBuild.RequestPin)
+	commitReq.Header.Set("X-Requested-At", strconv.FormatInt(commitBuild.RequestAt, 10))
+	commitReq.Header.Set("Accept", "text/event-stream")
+	commitReq.Header.Set("Cache-Control", "no-cache")
+
+	commitClient := &http.Client{Timeout: 120 * time.Second}
+	commitResp, err := commitClient.Do(commitReq)
+	if err != nil {
+		t.Fatalf("commit http do: %v", err)
+	}
+	defer commitResp.Body.Close()
+
+	t.Logf("Step 2: commit response status: %d", commitResp.StatusCode)
+	if commitResp.StatusCode != 200 {
+		body, _ := io.ReadAll(commitResp.Body)
+		t.Fatalf("Step 2 commit error %d: %s", commitResp.StatusCode, string(body))
+	}
+
+	// Step 3: Read the continuation SSE stream
+	scanner := bufio.NewScanner(commitResp.Body)
+	lineCount := 0
+	var currentEvent string
+	var step3Content strings.Builder
+	var step3Events []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+			step3Events = append(step3Events, currentEvent)
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if data == "" {
+				continue
+			}
+			lineCount++
+			if lineCount <= 50 {
+				t.Logf("  Step3 DATA[%d] (event=%s): %s", lineCount, currentEvent, truncate(data, 500))
+			}
+			if gjson.Valid(data) {
+				// Extract content from various possible SSE formats
+				if c := gjson.Get(data, "choices.0.delta.content"); c.Exists() && c.String() != "" {
+					step3Content.WriteString(c.String())
+				} else if c := gjson.Get(data, "content"); c.Exists() && c.Type == gjson.String {
+					step3Content.WriteString(c.String())
+				} else if c := gjson.Get(data, "response"); c.Exists() && c.Type == gjson.String {
+					step3Content.WriteString(c.String())
+				}
+				// Also check for agent_event payload
+				if payload := gjson.Get(data, "payload"); payload.Exists() {
+					payloadStr := payload.String()
+					if gjson.Valid(payloadStr) {
+						if msg := gjson.Get(payloadStr, "message"); msg.Exists() && msg.Type == gjson.String {
+							step3Content.WriteString(msg.String())
+						}
+					}
+				}
+			}
+			currentEvent = ""
+		}
+	}
+
+	t.Logf("Step 3: total data lines=%d events=%v content_len=%d",
+		lineCount, step3Events, step3Content.Len())
+	t.Logf("Step 3: content: %q", truncate(step3Content.String(), 500))
+
+	if lineCount == 0 {
+		t.Fatal("Step 3: commit response had 0 data lines — model did not continue after tool result")
 	}
 }
 

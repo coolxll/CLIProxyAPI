@@ -1102,25 +1102,26 @@ func buildTraeRawChatRequest(protocol, upstreamModel string, openaiReq []byte, o
 	extraHeaders := make(http.Header)
 	if protocol == traeProtocolV1 {
 		targetURL = "https://trae-api-cn.mchost.guru/api/ide/v1/llm_raw_chat"
-		requestBody, err = json.Marshal(map[string]any{
+		v1Envelope := map[string]any{
 			"model_name": modelConfig.ModelName,
 			"message":    encrypted.Message,
-		})
+		}
+		// V1 raw chat accepts tools as plaintext in the outer envelope.
+		if rawTools := gjson.GetBytes(openaiReq, "tools"); rawTools.Exists() && rawTools.IsArray() && len(rawTools.Array()) > 0 {
+			v1Envelope["tools"] = json.RawMessage(rawTools.Raw)
+		}
+		requestBody, err = json.Marshal(v1Envelope)
 	} else {
 		targetURL = "https://trae-api-cn.mchost.guru/api/ide/v2/llm_raw_chat"
 		extraHeaders.Set("X-App-Function", "utils")
 		extraHeaders.Set("X-Ide-Function", "utils")
 		extraHeaders.Set("x-ide-version-code", "20260401")
-		tools := any(nil)
-		if rawTools := gjson.GetBytes(openaiReq, "tools"); rawTools.Exists() {
-			tools = json.RawMessage(rawTools.Raw)
-		}
+		// V2 raw chat does not support tools; omit them from the outer envelope.
 		requestBody, err = json.Marshal(map[string]any{
 			"model_name":      modelConfig.ModelName,
 			"config_name":     modelConfig.ConfigName,
 			"config_source":   1,
 			"messages":        []any{},
-			"tools":           tools,
 			"session_id":      sessionID,
 			"conversation_id": convID,
 			"message":         encrypted.Message,
@@ -1145,7 +1146,9 @@ func buildTraeRawChatRequest(protocol, upstreamModel string, openaiReq []byte, o
 
 func buildTraeRawChatInnerPayload(openaiReq []byte, protocol string) any {
 	messages := buildTraeRawChatMessages(openaiReq)
-	if protocol != traeProtocolV1 {
+	// V1 and V2 raw chat do not support tools inside the encrypted payload.
+	// V1 passes tools as plaintext in the outer envelope; V2 does not support tools at all.
+	if protocol == traeProtocolV1 || protocol == traeProtocolV2 {
 		return messages
 	}
 	if rawTools := gjson.GetBytes(openaiReq, "tools"); rawTools.Exists() && rawTools.IsArray() && len(rawTools.Array()) > 0 {
@@ -1440,6 +1443,7 @@ func parseTraeModels(data []byte, now int64) []*registry.ModelInfo {
 func appendTraeNoThinkingModel(models []*registry.ModelInfo, now int64) []*registry.ModelInfo {
 	for _, model := range models {
 		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), "no_thinking_model") {
+			model.SupportedParameters = removeSupportedParameter(model.SupportedParameters, "tools")
 			return models
 		}
 	}
@@ -1453,8 +1457,18 @@ func appendTraeNoThinkingModel(models []*registry.ModelInfo, now int64) []*regis
 		Name:                "no_thinking_model",
 		ContextLength:       40000,
 		MaxCompletionTokens: 65536,
-		SupportedParameters: []string{"tools"},
 	})
+}
+
+func removeSupportedParameter(parameters []string, parameter string) []string {
+	filtered := parameters[:0]
+	for _, current := range parameters {
+		if strings.EqualFold(strings.TrimSpace(current), parameter) {
+			continue
+		}
+		filtered = append(filtered, current)
+	}
+	return filtered
 }
 
 func appendTraeV3AgentModels(models []*registry.ModelInfo, now int64) []*registry.ModelInfo {

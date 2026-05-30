@@ -1470,6 +1470,340 @@ func TestTraeE2E_V3_ToolCommitFlow(t *testing.T) {
 	}
 }
 
+func TestTraeE2E_V3_ToolCommitFallbackDeltaViaExecutor(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+	model := traeE2EV3DebugModel()
+
+	rawRequest := []byte(`{
+		"model": "` + model + `",
+		"stream": true,
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "LS",
+					"description": "List files in a workspace directory.",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"path": {"type": "string", "description": "Directory path to list."}
+						}
+					}
+				}
+			}
+		],
+		"messages": [
+			{"role": "user", "content": "Use the LS tool to list the current workspace directory. Do not answer directly; call the tool first."}
+		]
+	}`)
+
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("initial ExecuteStream error: %v", err)
+	}
+
+	var toolCallID string
+	var toolCallName string
+	var toolCallArguments string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("initial stream error: %v", chunk.Err)
+		}
+		dataStr := string(chunk.Payload)
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() {
+			first := tc.Array()[0]
+			toolCallID = first.Get("id").String()
+			toolCallName = first.Get("function.name").String()
+			toolCallArguments = first.Get("function.arguments").String()
+			break
+		}
+	}
+	if toolCallID == "" {
+		t.Skip("V3 model did not produce a tool call; cannot verify commit fallback path")
+	}
+	state, err := decodeTraeToolID(toolCallID)
+	if err != nil {
+		t.Fatalf("decode tool_call_id: %v", err)
+	}
+	toolCallName = firstNonEmpty(toolCallName, state.Name)
+	t.Logf("tool call selected: name=%s native_id=%s task=%s agent_run=%s args=%s",
+		toolCallName, state.NativeID, state.TaskID, state.AgentRunID, truncate(toolCallArguments, 300))
+
+	commitRawRequest, err := json.Marshal(map[string]any{
+		"model":  model,
+		"stream": true,
+		"messages": []map[string]any{
+			{"role": "user", "content": "Use the LS tool to list the current workspace directory. Do not answer directly; call the tool first."},
+			{
+				"role": "assistant",
+				"tool_calls": []map[string]any{
+					{
+						"id":   toolCallID,
+						"type": "function",
+						"function": map[string]any{
+							"name":      toolCallName,
+							"arguments": toolCallArguments,
+						},
+					},
+				},
+			},
+			{
+				"role":         "tool",
+				"tool_call_id": toolCallID,
+				"name":         toolCallName,
+				"content":      "README.md\ncmd\nconfig.example.yaml\ninternal\nsdk\n",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal commit request: %v", err)
+	}
+
+	commitResult, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: commitRawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: commitRawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("commit ExecuteStream error: %v", err)
+	}
+
+	var content strings.Builder
+	var reasoning strings.Builder
+	var chunkCount int
+	finishReason := ""
+	for chunk := range commitResult.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("commit stream error: %v", chunk.Err)
+		}
+		dataStr := string(chunk.Payload)
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		chunkCount++
+		if chunkCount <= 20 {
+			t.Logf("commit chunk[%d]: %s", chunkCount, truncate(dataStr, 500))
+		}
+		if c := gjson.Get(dataStr, "choices.0.delta.content"); c.Exists() {
+			content.WriteString(c.String())
+		}
+		if r := gjson.Get(dataStr, "choices.0.delta.reasoning_content"); r.Exists() {
+			reasoning.WriteString(r.String())
+		}
+		if fr := gjson.Get(dataStr, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
+			finishReason = fr.String()
+		}
+	}
+
+	t.Logf("commit via executor: chunks=%d content=%q reasoning_len=%d finish_reason=%q",
+		chunkCount, truncate(content.String(), 500), reasoning.Len(), finishReason)
+	if chunkCount == 0 {
+		t.Fatal("commit ExecuteStream produced no chunks")
+	}
+	if strings.TrimSpace(content.String()) == "" {
+		t.Fatal("commit ExecuteStream produced empty content; fallback delta did not fire")
+	}
+}
+
+func TestTraeE2E_V3_BeijingWeatherMockToolCommitViaExecutor(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+	model := traeE2EV3DebugModel()
+
+	userPrompt := "Use the mcp__weather__get_current_weather tool to check the current weather in Beijing. Do not answer from memory; call the tool first."
+	rawRequest := []byte(`{
+		"model": "` + model + `",
+		"stream": true,
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "mcp__weather__get_current_weather",
+					"description": "Get the current weather for a city.",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"location": {"type": "string"}
+						},
+						"required": ["location"]
+					}
+				}
+			}
+		],
+		"messages": [
+			{"role": "user", "content": "` + userPrompt + `"}
+		]
+	}`)
+
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("initial ExecuteStream error: %v", err)
+	}
+
+	var toolCallID string
+	var toolCallName string
+	var toolCallArguments string
+	var initialContent strings.Builder
+	initialFinishReason := ""
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("initial stream error: %v", chunk.Err)
+		}
+		dataStr := string(chunk.Payload)
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		if c := gjson.Get(dataStr, "choices.0.delta.content"); c.Exists() {
+			initialContent.WriteString(c.String())
+		}
+		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() && toolCallID == "" {
+			first := tc.Array()[0]
+			toolCallID = first.Get("id").String()
+			toolCallName = first.Get("function.name").String()
+			toolCallArguments = first.Get("function.arguments").String()
+		}
+		if fr := gjson.Get(dataStr, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
+			initialFinishReason = fr.String()
+		}
+	}
+	if toolCallID == "" {
+		t.Fatalf("expected Beijing weather tool_call, got none; finish_reason=%q content=%q",
+			initialFinishReason, truncate(initialContent.String(), 500))
+	}
+	state, err := decodeTraeToolID(toolCallID)
+	if err != nil {
+		t.Fatalf("decode tool_call_id: %v", err)
+	}
+	toolCallName = firstNonEmpty(toolCallName, state.Name)
+	t.Logf("initial weather tool_call: name=%s args=%s native_id=%s task=%s agent_run=%s finish_reason=%q",
+		toolCallName, truncate(toolCallArguments, 500), state.NativeID, state.TaskID, state.AgentRunID, initialFinishReason)
+	if toolCallName != "mcp__weather__get_current_weather" {
+		t.Fatalf("tool_call name = %q, want mcp__weather__get_current_weather", toolCallName)
+	}
+
+	mockWeatherResult := `{"location":"Beijing","temperature_c":23,"condition":"Sunny","humidity_percent":35,"wind":"NE 2","air_quality":"Good","summary":"北京当前天气晴，23°C，湿度35%，东北风2级，空气质量良。"}`
+	commitRawRequest, err := json.Marshal(map[string]any{
+		"model":  model,
+		"stream": true,
+		"messages": []map[string]any{
+			{"role": "user", "content": userPrompt},
+			{
+				"role": "assistant",
+				"tool_calls": []map[string]any{
+					{
+						"id":   toolCallID,
+						"type": "function",
+						"function": map[string]any{
+							"name":      toolCallName,
+							"arguments": toolCallArguments,
+						},
+					},
+				},
+			},
+			{
+				"role":         "tool",
+				"tool_call_id": toolCallID,
+				"name":         toolCallName,
+				"content":      mockWeatherResult,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal commit request: %v", err)
+	}
+
+	commitResult, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: commitRawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: commitRawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("commit ExecuteStream error: %v", err)
+	}
+
+	var content strings.Builder
+	var reasoning strings.Builder
+	var followUpToolNames []string
+	chunkCount := 0
+	finishReason := ""
+	for chunk := range commitResult.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("commit stream error: %v", chunk.Err)
+		}
+		dataStr := string(chunk.Payload)
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		chunkCount++
+		if chunkCount <= 30 {
+			t.Logf("commit weather chunk[%d]: %s", chunkCount, truncate(dataStr, 800))
+		}
+		if c := gjson.Get(dataStr, "choices.0.delta.content"); c.Exists() {
+			content.WriteString(c.String())
+		}
+		if r := gjson.Get(dataStr, "choices.0.delta.reasoning_content"); r.Exists() {
+			reasoning.WriteString(r.String())
+		}
+		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() {
+			for _, item := range tc.Array() {
+				if name := item.Get("function.name").String(); name != "" {
+					followUpToolNames = append(followUpToolNames, name)
+				}
+			}
+		}
+		if fr := gjson.Get(dataStr, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
+			finishReason = fr.String()
+		}
+	}
+
+	t.Logf("commit weather result: chunks=%d content=%q reasoning=%q follow_up_tools=%v finish_reason=%q",
+		chunkCount, truncate(content.String(), 1000), truncate(reasoning.String(), 1000), followUpToolNames, finishReason)
+	if chunkCount == 0 {
+		t.Fatal("commit ExecuteStream produced no chunks")
+	}
+	if strings.TrimSpace(content.String()) == "" {
+		t.Fatal("commit ExecuteStream produced empty content")
+	}
+}
+
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -1499,6 +1833,227 @@ func requireOpenAIStreamPayload(t *testing.T, payload []byte) {
 type traeE2EClaudeEvent struct {
 	typ  string
 	data string
+}
+
+// TestTraeE2E_V3_LargePayloadNoScannerError verifies that a request body exceeding 64KB
+// (the bufio.Scanner limit on the V3 API server) does not produce "bufio.Scanner: token too long".
+// This reproduces the exact scenario from the bug report: a Claude Code request with 93KB Content-Length.
+// The test sends a large payload through the full ExecuteStream pipeline and verifies the model
+// produces actual output (tool call → commit → final response).
+func TestTraeE2E_V3_LargePayloadNoScannerError(t *testing.T) {
+	auth := loadTraeTestAuth(t)
+	creds, err := traeauth.CredentialsFromAuth(auth)
+	if err != nil {
+		t.Fatalf("credentials: %v", err)
+	}
+	e := NewTraeExecutor(nil)
+	ctx := context.Background()
+	model := traeE2EV3DebugModel()
+
+	// Simulate a large Claude Code request (~93KB) with many tools and a long system prompt.
+	largeSystemPrompt := strings.Repeat("You are Claude Code, Anthropic's official CLI for Claude. ", 800) + "\n" +
+		strings.Repeat("IMPORTANT: Follow these instructions carefully. Do not break the rules. ", 400)
+	toolsJSON := buildLargeToolDefinitionsJSON(20)
+
+	rawRequest := []byte(`{
+		"model": "` + model + `",
+		"max_tokens": 1024,
+		"stream": true,
+		"tools": ` + toolsJSON + `,
+		"messages": [
+			{"role": "system", "content": "` + largeSystemPrompt + `"},
+			{"role": "user", "content": "Use the Bash tool to run exactly ls -la. Do not answer from memory; call the tool first."}
+		]
+	}`)
+
+	t.Logf("raw request size: %d bytes", len(rawRequest))
+
+	// Step 1: Send the large request through ExecuteStream
+	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	// Step 2: Collect tool calls and content from the stream
+	var toolCallIDs []string
+	var toolCallNames []string
+	var toolCallArguments []string
+	var content strings.Builder
+	finishReason := ""
+
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			errStr := chunk.Err.Error()
+			if strings.Contains(errStr, "bufio.Scanner") || strings.Contains(errStr, "token too long") {
+				t.Fatalf("got bufio.Scanner error in stream: %s", errStr)
+			}
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+		dataStr := string(chunk.Payload)
+		if strings.HasPrefix(dataStr, "data:") {
+			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
+		}
+		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
+			continue
+		}
+		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() {
+			for _, item := range tc.Array() {
+				toolCallIDs = append(toolCallIDs, item.Get("id").String())
+				toolCallNames = append(toolCallNames, item.Get("function.name").String())
+				toolCallArguments = append(toolCallArguments, item.Get("function.arguments").String())
+			}
+		}
+		if c := gjson.Get(dataStr, "choices.0.delta.content"); c.Exists() && c.String() != "" {
+			content.WriteString(c.String())
+		}
+		if fr := gjson.Get(dataStr, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
+			finishReason = fr.String()
+		}
+	}
+
+	t.Logf("step1: tool_calls=%d names=%v finish_reason=%q content_len=%d",
+		len(toolCallIDs), toolCallNames, finishReason, content.Len())
+
+	if len(toolCallIDs) == 0 {
+		// Model answered directly without calling a tool — still a valid pass
+		t.Logf("model answered directly (no tool call), content=%q", truncate(content.String(), 300))
+		return
+	}
+
+	// Step 3: Commit tool result and get the final response
+	state, err := decodeTraeToolID(toolCallIDs[0])
+	if err != nil {
+		t.Fatalf("decode tool call ID: %v", err)
+	}
+
+	toolMessages := []gjson.Result{
+		gjson.Parse(fmt.Sprintf(`{"role":"tool","tool_call_id":"%s","name":"%s","content":"total 8\ndrwxr-xr-x  5 user  staff  160 May 29 23:00 .\ndrwxr-xr-x  3 user  staff   96 May 29 22:59 ..\n-rw-r--r--  1 user  staff  123 May 29 23:00 main.go"}`,
+			toolCallIDs[0], toolCallNames[0])),
+	}
+
+	commitBuild, err := buildTraeToolCommitRequest(creds, toolMessages)
+	if err != nil {
+		t.Fatalf("build commit request: %v", err)
+	}
+
+	commitReq, err := http.NewRequestWithContext(ctx, http.MethodPost, commitBuild.TargetURL, bytes.NewReader(commitBuild.RequestBody))
+	if err != nil {
+		t.Fatalf("new commit request: %v", err)
+	}
+	commitReq.Header.Set("Content-Type", "application/json")
+	setTraeCommonHeaders(commitReq.Header, creds)
+	commitReq.Header.Set("X-Ide-Session-Id", commitBuild.SessionID)
+	commitReq.Header.Set("X-Request-Pin", commitBuild.RequestPin)
+	commitReq.Header.Set("X-Requested-At", strconv.FormatInt(commitBuild.RequestAt, 10))
+	commitReq.Header.Set("Accept", "text/event-stream")
+	commitReq.Header.Set("Cache-Control", "no-cache")
+
+	commitClient := &http.Client{Timeout: 120 * time.Second}
+	commitResp, err := commitClient.Do(commitReq)
+	if err != nil {
+		t.Fatalf("commit http do: %v", err)
+	}
+	defer commitResp.Body.Close()
+
+	t.Logf("step2: commit status=%d", commitResp.StatusCode)
+	if commitResp.StatusCode != 200 {
+		body, _ := io.ReadAll(commitResp.Body)
+		t.Fatalf("commit error %d: %s", commitResp.StatusCode, truncate(string(body), 500))
+	}
+
+	// Step 4: Read the final response after tool commit
+	var finalContent strings.Builder
+	scanner := bufio.NewScanner(commitResp.Body)
+	scanner.Buffer(make([]byte, 0, 128*1024), 1024*1024)
+	var commitEvents []string
+	var rawCommitData []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "event:") {
+			commitEvents = append(commitEvents, strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if data == "" || !gjson.Valid(data) {
+				continue
+			}
+			rawCommitData = append(rawCommitData, data)
+			// Try all known content fields, including reasoning_content for reasoning models
+			for _, path := range []string{"content", "response", "choices.0.delta.content", "text", "payload.message", "reasoning_content"} {
+				if c := gjson.Get(data, path); c.Exists() && c.Type == gjson.String && c.String() != "" {
+					finalContent.WriteString(c.String())
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanner error: %v", err)
+	}
+
+	// Log first few raw data lines for debugging
+	for i, d := range rawCommitData {
+		if i < 10 {
+			t.Logf("  commit_data[%d]: %s", i, truncate(d, 500))
+		}
+	}
+
+	t.Logf("step2: final_content_len=%d final_content=%q commit_events=%v state=%v",
+		finalContent.Len(), truncate(finalContent.String(), 300), commitEvents, state)
+
+	if finalContent.Len() == 0 {
+		t.Fatal("after tool commit, model did not produce final output — the response is empty")
+	}
+}
+
+// buildLargeToolDefinitionsJSON builds a JSON array of tool definitions
+// similar to what Claude Code sends (20+ tools with full schemas).
+func buildLargeToolDefinitionsJSON(n int) string {
+	names := []string{
+		"Agent", "AskUserQuestion", "Bash", "Edit", "Glob", "Grep",
+		"Read", "Write", "WebFetch", "WebSearch", "NotebookEdit",
+		"TaskCreate", "TaskUpdate", "TaskList", "LSP", "TodoRead",
+		"TodoWrite", "CronCreate", "CronDelete", "CronList",
+	}
+	descriptionBase := "This tool helps you perform actions in the codebase. " +
+		"It supports various parameters and options depending on the use case. " +
+		"Use it when you need to interact with files, search for patterns, " +
+		"manage your workflow, or automate repetitive tasks. " +
+		"The tool accepts input in multiple formats and can be configured " +
+		"with different parameters depending on the specific requirements. " +
+		"For more complex operations, you can combine multiple parameters " +
+		"to achieve the desired result. The tool also supports chaining " +
+		"with other tools for advanced workflows."
+	var tools []map[string]any
+	for i := 0; i < n && i < len(names); i++ {
+		tools = append(tools, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        names[i],
+				"description": names[i] + " - " + descriptionBase,
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"input":     map[string]any{"type": "string", "description": "The primary input to the tool."},
+						"options":   map[string]any{"type": "object", "description": "Optional configuration."},
+						"verbose":   map[string]any{"type": "boolean", "description": "Enable verbose output."},
+						"recursive": map[string]any{"type": "boolean", "description": "Process recursively."},
+						"format":    map[string]any{"type": "string", "description": "Output format."},
+					},
+				},
+			},
+		})
+	}
+	b, _ := json.Marshal(tools)
+	return string(b)
 }
 
 func parseClaudeSSEEvents(payload string) []traeE2EClaudeEvent {

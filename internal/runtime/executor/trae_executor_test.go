@@ -330,6 +330,112 @@ func TestNextTraeInlineToolMarkerNotFound(t *testing.T) {
 	}
 }
 
+func TestTraeExecutorStreamStripsInlineToolCallFromReasoning(t *testing.T) {
+	// After a tool commit, the V3 API may return reasoning_content that
+	// contains inline tool_calls= markers. These must be stripped from the
+	// reasoning output and converted to proper tool_calls.
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"data: {\"reasoning_content\":\"\\ntool_calls=[{\\\"name\\\":\\\"Bash\\\",\\\"arguments\\\":{\\\"command\\\":\\\"ls -la\\\"}}]\"}\n\n"
+	result := runTraeStreamWithBody(t, body)
+
+	var reasoning strings.Builder
+	var toolCalls []gjson.Result
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if val := gjson.Get(data, "choices.0.delta.reasoning_content"); val.Exists() {
+			reasoning.WriteString(val.String())
+		}
+		if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() {
+			toolCalls = append(toolCalls, tc.Array()...)
+		}
+	}
+
+	if strings.Contains(reasoning.String(), "tool_calls=") {
+		t.Fatalf("reasoning leaked inline tool call marker: %q", reasoning.String())
+	}
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool call count = %d, want 1: %#v", len(toolCalls), toolCalls)
+	}
+	tc := toolCalls[0]
+	if got := tc.Get("function.name").String(); got != "Bash" {
+		t.Fatalf("tool name = %q, want Bash", got)
+	}
+	if got := tc.Get("function.arguments").String(); got != `{"command":"ls -la"}` {
+		t.Fatalf("tool arguments = %q, want ls -la command JSON", got)
+	}
+}
+
+func TestTraeExecutorStreamStripsInlineToolCallFromThoughtReasoning(t *testing.T) {
+	// After a tool commit, the V3 API may return a thought event where
+	// reasoning_content contains tool_calls= markers. The thought field
+	// goes through thoughtToolParser (looks for <tool_call>), but the
+	// reasoning_content field must go through inlineReasoningToolParser.
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"event: thought\n" +
+		"data: {\"thought\":\"I need to run a command.\",\"reasoning_content\":\"\\ntool_calls=[{\\\"name\\\":\\\"Bash\\\",\\\"arguments\\\":{\\\"command\\\":\\\"pwd\\\"}}]\"}\n\n"
+	result := runTraeStreamWithBody(t, body)
+
+	var reasoning strings.Builder
+	var content strings.Builder
+	var toolCalls []gjson.Result
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if val := gjson.Get(data, "choices.0.delta.reasoning_content"); val.Exists() {
+			reasoning.WriteString(val.String())
+		}
+		if val := gjson.Get(data, "choices.0.delta.content"); val.Exists() {
+			content.WriteString(val.String())
+		}
+		if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() {
+			toolCalls = append(toolCalls, tc.Array()...)
+		}
+	}
+
+	if strings.Contains(reasoning.String(), "tool_calls=") {
+		t.Fatalf("reasoning leaked inline tool call marker: %q", reasoning.String())
+	}
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool call count = %d, want 1: %#v", len(toolCalls), toolCalls)
+	}
+	if got := toolCalls[0].Get("function.name").String(); got != "Bash" {
+		t.Fatalf("tool name = %q, want Bash", got)
+	}
+}
+
+func TestTraeExecutorStreamFiltersFieldNameToolCallArtifact(t *testing.T) {
+	// V3 API may send {"tool_name":"tool_name",...} where the value is the
+	// literal field name. The executor must not emit this as a tool call.
+	body := "event: task_created\n" +
+		"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+		"event: tool_call\n" +
+		"data: {\"tool_name\":\"tool_name\",\"arguments\":\"{}\",\"toolcall_id\":\"native-99\"}\n\n"
+	result := runTraeStreamWithBody(t, body)
+
+	var toolCalls []gjson.Result
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() {
+			toolCalls = append(toolCalls, tc.Array()...)
+		}
+	}
+
+	if len(toolCalls) != 0 {
+		names := make([]string, len(toolCalls))
+		for i, tc := range toolCalls {
+			names[i] = tc.Get("function.name").String()
+		}
+		t.Fatalf("tool call count = %d, want 0 (field-name artifact should be filtered); names=%v", len(toolCalls), names)
+	}
+}
+
 func TestBuildTraeToolShimInstructions(t *testing.T) {
 	instructions := buildTraeToolShimInstructions([]byte(`{
 		"tools": [
@@ -346,6 +452,54 @@ func TestBuildTraeToolShimInstructions(t *testing.T) {
 	}
 	if !strings.Contains(instructions, "tool_calls=") {
 		t.Fatalf("tool instructions missing inline tool call protocol: %q", instructions)
+	}
+	if strings.Contains(instructions, "summarize the results in natural language") {
+		t.Fatalf("tool instructions should not inject post-commit content guidance: %q", instructions)
+	}
+}
+
+func TestTraeExecutorStreamEmitsFallbackContentForEmptyToolCommit(t *testing.T) {
+	body := "data: {\"reasoning_content\":\"checked the tool result\"}\n\n"
+	result := runTraeToolCommitStreamWithBody(t, body)
+
+	var content strings.Builder
+	var reasoning strings.Builder
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if val := gjson.Get(data, "choices.0.delta.content"); val.Exists() {
+			content.WriteString(val.String())
+		}
+		if val := gjson.Get(data, "choices.0.delta.reasoning_content"); val.Exists() {
+			reasoning.WriteString(val.String())
+		}
+	}
+
+	if got := content.String(); got != "Tool result received." {
+		t.Fatalf("content = %q, want fallback content", got)
+	}
+	if got := reasoning.String(); got != "checked the tool result" {
+		t.Fatalf("reasoning = %q, want upstream reasoning", got)
+	}
+}
+
+func TestTraeExecutorStreamSkipsFallbackContentWhenToolCommitHasContent(t *testing.T) {
+	body := "data: {\"response\":\"actual answer\"}\n\n"
+	result := runTraeToolCommitStreamWithBody(t, body)
+
+	var content strings.Builder
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		if val := gjson.Get(data, "choices.0.delta.content"); val.Exists() {
+			content.WriteString(val.String())
+		}
+	}
+
+	if got := content.String(); got != "actual answer" {
+		t.Fatalf("content = %q, want upstream content only", got)
 	}
 }
 
@@ -1179,6 +1333,76 @@ func runTraeStreamWithBody(t *testing.T, body string) *cliproxyexecutor.StreamRe
 	}))
 
 	rawRequest := []byte(`{"model":"glm-5","messages":[{"role":"user","content":"list files"}],"stream":true}`)
+	result, err := NewTraeExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "trae",
+		Attributes: map[string]string{
+			"jwt_token": "not-a-real-jwt",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "glm-5",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+	return result
+}
+
+func runTraeToolCommitStreamWithBody(t *testing.T, body string) *cliproxyexecutor.StreamResult {
+	t.Helper()
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	encodedID, err := encodeTraeToolID(traeToolState{
+		SessionID:      "session-1",
+		ConversationID: "conversation-1",
+		TaskID:         "task-1",
+		AgentRunID:     "run-1",
+		NativeID:       "native-1",
+		Name:           "Read",
+	})
+	if err != nil {
+		t.Fatalf("encode tool id: %v", err)
+	}
+
+	rawRequest, err := json.Marshal(map[string]any{
+		"model":  "glm-5",
+		"stream": true,
+		"messages": []map[string]any{
+			{"role": "user", "content": "read file"},
+			{
+				"role": "assistant",
+				"tool_calls": []map[string]any{{
+					"id":   encodedID,
+					"type": "function",
+					"function": map[string]any{
+						"name":      "Read",
+						"arguments": `{"path":"/tmp/a.go"}`,
+					},
+				}},
+			},
+			{
+				"role":         "tool",
+				"tool_call_id": encodedID,
+				"name":         "Read",
+				"content":      "file contents",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
 	result, err := NewTraeExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
 		Provider: "trae",
 		Attributes: map[string]string{

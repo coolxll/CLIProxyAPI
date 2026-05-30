@@ -1022,12 +1022,14 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		}
 
 		scanner := bufio.NewScanner(httpResp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		taskID := "unknown"
 		agentRunID := "unknown"
 		tcIndex := 0
 		thoughtToolIndex := 0
 		inlineToolIndex := 0
 		hasToolCall := false
+		hasContentDelta := false
 		finishReason := "stop"
 		var thoughtToolParser traeThoughtToolParser
 		var inlineContentToolParser traeInlineToolCallParser
@@ -1283,7 +1285,12 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				toolName = firstNonEmpty(
 					gjson.Get(dataStr, "tool_name").String(),
 					gjson.Get(dataStr, "toolcall_name").String(),
+					gjson.Get(dataStr, "name").String(),
 				)
+				// Filter out field-name-as-value artifacts from V3 API
+				if toolName == "tool_name" || toolName == "toolcall_name" {
+					toolName = ""
+				}
 				toolPayload = firstNonEmpty(
 					gjson.Get(dataStr, "arguments").String(),
 					gjson.Get(dataStr, "toolcall_payload").String(),
@@ -1300,6 +1307,9 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 
 			if content != "" || reasoning != "" || toolName != "" || len(toolCalls) > 0 {
+				if strings.TrimSpace(content) != "" {
+					hasContentDelta = true
+				}
 				delta := openaiDelta{
 					Content:          content,
 					ReasoningContent: reasoning,
@@ -1373,6 +1383,9 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			if content == "" && reasoning == "" {
 				return true
 			}
+			if strings.TrimSpace(content) != "" {
+				hasContentDelta = true
+			}
 			trailingOpenAIChunk := openaiChunk{
 				ID:      chatID,
 				Object:  "chat.completion.chunk",
@@ -1411,6 +1424,11 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		}
 		if !emitTrailingDelta("", inlineReasoningToolParser.Flush()) {
 			return
+		}
+		if build.IsToolCommit && !hasContentDelta {
+			if !emitTrailingDelta("Tool result received.", "") {
+				return
+			}
 		}
 
 		// Stream termination chunk

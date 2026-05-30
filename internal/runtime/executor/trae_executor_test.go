@@ -1527,6 +1527,131 @@ func TestAppendTraeV1RawChatModels(t *testing.T) {
 	}
 }
 
+func TestTraeExecutorStreamExtractsHistoryEvent(t *testing.T) {
+	// Simulate history event with final output
+	historyData := map[string]interface{}{
+		"history_data": map[string]interface{}{
+			"messages": `{"raw_messages":[{"role":"assistant","content":[{"type":"text","text":"这是最终输出内容"}]}]}`,
+		},
+	}
+	historyJSON, _ := json.Marshal(historyData)
+
+	sseBody := "event: history\n" +
+		"data: " + string(historyJSON) + "\n\n" +
+		"event: token_usage\n" +
+		"data: {\"prompt_tokens\":100,\"completion_tokens\":50,\"total_tokens\":150}\n\n"
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(sseBody)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"qwen-3.6-plus","messages":[{"role":"user","content":"test"}],"stream":true}`)
+	result, err := NewTraeExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "trae",
+		Attributes: map[string]string{
+			"jwt_token": "not-a-real-jwt",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "qwen-3.6-plus",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+
+	var contentChunks []string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream returned error: %v", chunk.Err)
+		}
+		// Extract content from OpenAI-format chunks
+		payload := string(chunk.Payload)
+		if strings.Contains(payload, `"delta":{`) && strings.Contains(payload, `"content":`) {
+			val := gjson.Get(payload, "choices.0.delta.content")
+			if val.Exists() && val.String() != "" {
+				contentChunks = append(contentChunks, val.String())
+			}
+		}
+	}
+
+	fullContent := strings.Join(contentChunks, "")
+	if !strings.Contains(fullContent, "这是最终输出内容") {
+		t.Errorf("expected history content '这是最终输出内容' in stream, got: %q", fullContent)
+	}
+}
+
+func TestTraeExecutorStreamExtractsHistoryMultipleMessages(t *testing.T) {
+	// Test with multiple assistant messages in history
+	historyData := map[string]interface{}{
+		"history_data": map[string]interface{}{
+			"messages": `{"raw_messages":[
+				{"role":"user","content":[{"type":"text","text":"用户消息"}]},
+				{"role":"assistant","content":[{"type":"text","text":"第一部分 "}]},
+				{"role":"assistant","content":[{"type":"text","text":"第二部分"}]}
+			]}`,
+		},
+	}
+	historyJSON, _ := json.Marshal(historyData)
+
+	sseBody := "event: history\n" +
+		"data: " + string(historyJSON) + "\n\n"
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(sseBody)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"qwen-3.6-plus","messages":[{"role":"user","content":"test"}],"stream":true}`)
+	result, err := NewTraeExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "trae",
+		Attributes: map[string]string{
+			"jwt_token": "not-a-real-jwt",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "qwen-3.6-plus",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+
+	var contentChunks []string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream returned error: %v", chunk.Err)
+		}
+		payload := string(chunk.Payload)
+		if strings.Contains(payload, `"delta":{`) && strings.Contains(payload, `"content":`) {
+			val := gjson.Get(payload, "choices.0.delta.content")
+			if val.Exists() && val.String() != "" {
+				contentChunks = append(contentChunks, val.String())
+			}
+		}
+	}
+
+	fullContent := strings.Join(contentChunks, "")
+	if !strings.Contains(fullContent, "第一部分") || !strings.Contains(fullContent, "第二部分") {
+		t.Errorf("expected concatenated history content, got: %q", fullContent)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

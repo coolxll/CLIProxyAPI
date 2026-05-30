@@ -1202,7 +1202,33 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 
 			content := ""
-			if val := gjson.Get(dataStr, "choices.0.delta.content"); val.Exists() && val.Type == gjson.String {
+			if evt == "history" {
+				// Extract final output from history event
+				// Path: history_data.messages -> JSON string -> raw_messages[role=assistant].content[].text
+				historyMessages := gjson.Get(dataStr, "history_data.messages")
+				if historyMessages.Exists() && historyMessages.Type == gjson.String {
+					var rawMsgs struct {
+						RawMessages []struct {
+							Role    string `json:"role"`
+							Content []struct {
+								Type string `json:"type"`
+								Text string `json:"text"`
+							} `json:"content"`
+						} `json:"raw_messages"`
+					}
+					if json.Unmarshal([]byte(historyMessages.String()), &rawMsgs) == nil {
+						for _, msg := range rawMsgs.RawMessages {
+							if msg.Role == "assistant" {
+								for _, c := range msg.Content {
+									if c.Type == "text" && c.Text != "" {
+										content += c.Text
+									}
+								}
+							}
+						}
+					}
+				}
+			} else if val := gjson.Get(dataStr, "choices.0.delta.content"); val.Exists() && val.Type == gjson.String {
 				content = val.String()
 			} else if val := gjson.Get(dataStr, "response"); val.Exists() && val.Type == gjson.String {
 				content = val.String()

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -64,10 +65,32 @@ func EncryptMessageAt(plaintext []byte, requestAt int64) (*EncryptedMessage, err
 	payload := append(append([]byte{}, nonce...), ciphertext...)
 
 	return &EncryptedMessage{
-		Message:    base64.StdEncoding.EncodeToString(payload),
+		Message:    addLineBreaks(base64.StdEncoding.EncodeToString(payload), 76),
 		RequestPin: hex.EncodeToString(pin),
 		RequestAt:  requestAt,
 	}, nil
+}
+
+// addLineBreaks inserts a newline character every lineLen characters.
+// This prevents the bufio.Scanner on the V3 API server from treating
+// the entire base64 string as a single token exceeding 64KB.
+func addLineBreaks(s string, lineLen int) string {
+	if len(s) <= lineLen {
+		return s
+	}
+	var buf strings.Builder
+	buf.Grow(len(s) + len(s)/lineLen)
+	for i := 0; i < len(s); i += lineLen {
+		end := i + lineLen
+		if end > len(s) {
+			end = len(s)
+		}
+		buf.WriteString(s[i:end])
+		if end < len(s) {
+			buf.WriteByte('\n')
+		}
+	}
+	return buf.String()
 }
 
 // DecryptMessage decrypts the base64 encoded message using requestPin and requestAt timestamp.

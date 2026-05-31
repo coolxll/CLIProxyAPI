@@ -1185,6 +1185,24 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	} else {
 		targetAuth.Status = coreauth.StatusActive
 		targetAuth.StatusMessage = ""
+		targetAuth.Unavailable = false
+		targetAuth.NextRetryAfter = time.Time{}
+		targetAuth.LastError = nil
+		targetAuth.Quota = coreauth.QuotaState{}
+		// Also clear all model states!
+		for _, state := range targetAuth.ModelStates {
+			if state != nil {
+				state.Unavailable = false
+				if state.Status == coreauth.StatusDisabled || state.Status == coreauth.StatusError {
+					state.Status = coreauth.StatusActive
+				}
+				state.StatusMessage = ""
+				state.NextRetryAfter = time.Time{}
+				state.LastError = nil
+				state.Quota = coreauth.QuotaState{}
+				state.UpdatedAt = time.Now()
+			}
+		}
 	}
 	targetAuth.UpdatedAt = time.Now()
 

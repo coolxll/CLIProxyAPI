@@ -1590,13 +1590,13 @@ func TestTraeExecutorStreamExtractsHistoryEvent(t *testing.T) {
 }
 
 func TestTraeExecutorStreamExtractsHistoryMultipleMessages(t *testing.T) {
-	// Test with multiple assistant messages in history
+	// History events can be full transcript snapshots; only the latest assistant message is current.
 	historyData := map[string]interface{}{
 		"history_data": map[string]interface{}{
 			"messages": `{"raw_messages":[
 				{"role":"user","content":[{"type":"text","text":"用户消息"}]},
-				{"role":"assistant","content":[{"type":"text","text":"第一部分 "}]},
-				{"role":"assistant","content":[{"type":"text","text":"第二部分"}]}
+				{"role":"assistant","content":[{"type":"text","text":"旧回复"}]},
+				{"role":"assistant","content":[{"type":"text","text":"最新回复"}]}
 			]}`,
 		},
 	}
@@ -1647,8 +1647,122 @@ func TestTraeExecutorStreamExtractsHistoryMultipleMessages(t *testing.T) {
 	}
 
 	fullContent := strings.Join(contentChunks, "")
-	if !strings.Contains(fullContent, "第一部分") || !strings.Contains(fullContent, "第二部分") {
-		t.Errorf("expected concatenated history content, got: %q", fullContent)
+	if fullContent != "最新回复" {
+		t.Errorf("expected latest history content only, got: %q", fullContent)
+	}
+}
+
+func TestTraeExecutorStreamIgnoresHistoryAfterStreamedContent(t *testing.T) {
+	historyData := map[string]interface{}{
+		"history_data": map[string]interface{}{
+			"messages": `{"raw_messages":[
+				{"role":"assistant","content":[{"type":"text","text":"旧回复"}]},
+				{"role":"assistant","content":[{"type":"text","text":"snapshot回复"}]}
+			]}`,
+		},
+	}
+	historyJSON, _ := json.Marshal(historyData)
+
+	sseBody := "data: {\"response\":\"streamed reply\"}\n\n" +
+		"event: history\n" +
+		"data: " + string(historyJSON) + "\n\n"
+
+	result := runTraeStreamWithBody(t, sseBody)
+
+	var contentChunks []string
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		val := gjson.Get(data, "choices.0.delta.content")
+		if val.Exists() && val.String() != "" {
+			contentChunks = append(contentChunks, val.String())
+		}
+	}
+
+	fullContent := strings.Join(contentChunks, "")
+	if fullContent != "streamed reply" {
+		t.Errorf("expected streamed content only, got: %q", fullContent)
+	}
+}
+
+func TestTraeExecutorStreamHistoryNotEmittedWithToolCalls(t *testing.T) {
+	// When the stream has tool calls but no content delta, history content should NOT be emitted.
+	// PENDING history + tool_calls finish_reason produces semantically incorrect output.
+	historyData := map[string]interface{}{
+		"history_data": map[string]interface{}{
+			"messages": `{"raw_messages":[
+				{"role":"assistant","content":[{"type":"text","text":"stale history text"}]}
+			]}`,
+		},
+	}
+	historyJSON, _ := json.Marshal(historyData)
+
+	// Stream: tool_call event, then history event
+	sseBody := "data: {\"tool_name\":\"Bash\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}\n\n" +
+		"event: history\n" +
+		"data: " + string(historyJSON) + "\n\n"
+
+	result := runTraeStreamWithBody(t, sseBody)
+
+	var contentChunks []string
+	var hasToolCalls bool
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		val := gjson.Get(data, "choices.0.delta.content")
+		if val.Exists() && val.String() != "" {
+			contentChunks = append(contentChunks, val.String())
+		}
+		tcVal := gjson.Get(data, "choices.0.delta.tool_calls")
+		if tcVal.Exists() && tcVal.IsArray() && len(tcVal.Array()) > 0 {
+			hasToolCalls = true
+		}
+	}
+
+	if !hasToolCalls {
+		t.Error("expected tool calls in stream")
+	}
+	fullContent := strings.Join(contentChunks, "")
+	if fullContent != "" {
+		t.Errorf("expected no content when tool calls present, got: %q", fullContent)
+	}
+}
+
+func TestTraeExecutorStreamHistoryNotEmittedWithReasoningOnly(t *testing.T) {
+	// When the stream only has reasoning (no content), history content should NOT be emitted.
+	// PENDING history text should not be used as the answer when the model only produced reasoning.
+	historyData := map[string]interface{}{
+		"history_data": map[string]interface{}{
+			"messages": `{"raw_messages":[
+				{"role":"assistant","content":[{"type":"text","text":"stale answer from history"}]}
+			]}`,
+		},
+	}
+	historyJSON, _ := json.Marshal(historyData)
+
+	// Stream: reasoning_content event, then history event
+	sseBody := "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking...\"}}]}\n\n" +
+		"event: history\n" +
+		"data: " + string(historyJSON) + "\n\n"
+
+	result := runTraeStreamWithBody(t, sseBody)
+
+	var contentChunks []string
+	for _, data := range collectOpenAIStreamData(t, result) {
+		if data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		val := gjson.Get(data, "choices.0.delta.content")
+		if val.Exists() && val.String() != "" {
+			contentChunks = append(contentChunks, val.String())
+		}
+	}
+
+	fullContent := strings.Join(contentChunks, "")
+	if fullContent != "" {
+		t.Errorf("expected no content when only reasoning present, got: %q", fullContent)
 	}
 }
 
@@ -1656,4 +1770,101 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+func TestTraeExecutorExecute_NonStreaming(t *testing.T) {
+	// A: Verify Claude stop_reason "max_tokens" is translated to OpenAI "length", and inputs/outputs are parsed correctly.
+	t.Run("Claude stop reason and usage", func(t *testing.T) {
+		body := "event: task_created\n" +
+			"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+			"data: {\"response\":\"hello from trae\", \"usage\":{\"input_tokens\":10,\"output_tokens\":20}, \"finish_reason\":\"max_tokens\"}\n\n"
+
+		ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}))
+
+		rawRequest := []byte(`{"model":"glm-5","messages":[{"role":"user","content":"hello"}]}`)
+		resp, err := NewTraeExecutor(nil).Execute(ctx, &cliproxyauth.Auth{
+			Provider: "trae",
+			Attributes: map[string]string{
+				"jwt_token": "not-a-real-jwt",
+			},
+		}, cliproxyexecutor.Request{
+			Model:   "glm-5",
+			Payload: rawRequest,
+		}, cliproxyexecutor.Options{
+			Stream:          false,
+			OriginalRequest: rawRequest,
+			SourceFormat:    sdktranslator.FromString("claude"),
+		})
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+
+		payloadStr := string(resp.Payload)
+		if got := gjson.Get(payloadStr, "stop_reason").String(); got != "max_tokens" {
+			t.Errorf("stop_reason = %q, want max_tokens; payload=%s", got, payloadStr)
+		}
+		if got := gjson.Get(payloadStr, "usage.input_tokens").Int(); got != 10 {
+			t.Errorf("usage.input_tokens = %d, want 10; payload=%s", got, payloadStr)
+		}
+		if got := gjson.Get(payloadStr, "usage.output_tokens").Int(); got != 20 {
+			t.Errorf("usage.output_tokens = %d, want 20; payload=%s", got, payloadStr)
+		}
+	})
+
+	// B: Verify OpenAI streaming tool calls deltas are correctly merged by index.
+	t.Run("OpenAI delta tool call merging", func(t *testing.T) {
+		body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Bash\"}}]}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"com\"}}]}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"mand\\\":\\\"ls\\\"}\"}}]}}]}\n\n"
+
+		ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}))
+
+		rawRequest := []byte(`{"model":"glm-5","messages":[{"role":"user","content":"run command"}]}`)
+		resp, err := NewTraeExecutor(nil).Execute(ctx, &cliproxyauth.Auth{
+			Provider: "trae",
+			Attributes: map[string]string{
+				"jwt_token": "not-a-real-jwt",
+			},
+		}, cliproxyexecutor.Request{
+			Model:   "glm-5",
+			Payload: rawRequest,
+		}, cliproxyexecutor.Options{
+			Stream:          false,
+			OriginalRequest: rawRequest,
+			SourceFormat:    sdktranslator.FromString("openai"),
+		})
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+
+		payloadStr := string(resp.Payload)
+		tc := gjson.Get(payloadStr, "choices.0.message.tool_calls")
+		if !tc.IsArray() || len(tc.Array()) != 1 {
+			t.Fatalf("tool_calls = %s, want array of 1 tool call; payload=%s", tc.Raw, payloadStr)
+		}
+		item := tc.Array()[0]
+		if got := item.Get("id").String(); got != "call_1" {
+			t.Errorf("tool id = %q, want call_1", got)
+		}
+		if got := item.Get("function.name").String(); got != "Bash" {
+			t.Errorf("tool function name = %q, want Bash", got)
+		}
+		if got := item.Get("function.arguments").String(); got != `{"command":"ls"}` {
+			t.Errorf("tool function arguments = %q, want consolidated arguments JSON", got)
+		}
+	})
 }

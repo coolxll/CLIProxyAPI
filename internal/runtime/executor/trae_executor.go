@@ -32,6 +32,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type traeToolState struct {
@@ -731,6 +732,19 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	// Aggregate standard streaming chunks for non-streaming calls
 	streamOpts := opts
 	streamOpts.Stream = true
+	// The Claude stream translator checks originalRequest.stream to decide between
+	// streaming SSE output and non-streaming JSON. Force streaming so the translator
+	// produces parseable SSE events (content_block_start/delta/stop) rather than a
+	// single type:message JSON with empty content. Also handle missing stream flag
+	// (Claude handler treats missing as non-streaming).
+	if len(streamOpts.OriginalRequest) > 0 {
+		streamVal := gjson.GetBytes(streamOpts.OriginalRequest, "stream")
+		if !streamVal.Exists() || streamVal.Type == gjson.False {
+			if modified, errSet := sjson.SetBytes(streamOpts.OriginalRequest, "stream", true); errSet == nil {
+				streamOpts.OriginalRequest = modified
+			}
+		}
+	}
 
 	var aggregatedContent strings.Builder
 	var aggregatedReasoning strings.Builder
@@ -739,6 +753,9 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	var chatID string
 	var finalUsage openaiUsage
 	var hasUsage bool
+	var finalStopReason string
+	var pendingToolCalls []openaiToolCall
+	tcIndex := 0
 
 	// Standard stream translator parameter
 	openaiFormat := sdktranslator.FromString("openai")
@@ -755,49 +772,201 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			if chunk.Err != nil {
 				return resp, chunk.Err
 			}
-			// Translate chunk back to standard OpenAI
-			openaiChunks := sdktranslator.TranslateStream(ctx, streamOpts.SourceFormat, openaiFormat, req.Model, streamOpts.OriginalRequest, nil, chunk.Payload, &parseParam)
-			for _, oc := range openaiChunks {
-				dataStr := string(oc)
-				if strings.HasPrefix(dataStr, "data:") {
-					dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
-				}
-				if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
-					continue
-				}
+			payload := chunk.Payload
 
-				if id := gjson.Get(dataStr, "id").String(); id != "" && chatID == "" {
-					chatID = id
+			// Extract JSON payloads from the chunk. For Claude format, the translator
+			// produces SSE events (event:/data: lines) that need parsing. For other
+			// formats (OpenAI, Gemini, Responses), translate back to OpenAI first.
+			var jsonPayloads [][]byte
+			if from == "claude" {
+				isSSE := bytes.Contains(payload, []byte("\ndata:")) || bytes.HasPrefix(bytes.TrimSpace(payload), []byte("event:")) || bytes.HasPrefix(bytes.TrimSpace(payload), []byte("data:"))
+				if isSSE {
+					for _, line := range bytes.Split(payload, []byte("\n")) {
+						trimmed := bytes.TrimSpace(line)
+						if len(trimmed) == 0 || bytes.HasPrefix(trimmed, []byte("event:")) {
+							continue
+						}
+						if bytes.HasPrefix(trimmed, []byte("data:")) {
+							d := bytes.TrimSpace(trimmed[5:])
+							if len(d) > 0 && gjson.ValidBytes(d) && string(d) != "[DONE]" {
+								jsonPayloads = append(jsonPayloads, d)
+							}
+						}
+					}
+				} else if gjson.ValidBytes(payload) && string(payload) != "[DONE]" {
+					jsonPayloads = append(jsonPayloads, payload)
 				}
-				if model := gjson.Get(dataStr, "model").String(); model != "" {
-					finalModel = model
-				}
-
-				if contentVal := gjson.Get(dataStr, "choices.0.delta.content"); contentVal.Exists() {
-					aggregatedContent.WriteString(contentVal.String())
-				}
-				if reasoningVal := gjson.Get(dataStr, "choices.0.delta.reasoning_content"); reasoningVal.Exists() {
-					aggregatedReasoning.WriteString(reasoningVal.String())
-				}
-				if usageVal := gjson.Get(dataStr, "usage"); usageVal.Exists() {
-					finalUsage = openAIUsageFromResult(usageVal)
-					hasUsage = true
-				}
-
-				if tcVal := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tcVal.Exists() && tcVal.IsArray() {
-					for _, tc := range tcVal.Array() {
-						toolCalls = append(toolCalls, openaiToolCall{
-							Index: int(tc.Get("index").Int()),
-							ID:    tc.Get("id").String(),
-							Type:  tc.Get("type").String(),
-							Function: openaiFunction{
-								Name:      tc.Get("function.name").String(),
-								Arguments: tc.Get("function.arguments").String(),
-							},
-						})
+			} else {
+				// Non-Claude formats: translate stream chunk back to OpenAI
+				openaiChunks := sdktranslator.TranslateStream(ctx, from, openaiFormat, req.Model, streamOpts.OriginalRequest, nil, payload, &parseParam)
+				for _, oc := range openaiChunks {
+					d := string(oc)
+					if strings.HasPrefix(d, "data:") {
+						d = strings.TrimSpace(strings.TrimPrefix(d, "data:"))
+					}
+					if d != "[DONE]" && gjson.Valid(d) {
+						jsonPayloads = append(jsonPayloads, []byte(d))
 					}
 				}
 			}
+			for _, jsonPayload := range jsonPayloads {
+
+				root := gjson.ParseBytes(jsonPayload)
+
+				// Common fields
+				if id := root.Get("id").String(); id != "" && chatID == "" {
+					chatID = id
+				}
+				if model := root.Get("model").String(); model != "" {
+					finalModel = model
+				}
+
+				// OpenAI format: choices.0.delta.*
+				if root.Get("choices").Exists() {
+					if contentVal := root.Get("choices.0.delta.content"); contentVal.Exists() {
+						aggregatedContent.WriteString(contentVal.String())
+					}
+					if reasoningVal := root.Get("choices.0.delta.reasoning_content"); reasoningVal.Exists() {
+						aggregatedReasoning.WriteString(reasoningVal.String())
+					}
+					if tcVal := root.Get("choices.0.delta.tool_calls"); tcVal.Exists() && tcVal.IsArray() {
+						for _, tc := range tcVal.Array() {
+							idx := int(tc.Get("index").Int())
+							found := false
+							for i := range toolCalls {
+								if toolCalls[i].Index == idx {
+									if id := tc.Get("id").String(); id != "" {
+										toolCalls[i].ID = id
+									}
+									if typ := tc.Get("type").String(); typ != "" {
+										toolCalls[i].Type = typ
+									}
+									if name := tc.Get("function.name").String(); name != "" {
+										toolCalls[i].Function.Name += name
+									}
+									if args := tc.Get("function.arguments").String(); args != "" {
+										toolCalls[i].Function.Arguments += args
+									}
+									found = true
+									break
+								}
+							}
+							if !found {
+								toolCalls = append(toolCalls, openaiToolCall{
+									Index: idx,
+									ID:    tc.Get("id").String(),
+									Type:  tc.Get("type").String(),
+									Function: openaiFunction{
+										Name:      tc.Get("function.name").String(),
+										Arguments: tc.Get("function.arguments").String(),
+									},
+								})
+							}
+						}
+					}
+				}
+
+				// Claude format: SSE events (content_block_start/delta/stop, message_delta, message)
+				switch root.Get("type").String() {
+				case "message":
+					root.Get("content").ForEach(func(_, block gjson.Result) bool {
+						switch block.Get("type").String() {
+						case "text":
+							if t := block.Get("text").String(); t != "" {
+								aggregatedContent.WriteString(t)
+							}
+						case "thinking":
+							if t := block.Get("thinking").String(); t != "" {
+								aggregatedReasoning.WriteString(t)
+							}
+						case "tool_use":
+							toolCalls = append(toolCalls, openaiToolCall{
+								Index: tcIndex,
+								ID:    block.Get("id").String(),
+								Type:  "function",
+								Function: openaiFunction{
+									Name:      block.Get("name").String(),
+									Arguments: block.Get("input").Raw,
+								},
+							})
+							tcIndex++
+						}
+						return true
+					})
+					if sr := root.Get("stop_reason").String(); sr != "" {
+						finalStopReason = sr
+					}
+				case "content_block_start":
+					block := root.Get("content_block")
+					if block.Get("type").String() == "tool_use" {
+						pendingToolCalls = append(pendingToolCalls, openaiToolCall{
+							Index: tcIndex,
+							ID:    block.Get("id").String(),
+							Type:  "function",
+							Function: openaiFunction{
+								Name: block.Get("name").String(),
+							},
+						})
+					}
+				case "content_block_delta":
+					delta := root.Get("delta")
+					switch delta.Get("type").String() {
+					case "text_delta":
+						if t := delta.Get("text").String(); t != "" {
+							aggregatedContent.WriteString(t)
+						}
+					case "thinking_delta":
+						if t := delta.Get("thinking").String(); t != "" {
+							aggregatedReasoning.WriteString(t)
+						}
+					case "input_json_delta":
+						if len(pendingToolCalls) > 0 {
+							last := &pendingToolCalls[len(pendingToolCalls)-1]
+							last.Function.Arguments += delta.Get("partial_json").String()
+						}
+					}
+				case "content_block_stop":
+					// Finalize pending tool calls
+					if len(pendingToolCalls) > 0 {
+						last := pendingToolCalls[len(pendingToolCalls)-1]
+						if last.Function.Arguments == "" {
+							last.Function.Arguments = "{}"
+						}
+						toolCalls = append(toolCalls, last)
+						pendingToolCalls = pendingToolCalls[:len(pendingToolCalls)-1]
+						tcIndex++
+					}
+				case "message_delta":
+					if sr := root.Get("delta.stop_reason").String(); sr != "" {
+						finalStopReason = sr
+					}
+				}
+
+				// Usage (both formats)
+				usageVal := root.Get("usage")
+				if !usageVal.Exists() {
+					usageVal = root.Get("message.usage")
+				}
+				if usageVal.Exists() && (usageVal.Get("prompt_tokens").Int() > 0 || usageVal.Get("input_tokens").Int() > 0 || usageVal.Get("output_tokens").Int() > 0) {
+					u := openAIUsageFromResult(usageVal)
+					finalUsage.PromptTokens += u.PromptTokens
+					finalUsage.CompletionTokens += u.CompletionTokens
+					finalUsage.TotalTokens += u.TotalTokens
+					if u.PromptTokensDetails != nil {
+						if finalUsage.PromptTokensDetails == nil {
+							finalUsage.PromptTokensDetails = &openaiPromptDetails{}
+						}
+						finalUsage.PromptTokensDetails.CachedTokens += u.PromptTokensDetails.CachedTokens
+					}
+					if u.CompletionTokensDetails != nil {
+						if finalUsage.CompletionTokensDetails == nil {
+							finalUsage.CompletionTokensDetails = &openaiCompletionDetails{}
+						}
+						finalUsage.CompletionTokensDetails.ReasoningTokens += u.CompletionTokensDetails.ReasoningTokens
+					}
+					hasUsage = true
+				}
+			} // end for _, jsonPayload
 		}
 	}
 
@@ -823,8 +992,10 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 
 	finishReason := "stop"
-	if len(toolCalls) > 0 {
+	if finalStopReason == "tool_use" || len(toolCalls) > 0 {
 		finishReason = "tool_calls"
+	} else if finalStopReason != "" {
+		finishReason = mapUpstreamFinishReasonToOpenAI(finalStopReason)
 	}
 	if chatID == "" {
 		chatID = fmt.Sprintf("chatcmpl-%s", strings.ReplaceAll(uuid.New().String(), "-", ""))
@@ -1030,10 +1201,14 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		inlineToolIndex := 0
 		hasToolCall := false
 		hasContentDelta := false
+		hasReasoningDelta := false
 		finishReason := "stop"
+		var accumulatedUsage openaiUsage
+		hasUsage := false
 		var thoughtToolParser traeThoughtToolParser
 		var inlineContentToolParser traeInlineToolCallParser
 		var inlineReasoningToolParser traeInlineToolCallParser
+		pendingHistoryContent := ""
 		emittedToolSignatures := make(map[string]struct{})
 		shouldEmitToolCall := func(name, arguments string) bool {
 			signature := traeToolSignature(name, arguments)
@@ -1203,8 +1378,9 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 			content := ""
 			if evt == "history" {
-				// Extract final output from history event
-				// Path: history_data.messages -> JSON string -> raw_messages[role=assistant].content[].text
+				// Use history as an EOF fallback only. It is usually a full transcript snapshot,
+				// so emitting it inline can replay stale assistant messages.
+				pendingHistoryContent = ""
 				historyMessages := gjson.Get(dataStr, "history_data.messages")
 				if historyMessages.Exists() && historyMessages.Type == gjson.String {
 					var rawMsgs struct {
@@ -1216,18 +1392,27 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 							} `json:"content"`
 						} `json:"raw_messages"`
 					}
-					if json.Unmarshal([]byte(historyMessages.String()), &rawMsgs) == nil {
-						for _, msg := range rawMsgs.RawMessages {
+					if errUnmarshal := json.Unmarshal([]byte(historyMessages.String()), &rawMsgs); errUnmarshal != nil {
+						log.Debugf("trae executor: history event unmarshal error: %v", errUnmarshal)
+					} else {
+						for i := len(rawMsgs.RawMessages) - 1; i >= 0; i-- {
+							msg := rawMsgs.RawMessages[i]
 							if msg.Role == "assistant" {
+								var historyContent strings.Builder
 								for _, c := range msg.Content {
 									if c.Type == "text" && c.Text != "" {
-										content += c.Text
+										historyContent.WriteString(c.Text)
 									}
 								}
+								if historyContent.Len() > 0 {
+									pendingHistoryContent = historyContent.String()
+								}
+								break
 							}
 						}
 					}
 				}
+				continue
 			} else if val := gjson.Get(dataStr, "choices.0.delta.content"); val.Exists() && val.Type == gjson.String {
 				content = val.String()
 			} else if val := gjson.Get(dataStr, "response"); val.Exists() && val.Type == gjson.String {
@@ -1247,15 +1432,51 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 			var toolCalls []openaiToolCall
 			if evt == "thought" {
-				if val := gjson.Get(dataStr, "thought"); val.Exists() && val.Type == gjson.String {
-					parsed := thoughtToolParser.Append(val.String())
+				thoughtField := gjson.Get(dataStr, "thought")
+				reasoningField := gjson.Get(dataStr, "reasoning_content")
+				if thoughtField.Exists() && thoughtField.Type == gjson.String && thoughtField.String() != "" {
+					// "thought" field: extract tool calls AND remaining text → public content
+					parsed := thoughtToolParser.Append(thoughtField.String())
 					content += parsed.Content
 					toolCalls = append(toolCalls, buildToolCalls(parsed.ToolCalls, "thought", "thought", &thoughtToolIndex)...)
+				} else if reasoningField.Exists() && reasoningField.Type == gjson.String && reasoningField.String() != "" {
+					// "reasoning_content" field: extract tool calls only, do NOT leak
+					// reasoning text into public content — it's already set as reasoning above.
+					parsed := thoughtToolParser.Append(reasoningField.String())
+					if len(parsed.ToolCalls) > 0 {
+						toolCalls = append(toolCalls, buildToolCalls(parsed.ToolCalls, "thought", "thought", &thoughtToolIndex)...)
+					}
 				}
 			}
 
+			hasUpstreamUsage := false
+			var usageData openaiUsage
 			if evt == "token_usage" {
-				usageData := openAIUsageFromResult(gjson.Parse(dataStr))
+				usageData = openAIUsageFromResult(gjson.Parse(dataStr))
+				hasUpstreamUsage = true
+			} else if usageVal := gjson.Get(dataStr, "usage"); usageVal.Exists() {
+				usageData = openAIUsageFromResult(usageVal)
+				hasUpstreamUsage = true
+			}
+
+			if hasUpstreamUsage {
+				accumulatedUsage.PromptTokens += usageData.PromptTokens
+				accumulatedUsage.CompletionTokens += usageData.CompletionTokens
+				accumulatedUsage.TotalTokens += usageData.TotalTokens
+				if usageData.PromptTokensDetails != nil {
+					if accumulatedUsage.PromptTokensDetails == nil {
+						accumulatedUsage.PromptTokensDetails = &openaiPromptDetails{}
+					}
+					accumulatedUsage.PromptTokensDetails.CachedTokens += usageData.PromptTokensDetails.CachedTokens
+				}
+				if usageData.CompletionTokensDetails != nil {
+					if accumulatedUsage.CompletionTokensDetails == nil {
+						accumulatedUsage.CompletionTokensDetails = &openaiCompletionDetails{}
+					}
+					accumulatedUsage.CompletionTokensDetails.ReasoningTokens += usageData.CompletionTokensDetails.ReasoningTokens
+				}
+				hasUsage = true
+
 				reporter.Publish(ctx, usageDetailFromOpenAIUsage(usageData))
 				usageOpenAIChunk := openaiChunk{
 					ID:      chatID,
@@ -1275,7 +1496,9 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 						return
 					}
 				}
-				continue
+				if evt == "token_usage" {
+					continue
+				}
 			}
 
 			if evt == "agent_event" || gjson.Get(dataStr, "event").String() == "agent_event" {
@@ -1302,6 +1525,20 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 					reasoning = ""
 				}
 				toolCalls = append(toolCalls, buildToolCalls(parsed.ToolCalls, "inline", "inline reasoning", &inlineToolIndex)...)
+			}
+
+			if tcVal := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tcVal.Exists() && tcVal.IsArray() {
+				for _, tc := range tcVal.Array() {
+					toolCalls = append(toolCalls, openaiToolCall{
+						Index: int(tc.Get("index").Int()),
+						ID:    tc.Get("id").String(),
+						Type:  tc.Get("type").String(),
+						Function: openaiFunction{
+							Name:      tc.Get("function.name").String(),
+							Arguments: tc.Get("function.arguments").String(),
+						},
+					})
+				}
 			}
 
 			toolName := ""
@@ -1335,6 +1572,9 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			if content != "" || reasoning != "" || toolName != "" || len(toolCalls) > 0 {
 				if strings.TrimSpace(content) != "" {
 					hasContentDelta = true
+				}
+				if strings.TrimSpace(reasoning) != "" {
+					hasReasoningDelta = true
 				}
 				delta := openaiDelta{
 					Content:          content,
@@ -1448,8 +1688,17 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		if !emitTrailingDelta(inlineContentToolParser.Flush(), "") {
 			return
 		}
-		if !emitTrailingDelta("", inlineReasoningToolParser.Flush()) {
+		trailingReasoning := inlineReasoningToolParser.Flush()
+		if strings.TrimSpace(trailingReasoning) != "" {
+			hasReasoningDelta = true
+		}
+		if !emitTrailingDelta("", trailingReasoning) {
 			return
+		}
+		if !hasContentDelta && !hasReasoningDelta && !hasToolCall && pendingHistoryContent != "" {
+			if !emitTrailingDelta(pendingHistoryContent, "") {
+				return
+			}
 		}
 		if build.IsToolCommit && !hasContentDelta {
 			if !emitTrailingDelta("Tool result received.", "") {
@@ -1460,6 +1709,8 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		// Stream termination chunk
 		if hasToolCall {
 			finishReason = "tool_calls"
+		} else {
+			finishReason = mapUpstreamFinishReasonToOpenAI(finishReason)
 		}
 
 		terminalOpenAIChunk := openaiChunk{
@@ -1474,6 +1725,9 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 					FinishReason: finishReason,
 				},
 			},
+		}
+		if hasUsage {
+			terminalOpenAIChunk.Usage = &accumulatedUsage
 		}
 
 		terminalJSON, _ := json.Marshal(terminalOpenAIChunk)
@@ -2209,7 +2463,13 @@ func appendTraeV1RawChatModels(models []*registry.ModelInfo, now int64) []*regis
 
 func openAIUsageFromResult(result gjson.Result) openaiUsage {
 	promptTokens := traeUsageInt(result, "prompt_tokens")
+	if promptTokens == 0 {
+		promptTokens = traeUsageInt(result, "input_tokens")
+	}
 	completionTokens := traeUsageInt(result, "completion_tokens")
+	if completionTokens == 0 {
+		completionTokens = traeUsageInt(result, "output_tokens")
+	}
 	totalTokens := traeUsageInt(result, "total_tokens")
 	if totalTokens == 0 {
 		totalTokens = promptTokens + completionTokens
@@ -2256,4 +2516,17 @@ func traeUsageInt(result gjson.Result, key string) int64 {
 		return val.Int()
 	}
 	return 0
+}
+
+func mapUpstreamFinishReasonToOpenAI(reason string) string {
+	switch reason {
+	case "max_tokens":
+		return "length"
+	case "end_turn", "stop_sequence":
+		return "stop"
+	case "tool_use":
+		return "tool_calls"
+	default:
+		return reason
+	}
 }

@@ -1730,9 +1730,9 @@ func TestTraeExecutorStreamHistoryNotEmittedWithToolCalls(t *testing.T) {
 	}
 }
 
-func TestTraeExecutorStreamHistoryNotEmittedWithReasoningOnly(t *testing.T) {
-	// When the stream only has reasoning (no content), history content should NOT be emitted.
-	// PENDING history text should not be used as the answer when the model only produced reasoning.
+func TestTraeExecutorStreamReasoningPromotedToContentNoHistory(t *testing.T) {
+	// When the stream only has reasoning (no content), reasoning is promoted to content
+	// AND stale history text is NOT used as the answer.
 	historyData := map[string]interface{}{
 		"history_data": map[string]interface{}{
 			"messages": `{"raw_messages":[
@@ -1761,8 +1761,14 @@ func TestTraeExecutorStreamHistoryNotEmittedWithReasoningOnly(t *testing.T) {
 	}
 
 	fullContent := strings.Join(contentChunks, "")
-	if fullContent != "" {
-		t.Errorf("expected no content when only reasoning present, got: %q", fullContent)
+	// When only reasoning is present (no text block), the reasoning is promoted to content
+	// so that clients reading only the content field get the answer.
+	if fullContent != "thinking..." {
+		t.Errorf("expected reasoning promoted to content, got: %q", fullContent)
+	}
+	// History content must NOT leak into the output.
+	if strings.Contains(fullContent, "stale answer from history") {
+		t.Errorf("history content should not be emitted, got: %q", fullContent)
 	}
 }
 
@@ -1865,6 +1871,103 @@ func TestTraeExecutorExecute_NonStreaming(t *testing.T) {
 		}
 		if got := item.Get("function.arguments").String(); got != `{"command":"ls"}` {
 			t.Errorf("tool function arguments = %q, want consolidated arguments JSON", got)
+		}
+	})
+
+	// C: Verify thinking-only response (no text block) promotes reasoning to content.
+	t.Run("thinking-only promoted to content", func(t *testing.T) {
+		body := "event: task_created\n" +
+			"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+			"event: thought\n" +
+			"data: {\"reasoning_content\":\"\\nThe user said hello.\"}\n\n" +
+			"data: {\"response\":\"Hello!\", \"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n"
+
+		ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}))
+
+		rawRequest := []byte(`{"model":"glm-4.7","messages":[{"role":"user","content":"hello"}]}`)
+		resp, err := NewTraeExecutor(nil).Execute(ctx, &cliproxyauth.Auth{
+			Provider: "trae",
+			Attributes: map[string]string{
+				"jwt_token": "not-a-real-jwt",
+			},
+		}, cliproxyexecutor.Request{
+			Model:   "glm-4.7",
+			Payload: rawRequest,
+		}, cliproxyexecutor.Options{
+			Stream:          false,
+			OriginalRequest: rawRequest,
+			SourceFormat:    sdktranslator.FromString("openai"),
+		})
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+
+		payloadStr := string(resp.Payload)
+		content := gjson.Get(payloadStr, "choices.0.message.content").String()
+		reasoning := gjson.Get(payloadStr, "choices.0.message.reasoning_content").String()
+		// "response" event produces content; reasoning stays in reasoning_content.
+		if content != "Hello!" {
+			t.Errorf("content = %q, want Hello!; payload=%s", content, payloadStr)
+		}
+		if reasoning == "" {
+			t.Errorf("reasoning_content should not be empty; payload=%s", payloadStr)
+		}
+	})
+
+	// D: Verify thinking-only (no text block at all) promotes reasoning to content.
+	t.Run("thinking-only no text block promoted to content", func(t *testing.T) {
+		// Only a thought event with reasoning_content, no "response" event with content.
+		// The usage event has no content fields, so aggregatedContent stays empty.
+		body := "event: task_created\n" +
+			"data: {\"task_id\":\"task-1\",\"agent_run_id\":\"run-1\"}\n\n" +
+			"event: thought\n" +
+			"data: {\"reasoning_content\":\"\\nHello!!!\"}\n\n" +
+			"event: token_usage\n" +
+			"data: {\"prompt_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}\n\n"
+
+		ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}))
+
+		rawRequest := []byte(`{"model":"glm-4.7","messages":[{"role":"user","content":"hello"}]}`)
+		resp, err := NewTraeExecutor(nil).Execute(ctx, &cliproxyauth.Auth{
+			Provider: "trae",
+			Attributes: map[string]string{
+				"jwt_token": "not-a-real-jwt",
+			},
+		}, cliproxyexecutor.Request{
+			Model:   "glm-4.7",
+			Payload: rawRequest,
+		}, cliproxyexecutor.Options{
+			Stream:          false,
+			OriginalRequest: rawRequest,
+			SourceFormat:    sdktranslator.FromString("openai"),
+		})
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+
+		payloadStr := string(resp.Payload)
+		content := gjson.Get(payloadStr, "choices.0.message.content").String()
+		reasoning := gjson.Get(payloadStr, "choices.0.message.reasoning_content").String()
+		// No text block → reasoning promoted to content.
+		if content != "\nHello!!!" {
+			t.Errorf("content = %q, want \\nHello!!!; payload=%s", content, payloadStr)
+		}
+		if reasoning != "" {
+			t.Errorf("reasoning_content should be empty after promotion; payload=%s", payloadStr)
 		}
 	})
 }

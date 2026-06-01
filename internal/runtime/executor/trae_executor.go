@@ -970,6 +970,17 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		}
 	}
 
+	// Fallback: if the model put the entire response in thinking blocks (no text block),
+	// promote reasoning to content so the client gets a non-empty answer.
+	// When the streaming fallback already promoted reasoning to a content delta,
+	// content and reasoning will be identical — clear the duplicate from reasoning.
+	if aggregatedContent.Len() == 0 && aggregatedReasoning.Len() > 0 && len(toolCalls) == 0 {
+		aggregatedContent.WriteString(aggregatedReasoning.String())
+		aggregatedReasoning.Reset()
+	} else if aggregatedContent.Len() > 0 && aggregatedContent.String() == aggregatedReasoning.String() {
+		aggregatedReasoning.Reset()
+	}
+
 	// Synthesize a standard OpenAI Chat Completion response
 	type openAIMessage struct {
 		Role             string           `json:"role"`
@@ -1205,6 +1216,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		finishReason := "stop"
 		var accumulatedUsage openaiUsage
 		hasUsage := false
+		var accumulatedReasoning strings.Builder
 		var thoughtToolParser traeThoughtToolParser
 		var inlineContentToolParser traeInlineToolCallParser
 		var inlineReasoningToolParser traeInlineToolCallParser
@@ -1575,6 +1587,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				}
 				if strings.TrimSpace(reasoning) != "" {
 					hasReasoningDelta = true
+					accumulatedReasoning.WriteString(reasoning)
 				}
 				delta := openaiDelta{
 					Content:          content,
@@ -1703,6 +1716,15 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		if build.IsToolCommit && !hasContentDelta {
 			if !emitTrailingDelta("Tool result received.", "") {
 				return
+			}
+		}
+		// Fallback: if the model put the entire response in thinking blocks (no text block),
+		// promote reasoning to a content delta so clients that only read content get the answer.
+		if !hasContentDelta && hasReasoningDelta && !hasToolCall {
+			if accumulated := accumulatedReasoning.String(); accumulated != "" {
+				if !emitTrailingDelta(accumulated, "") {
+					return
+				}
 			}
 		}
 

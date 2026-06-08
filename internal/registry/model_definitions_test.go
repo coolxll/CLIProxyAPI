@@ -49,6 +49,21 @@ func TestWithXAIBuiltinsAddsVideoModel(t *testing.T) {
 	}
 }
 
+func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
+	models := WithXAIBuiltins(nil)
+
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if model.ID == xaiBuiltinVideo15PreviewModelID {
+			return
+		}
+	}
+
+	t.Fatalf("expected xAI builtin model %s", xaiBuiltinVideo15PreviewModelID)
+}
+
 func TestTraeModelsExcludeUnavailableCustomConfigs(t *testing.T) {
 	for _, id := range []string{"claude-3.7-sonnet", "claude-4-sonnet", "gemini-2.5-pro"} {
 		if model := findModelInfo(GetTraeModels(), id); model != nil {

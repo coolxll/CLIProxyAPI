@@ -2139,24 +2139,6 @@ func normalizeTraeProtocol(protocol string) string {
 	}
 }
 
-func metadataString(metadata map[string]any, key string) string {
-	if metadata == nil {
-		return ""
-	}
-	raw, ok := metadata[key]
-	if !ok || raw == nil {
-		return ""
-	}
-	switch value := raw.(type) {
-	case string:
-		return strings.TrimSpace(value)
-	case fmt.Stringer:
-		return strings.TrimSpace(value.String())
-	default:
-		return strings.TrimSpace(fmt.Sprint(value))
-	}
-}
-
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -194,12 +195,19 @@ type lingmaNonStreamAggregate struct {
 	FinishReason     string
 	Usage            json.RawMessage
 	ToolCalls        []json.RawMessage
+	ToolCallDeltas   map[string]*lingmaToolCallDelta
+	ToolCallOrder    []string
 	HasToolCalls     bool
 	ReasoningContent strings.Builder
 	InThought        bool
 	HasError         bool
 	ErrorMsg         string
 	ErrorType        string
+}
+
+type lingmaToolCallDelta struct {
+	Data      map[string]any
+	Arguments strings.Builder
 }
 
 func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
@@ -280,8 +288,9 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 			message["reasoning_content"] = strings.TrimSpace(newReasoning.String())
 		}
 	}
-	if agg.HasToolCalls && len(agg.ToolCalls) > 0 {
-		message["tool_calls"] = agg.ToolCalls
+	toolCalls := agg.mergedToolCalls()
+	if agg.HasToolCalls && len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
 		if agg.FinishReason == "" || agg.FinishReason == "stop" {
 			agg.FinishReason = "tool_calls"
 		}
@@ -313,6 +322,104 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 		return raw
 	}
 	return encoded
+}
+
+func (agg *lingmaNonStreamAggregate) mergeDeltaToolCall(choice, tc gjson.Result) {
+	if agg == nil {
+		return
+	}
+	var fragment map[string]any
+	if err := json.Unmarshal([]byte(tc.Raw), &fragment); err != nil {
+		agg.ToolCalls = append(agg.ToolCalls, json.RawMessage(tc.Raw))
+		return
+	}
+
+	choiceIndex := choice.Get("index").Int()
+	toolIndexResult := tc.Get("index")
+	toolIndex := toolIndexResult.Int()
+	if !toolIndexResult.Exists() {
+		toolIndex = int64(len(agg.ToolCallOrder))
+	}
+	key := fmt.Sprintf("%d:%d", choiceIndex, toolIndex)
+
+	if agg.ToolCallDeltas == nil {
+		agg.ToolCallDeltas = make(map[string]*lingmaToolCallDelta)
+	}
+	delta := agg.ToolCallDeltas[key]
+	if delta == nil {
+		delta = &lingmaToolCallDelta{Data: make(map[string]any)}
+		agg.ToolCallDeltas[key] = delta
+		agg.ToolCallOrder = append(agg.ToolCallOrder, key)
+	}
+
+	for field, value := range fragment {
+		if field == "function" {
+			mergeLingmaToolCallFunction(delta, value)
+			continue
+		}
+		setLingmaToolCallField(delta.Data, field, value)
+	}
+}
+
+func mergeLingmaToolCallFunction(delta *lingmaToolCallDelta, value any) {
+	if delta == nil {
+		return
+	}
+	fragment, ok := value.(map[string]any)
+	if !ok {
+		setLingmaToolCallField(delta.Data, "function", value)
+		return
+	}
+	function, _ := delta.Data["function"].(map[string]any)
+	if function == nil {
+		function = make(map[string]any)
+		delta.Data["function"] = function
+	}
+	for field, fieldValue := range fragment {
+		if field == "arguments" {
+			if arg, okArg := fieldValue.(string); okArg {
+				delta.Arguments.WriteString(arg)
+				function[field] = delta.Arguments.String()
+				continue
+			}
+		}
+		setLingmaToolCallField(function, field, fieldValue)
+	}
+}
+
+func setLingmaToolCallField(target map[string]any, field string, value any) {
+	if target == nil {
+		return
+	}
+	if str, ok := value.(string); ok && str == "" {
+		if _, exists := target[field]; exists {
+			return
+		}
+	}
+	if value == nil {
+		return
+	}
+	target[field] = value
+}
+
+func (agg *lingmaNonStreamAggregate) mergedToolCalls() []json.RawMessage {
+	if agg == nil {
+		return nil
+	}
+	toolCalls := make([]json.RawMessage, 0, len(agg.ToolCalls)+len(agg.ToolCallOrder))
+	toolCalls = append(toolCalls, agg.ToolCalls...)
+	for _, key := range agg.ToolCallOrder {
+		delta := agg.ToolCallDeltas[key]
+		if delta == nil {
+			continue
+		}
+		encoded, err := json.Marshal(delta.Data)
+		if err != nil {
+			continue
+		}
+		toolCalls = append(toolCalls, json.RawMessage(encoded))
+	}
+	return toolCalls
 }
 
 func collectLingmaOpenAIFragment(agg *lingmaNonStreamAggregate, data []byte) {
@@ -365,7 +472,7 @@ func collectLingmaOpenAIFragment(agg *lingmaNonStreamAggregate, data []byte) {
 		if tcs := choice.Get("delta.tool_calls"); tcs.Exists() && tcs.IsArray() {
 			agg.HasToolCalls = true
 			tcs.ForEach(func(_, tc gjson.Result) bool {
-				agg.ToolCalls = append(agg.ToolCalls, json.RawMessage(tc.Raw))
+				agg.mergeDeltaToolCall(choice, tc)
 				return true
 			})
 		}

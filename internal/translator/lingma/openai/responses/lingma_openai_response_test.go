@@ -153,6 +153,31 @@ data:{"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[{\"d
 	}
 }
 
+func TestConvertLingmaResponseToOpenAINonStreamMergesStreamingToolCallDeltas(t *testing.T) {
+	raw := []byte(`data:{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"search","arguments":""}}]},"index":0}]}
+data:{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":\""}}]},"index":0}]}
+data:{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"test\"}"}}]},"finish_reason":"tool_calls","index":0}]}`)
+
+	out := ConvertLingmaResponseToOpenAINonStream(context.Background(), "test", nil, nil, raw, nil)
+	tcs := gjson.GetBytes(out, "choices.0.message.tool_calls")
+	if !tcs.Exists() || !tcs.IsArray() {
+		t.Fatalf("message.tool_calls not found: %s", out)
+	}
+	if len(tcs.Array()) != 1 {
+		t.Fatalf("len(tool_calls) = %d, want 1; out=%s", len(tcs.Array()), out)
+	}
+	tc := tcs.Array()[0]
+	if got := tc.Get("id").String(); got != "call_abc" {
+		t.Fatalf("tool_calls.0.id = %q, want call_abc; out=%s", got, out)
+	}
+	if got := tc.Get("function.name").String(); got != "search" {
+		t.Fatalf("tool_calls.0.function.name = %q, want search; out=%s", got, out)
+	}
+	if got := tc.Get("function.arguments").String(); got != `{"q":"test"}` {
+		t.Fatalf("tool_calls.0.function.arguments = %q, want full JSON arguments; out=%s", got, out)
+	}
+}
+
 func TestConvertLingmaResponseToOpenAIExtractsUsageWithChoices(t *testing.T) {
 	var param any
 	// Lingma sends usage inside the body alongside choices (double-JSON envelope)

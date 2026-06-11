@@ -64,3 +64,5 @@ cmd/test-models/
 scripts/
 tasks/
 # --- End local/dev files ---
+.tmp-gocache/
+start-server.sh

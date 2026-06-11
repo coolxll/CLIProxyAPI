@@ -1605,9 +1605,21 @@ func TestAccessAdapterErrorReturnsNotHandledAndRestoresBody(t *testing.T) {
 }
 
 func TestExecutorAdapterMethods(t *testing.T) {
+	sdktranslator.Register("mock-claude", "mock-openai", nil, sdktranslator.ResponseTransform{
+		NonStream: func(ctx context.Context, model string, originalRequest, request, response []byte, param *any) []byte {
+			return response
+		},
+		Stream: func(ctx context.Context, model string, originalRequest, request, response []byte, param *any) [][]byte {
+			if string(response) == "plugin-stream-1" {
+				return [][]byte{[]byte("stream-1")}
+			}
+			return [][]byte{response}
+		},
+	})
+
 	streamChunks := make(chan pluginapi.ExecutorStreamChunk, 2)
 	streamErr := errors.New("stream failed")
-	streamChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("stream-1")}
+	streamChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("plugin-stream-1")}
 	streamChunks <- pluginapi.ExecutorStreamChunk{Err: streamErr}
 	close(streamChunks)
 
@@ -1677,10 +1689,12 @@ func TestExecutorAdapterMethods(t *testing.T) {
 		},
 	}
 	adapter := &executorAdapter{
-		host:     host,
-		pluginID: "executor-plugin",
-		provider: "plugin-provider",
-		executor: exec,
+		host:          host,
+		pluginID:      "executor-plugin",
+		provider:      "plugin-provider",
+		executor:      exec,
+		inputFormats:  []sdktranslator.Format{"mock-claude"},
+		outputFormats: []sdktranslator.Format{"mock-openai"},
 	}
 	auth := &coreauth.Auth{
 		ID:       "auth-1",
@@ -1689,7 +1703,7 @@ func TestExecutorAdapterMethods(t *testing.T) {
 	}
 	req := coreexecutor.Request{
 		Model:   "model-1",
-		Format:  sdktranslator.FormatOpenAI,
+		Format:  sdktranslator.Format("mock-openai"),
 		Payload: []byte("payload"),
 		Metadata: map[string]any{
 			"req": "metadata",
@@ -1700,7 +1714,7 @@ func TestExecutorAdapterMethods(t *testing.T) {
 		Alt:             "alt",
 		Headers:         http.Header{"X-Request": []string{"yes"}},
 		OriginalRequest: []byte("original"),
-		SourceFormat:    sdktranslator.FormatClaude,
+		SourceFormat:    sdktranslator.Format("mock-claude"),
 		Metadata: map[string]any{
 			"opt": "metadata",
 		},
@@ -1862,6 +1876,8 @@ func TestExecutorAdapterPanicFusesAndReturnsError(t *testing.T) {
 				return pluginapi.ExecutorResponse{Payload: []byte("should-not-run")}, nil
 			},
 		},
+		inputFormats:  []sdktranslator.Format{sdktranslator.FormatOpenAI},
+		outputFormats: []sdktranslator.Format{sdktranslator.FormatOpenAI},
 	}
 
 	resp, errExecute := adapter.Execute(context.Background(), &coreauth.Auth{}, coreexecutor.Request{}, coreexecutor.Options{})
@@ -2214,9 +2230,9 @@ func (e *fakeExecutor) HttpRequest(ctx context.Context, req pluginapi.ExecutorHT
 
 func assertExecutorRequest(t *testing.T, req pluginapi.ExecutorRequest) {
 	t.Helper()
-	if req.AuthID != "auth-1" || req.AuthProvider != "plugin-provider" || req.Model != "model-1" || req.Format != sdktranslator.FormatOpenAI.String() ||
+	if req.AuthID != "auth-1" || req.AuthProvider != "plugin-provider" || req.Model != "model-1" || req.Format != "mock-openai" ||
 		!req.Stream || req.Alt != "alt" || req.Headers.Get("X-Request") != "yes" || string(req.OriginalRequest) != "original" ||
-		req.SourceFormat != sdktranslator.FormatClaude.String() || string(req.Payload) != "payload" ||
+		req.SourceFormat != "mock-claude" || string(req.Payload) != "payload" ||
 		req.Metadata["req"] != "metadata" || req.Metadata["opt"] != "metadata" {
 		t.Fatalf("executor request = %#v, want mapped request", req)
 	}

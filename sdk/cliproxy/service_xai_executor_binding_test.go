@@ -1,6 +1,7 @@
 package cliproxy
 
 import (
+	"context"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -71,7 +72,7 @@ func TestRegisterModelsForAuth_TraeUsesStaticFallbackWhenDynamicFetchUnavailable
 		GlobalModelRegistry().UnregisterClient(auth.ID)
 	})
 
-	service.registerModelsForAuth(auth)
+	service.registerModelsForAuth(context.Background(), auth)
 
 	models := registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
 	for _, model := range models {

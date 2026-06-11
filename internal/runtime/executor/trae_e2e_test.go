@@ -24,8 +24,58 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func traeE2ETargets(t *testing.T) []executorE2ETarget {
+	t.Helper()
+	authFile := findTraeTestAuthFile(t)
+	if authFile == "" {
+		t.Log("no Trae auth JSON found; skipping Trae targets")
+		return nil
+	}
+	auth := loadTraeTestAuthFromFile(t, authFile)
+	v1Model := strings.TrimSpace(os.Getenv("TRAE_E2E_V1_MODEL"))
+	if v1Model == "" {
+		v1Model = "deepseek-R1"
+	}
+	v3Model := strings.TrimSpace(os.Getenv("TRAE_E2E_V3_MODEL"))
+	if v3Model == "" {
+		v3Model = "glm-4.7"
+	}
+	e := NewTraeExecutor(nil)
+	return []executorE2ETarget{
+		{
+			Name:                       "trae-v1/" + v1Model,
+			Executor:                   e,
+			Auth:                       auth,
+			Model:                      v1Model,
+			SourceFormat:               sdktranslator.FromString("openai"),
+			SupportsClaudeTools:        true,
+			SupportsToolResultFollowUp: true,
+			RequiresTraeToolID:         true,
+		},
+		{
+			Name:                       "trae-v3/" + v3Model,
+			Executor:                   e,
+			Auth:                       auth,
+			Model:                      v3Model,
+			SourceFormat:               sdktranslator.FromString("openai"),
+			SupportsClaudeTools:        true,
+			SupportsToolResultFollowUp: false,
+			RequiresTraeToolID:         true,
+		},
+	}
+}
+
 // loadTraeTestAuth loads Trae credentials from the local JSON auth file.
 func loadTraeTestAuth(t *testing.T) *cliproxyauth.Auth {
+	t.Helper()
+	authFile := findTraeTestAuthFile(t)
+	if authFile == "" {
+		t.Skip("no Trae auth JSON found; set TRAE_E2E_AUTH_FILE or place a Trae auth JSON in auths/")
+	}
+	return loadTraeTestAuthFromFile(t, authFile)
+}
+
+func findTraeTestAuthFile(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
 	if err != nil {
@@ -58,10 +108,11 @@ func loadTraeTestAuth(t *testing.T) *cliproxyauth.Auth {
 			}
 		}
 	}
-	if authFile == "" {
-		t.Skip("no Trae auth JSON found; set TRAE_E2E_AUTH_FILE or place a Trae auth JSON in auths/")
-	}
+	return authFile
+}
 
+func loadTraeTestAuthFromFile(t *testing.T, authFile string) *cliproxyauth.Auth {
+	t.Helper()
 	raw, err := os.ReadFile(authFile)
 	if err != nil {
 		t.Fatalf("read auth file: %v", err)
@@ -108,52 +159,6 @@ func isTraeE2EAuthFile(t *testing.T, path string) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(authData.Type), "trae") || strings.TrimSpace(authData.JWTToken) != ""
-}
-
-// collectStreamContent drains a stream result and returns aggregated content and reasoning.
-func collectStreamContent(t *testing.T, result *cliproxyexecutor.StreamResult, sourceFmt sdktranslator.Format) (content, reasoning string, usage *gjson.Result) {
-	t.Helper()
-	e := NewTraeExecutor(nil)
-	req := cliproxyexecutor.Request{Model: "test"}
-	opts := cliproxyexecutor.Options{SourceFormat: sourceFmt}
-
-	// Use the same aggregation logic as Execute()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	var aggContent, aggReasoning strings.Builder
-	var usageResult *gjson.Result
-	openaiFormat := sdktranslator.FromString("openai")
-	var parseParam any
-
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("stream error: %v", chunk.Err)
-		}
-		requireOpenAIStreamPayload(t, chunk.Payload)
-		_ = e // suppress unused
-		chunks := sdktranslator.TranslateStream(ctx, sourceFmt, openaiFormat, req.Model, opts.OriginalRequest, nil, chunk.Payload, &parseParam)
-		for _, oc := range chunks {
-			dataStr := string(oc)
-			if strings.HasPrefix(dataStr, "data:") {
-				dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
-			}
-			if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
-				continue
-			}
-			if c := gjson.Get(dataStr, "choices.0.delta.content"); c.Exists() && c.String() != "" {
-				aggContent.WriteString(c.String())
-			}
-			if r := gjson.Get(dataStr, "choices.0.delta.reasoning_content"); r.Exists() && r.String() != "" {
-				aggReasoning.WriteString(r.String())
-			}
-			if u := gjson.Get(dataStr, "usage"); u.Exists() && u.Get("total_tokens").Int() > 0 {
-				result := gjson.Parse(u.Raw)
-				usageResult = &result
-			}
-		}
-	}
-	return aggContent.String(), aggReasoning.String(), usageResult
 }
 
 func TestTraeE2E_V1_RawChat_DeepSeekR1(t *testing.T) {
@@ -299,6 +304,229 @@ func TestTraeE2E_V1_DebugRawResponse(t *testing.T) {
 	}
 }
 
+// TestTraeE2E_V1_DebugRawToolCallResponse captures the raw SSE format when
+// a V1 model calls a tool via the plaintext-tools protocol. This test
+// reveals the actual format of tool call responses (e.g., <seed:tool_call>,
+// <|FunctionCallBegin|>, or standard OpenAI tool_calls deltas).
+// It tests both deepseek-R1 and deepseek-V3 with directory-related prompts
+// to trigger <seed:tool_call> format that may appear in reasoning_content.
+func TestTraeE2E_V1_DebugRawToolCallResponse(t *testing.T) {
+	const maxDebugDataLines = 200
+	models := []string{"deepseek-V3", "deepseek-R1"}
+	for _, model := range models {
+		t.Run(model, func(t *testing.T) {
+			auth := loadTraeTestAuth(t)
+			creds, err := traeauth.CredentialsFromAuth(auth)
+			if err != nil {
+				t.Fatalf("credentials: %v", err)
+			}
+
+			workspacePath := traeauth.WorkspacePathFromAuth(auth, "")
+			if workspacePath == "" {
+				workspacePath = "/tmp"
+			}
+			// Build a V1 request with directory/file operation tools.
+			// Use a prompt that asks the model to search for files, which may
+			// trigger the <seed:tool_call> format in reasoning_content.
+			rawRequest := []byte(`{
+				"model": "` + model + `",
+				"messages": [
+					{"role": "system", "content": "You have access to the following tools. When you need information, call the appropriate tool before answering. Do not say you don't have access to tools."},
+					{"role": "user", "content": "List all files in the directory ` + workspacePath + `. You must call the Glob tool to find out."}
+				],
+				"stream": true,
+				"tools": [
+					{
+						"type": "function",
+						"function": {
+							"name": "Glob",
+							"description": "Fast file pattern matching tool that works with any number of patterns.",
+							"parameters": {
+								"type": "object",
+								"properties": {
+									"pattern": {
+										"type": "string",
+										"description": "The glob pattern to match files against"
+									}
+								},
+								"required": ["pattern"]
+							}
+						}
+					},
+					{
+						"type": "function",
+						"function": {
+							"name": "Read",
+							"description": "Reads a file from the local filesystem.",
+							"parameters": {
+								"type": "object",
+								"properties": {
+									"file_path": {
+										"type": "string",
+										"description": "The absolute path to the file to read"
+									}
+								},
+								"required": ["file_path"]
+							}
+						}
+					},
+					{
+						"type": "function",
+						"function": {
+							"name": "Bash",
+							"description": "Execute a shell command",
+							"parameters": {
+								"type": "object",
+								"properties": {
+									"command": {
+										"type": "string",
+										"description": "The command to execute"
+									}
+								},
+								"required": ["command"]
+							}
+						}
+					}
+				]
+			}`)
+
+			build, err := buildTraeRawChatRequest(traeProtocolV1, model, rawRequest, cliproxyexecutor.Options{})
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+
+			t.Logf("V1 %s tool call debug request body (first 500 chars): %s", model, truncate(string(build.RequestBody), 500))
+
+			httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, build.TargetURL, bytes.NewReader(build.RequestBody))
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+
+			httpReq.Header.Set("Content-Type", "application/json")
+			setTraeCommonHeaders(httpReq.Header, creds)
+			httpReq.Header.Set("X-Ide-Session-Id", build.SessionID)
+			httpReq.Header.Set("X-Request-Pin", build.RequestPin)
+			httpReq.Header.Set("X-Requested-At", strconv.FormatInt(build.RequestAt, 10))
+			httpReq.Header.Set("Accept", "text/event-stream")
+			httpReq.Header.Set("Cache-Control", "no-cache")
+			httpReq.Header.Set("get-svc", "1")
+
+			httpClient := &http.Client{Timeout: 120 * time.Second}
+			httpResp, err := httpClient.Do(httpReq)
+			if err != nil {
+				t.Fatalf("http do: %v", err)
+			}
+			defer httpResp.Body.Close()
+
+			t.Logf("V1 %s tool call debug response status: %d", model, httpResp.StatusCode)
+			if httpResp.StatusCode != 200 {
+				body, _ := io.ReadAll(httpResp.Body)
+				t.Fatalf("V1 %s tool call debug error %d: %s", model, httpResp.StatusCode, string(body))
+			}
+
+			scanner := bufio.NewScanner(httpResp.Body)
+			scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+			lineCount := 0
+			var currentEvent string
+			var seedToolCallMarkers, functionCallMarkers, openAIToolCallFields int
+			var allDataLines []string
+			var reasoningContent strings.Builder
+			for scanner.Scan() {
+				line := scanner.Text()
+				trimmed := strings.TrimSpace(line)
+
+				if strings.HasPrefix(trimmed, "event:") {
+					currentEvent = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+					t.Logf("  EVENT: %s", currentEvent)
+					continue
+				}
+
+				if strings.HasPrefix(trimmed, "data:") {
+					data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+					if data == "" {
+						continue
+					}
+					lineCount++
+					if len(allDataLines) < maxDebugDataLines {
+						allDataLines = append(allDataLines, data)
+					}
+
+					// Collect reasoning_content for analysis
+					if gjson.Valid(data) {
+						if rc := gjson.Get(data, "reasoning_content"); rc.Exists() && rc.String() != "" && rc.String() != "null" {
+							reasoningContent.WriteString(rc.String())
+						}
+					}
+
+					// Detect <seed:tool_call> format (in any field, including JSON-escaped)
+					if strings.Contains(data, "seed:tool_call") || strings.Contains(data, "seed_tool_call") {
+						seedToolCallMarkers++
+						t.Logf("  DATA[%d] (event=%s) [SEED_TOOL_CALL]: %s", lineCount, currentEvent, data)
+					}
+
+					// Detect <|FunctionCallBegin|> format
+					if strings.Contains(data, "FunctionCallBegin") || strings.Contains(data, "FunctionCallEnd") {
+						functionCallMarkers++
+						t.Logf("  DATA[%d] (event=%s) [FUNC_CALL]: %s", lineCount, currentEvent, data)
+					}
+
+					// Detect OpenAI tool_calls delta format
+					if gjson.Valid(data) {
+						if tc := gjson.Get(data, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() {
+							openAIToolCallFields++
+							t.Logf("  DATA[%d] (event=%s) [OPENAI_TOOL_CALLS]: %s", lineCount, currentEvent, truncate(data, 1000))
+						}
+						if tc := gjson.Get(data, "tool_calls"); tc.Exists() && tc.IsArray() && tc.String() != "null" {
+							t.Logf("  DATA[%d] (event=%s) [V1_TOOL_CALLS]: %s", lineCount, currentEvent, truncate(data, 1000))
+						}
+					}
+
+					// Log all data lines (no truncation for tool-related lines)
+					if strings.Contains(data, "tool_call") || strings.Contains(data, "tool_name") ||
+						strings.Contains(data, "toolcall") || strings.Contains(data, "arguments") ||
+						strings.Contains(data, "seed:tool_call") || strings.Contains(data, "FunctionCall") ||
+						strings.Contains(data, "reasoning_content") {
+						t.Logf("  DATA[%d] (event=%s) [TOOL_RELATED]: %s", lineCount, currentEvent, data)
+					} else if lineCount <= 50 {
+						t.Logf("  DATA[%d] (event=%s): %s", lineCount, currentEvent, truncate(data, 500))
+					}
+					currentEvent = ""
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("scan V1 %s tool call debug stream: %v", model, err)
+			}
+
+			t.Logf("V1 %s tool call debug total data lines: %d", model, lineCount)
+			t.Logf("V1 %s tool call debug markers: seed_tool_call=%d function_call=%d openai_tool_calls=%d",
+				model, seedToolCallMarkers, functionCallMarkers, openAIToolCallFields)
+
+			// Dump reasoning_content for analysis of <seed:tool_call> format
+			rcStr := reasoningContent.String()
+			if rcStr != "" {
+				t.Logf("=== AGGREGATED reasoning_content for %s ===", model)
+				t.Logf("  reasoning_content: %s", truncate(rcStr, 5000))
+				if strings.Contains(rcStr, "<seed:tool_call>") || strings.Contains(rcStr, "</seed:tool_call>") {
+					t.Logf("  FOUND <seed:tool_call> in reasoning_content!")
+				}
+			}
+
+			// Dump all data lines for manual analysis of the tool call format
+			t.Logf("=== ALL DATA LINES for %s (for format analysis) ===", model)
+			for i, d := range allDataLines {
+				t.Logf("  ALL[%d]: %s", i, truncate(d, 500))
+			}
+			if lineCount > maxDebugDataLines {
+				t.Logf("  ... (%d more data lines not shown)", lineCount-maxDebugDataLines)
+			}
+
+			if lineCount == 0 {
+				t.Fatal("V1 tool call debug received 0 data lines")
+			}
+		})
+	}
+}
+
 func TestTraeE2E_V2_RawChat_NoThinkingModel(t *testing.T) {
 	auth := loadTraeTestAuth(t)
 	e := NewTraeExecutor(nil)
@@ -332,169 +560,6 @@ func TestTraeE2E_V2_RawChat_NoThinkingModel(t *testing.T) {
 
 	if strings.TrimSpace(content) == "" {
 		t.Fatal("V2 no_thinking_model returned empty content")
-	}
-}
-
-func TestTraeE2E_V3_NonStreaming(t *testing.T) {
-	auth := loadTraeTestAuth(t)
-	e := NewTraeExecutor(nil)
-	ctx := context.Background()
-
-	rawRequest := []byte(`{
-		"model": "glm-5",
-		"messages": [
-			{"role": "user", "content": "Reply with exactly: E2E_V3_OK"}
-		]
-	}`)
-
-	resp, err := e.Execute(ctx, auth, cliproxyexecutor.Request{
-		Model:   "glm-5",
-		Payload: rawRequest,
-	}, cliproxyexecutor.Options{
-		Stream:          false,
-		OriginalRequest: rawRequest,
-		SourceFormat:    sdktranslator.FromString("openai"),
-	})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-
-	payload := string(resp.Payload)
-	t.Logf("V3 glm-5 non-stream payload: %s", truncate(payload, 500))
-
-	content := gjson.GetBytes(resp.Payload, "choices.0.message.content").String()
-	reasoning := gjson.GetBytes(resp.Payload, "choices.0.message.reasoning_content").String()
-	t.Logf("V3 glm-5 content: %q", content)
-	t.Logf("V3 glm-5 reasoning length: %d", len(reasoning))
-
-	if strings.TrimSpace(content) == "" {
-		t.Fatal("V3 glm-5 non-stream returned empty content")
-	}
-}
-
-func TestTraeE2E_V3_Streaming(t *testing.T) {
-	auth := loadTraeTestAuth(t)
-	e := NewTraeExecutor(nil)
-	ctx := context.Background()
-
-	rawRequest := []byte(`{
-		"model": "glm-5",
-		"messages": [
-			{"role": "user", "content": "Reply with exactly: E2E_V3_STREAM"}
-		],
-		"stream": true
-	}`)
-
-	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
-		Model:   "glm-5",
-		Payload: rawRequest,
-	}, cliproxyexecutor.Options{
-		Stream:          true,
-		OriginalRequest: rawRequest,
-		SourceFormat:    sdktranslator.FromString("openai"),
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
-	}
-
-	var rawChunks []string
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("stream error: %v", chunk.Err)
-		}
-		requireOpenAIStreamPayload(t, chunk.Payload)
-		rawChunks = append(rawChunks, string(chunk.Payload))
-	}
-
-	t.Logf("V3 glm-5 streaming got %d raw chunks", len(rawChunks))
-	for i, c := range rawChunks {
-		t.Logf("  raw[%d]: %s", i, truncate(c, 300))
-	}
-
-	var aggContent, aggReasoning strings.Builder
-	for _, c := range rawChunks {
-		dataStr := c
-		if strings.HasPrefix(dataStr, "data:") {
-			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
-		}
-		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
-			continue
-		}
-		if val := gjson.Get(dataStr, "choices.0.delta.content"); val.Exists() && val.String() != "" {
-			aggContent.WriteString(val.String())
-		}
-		if val := gjson.Get(dataStr, "choices.0.delta.reasoning_content"); val.Exists() && val.String() != "" {
-			aggReasoning.WriteString(val.String())
-		}
-	}
-
-	t.Logf("V3 glm-5 streaming content: %q", aggContent.String())
-	t.Logf("V3 glm-5 streaming reasoning length: %d", len(aggReasoning.String()))
-
-	if strings.TrimSpace(aggContent.String()) == "" {
-		t.Fatal("V3 glm-5 streaming returned empty content")
-	}
-}
-
-func TestTraeE2E_V1_NonStreaming_DeepSeekV3(t *testing.T) {
-	auth := loadTraeTestAuth(t)
-	e := NewTraeExecutor(nil)
-	ctx := context.Background()
-
-	rawRequest := []byte(`{
-		"model": "deepseek-V3",
-		"messages": [
-			{"role": "user", "content": "Reply with exactly: E2E_V1_V3_OK"}
-		]
-	}`)
-
-	// First test streaming to confirm the executor produces content
-	streamResult, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
-		Model:   "deepseek-V3",
-		Payload: rawRequest,
-	}, cliproxyexecutor.Options{
-		Stream:          true,
-		OriginalRequest: rawRequest,
-		SourceFormat:    sdktranslator.FromString("openai"),
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
-	}
-
-	var streamChunks []string
-	for chunk := range streamResult.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("stream error: %v", chunk.Err)
-		}
-		requireOpenAIStreamPayload(t, chunk.Payload)
-		streamChunks = append(streamChunks, string(chunk.Payload))
-	}
-	t.Logf("V1 deepseek-V3 streaming got %d chunks", len(streamChunks))
-	for i, c := range streamChunks {
-		t.Logf("  chunk[%d]: %s", i, truncate(c, 300))
-	}
-
-	// Now test non-streaming
-	resp, err := e.Execute(ctx, auth, cliproxyexecutor.Request{
-		Model:   "deepseek-V3",
-		Payload: rawRequest,
-	}, cliproxyexecutor.Options{
-		Stream:          false,
-		OriginalRequest: rawRequest,
-		SourceFormat:    sdktranslator.FromString("openai"),
-	})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-
-	payload := string(resp.Payload)
-	t.Logf("V1 deepseek-V3 non-stream payload: %s", truncate(payload, 500))
-
-	content := gjson.GetBytes(resp.Payload, "choices.0.message.content").String()
-	t.Logf("V1 deepseek-V3 content: %q", content)
-
-	if strings.TrimSpace(content) == "" {
-		t.Fatal("V1 deepseek-V3 non-stream returned empty content")
 	}
 }
 
@@ -919,6 +984,21 @@ func TestTraeE2E_V3_ToolCallViaExecutor(t *testing.T) {
 	// Use a prompt that will trigger a tool call
 	rawRequest := []byte(`{
 		"model": "` + model + `",
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "LS",
+					"description": "List files in a directory.",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"path": {"type": "string", "description": "Directory path to list."}
+						}
+					}
+				}
+			}
+		],
 		"messages": [
 			{"role": "user", "content": "Use the LS tool to list the current workspace directory. Do not answer from memory; call the tool first."}
 		],
@@ -991,101 +1071,6 @@ func TestTraeE2E_V3_ToolCallViaExecutor(t *testing.T) {
 			state.SessionID, state.ConversationID, state.TaskID, state.AgentRunID, state.NativeID, state.Name)
 	} else {
 		t.Logf("V3 model did not call a tool in this run (may have answered directly). This is acceptable.")
-	}
-}
-
-func TestTraeE2E_V3_ClaudeProtocolToolUse(t *testing.T) {
-	auth := loadTraeTestAuth(t)
-	e := NewTraeExecutor(nil)
-	ctx := context.Background()
-
-	model := traeE2EV3DebugModel()
-	rawRequest := []byte(`{
-		"model": "` + model + `",
-		"max_tokens": 1024,
-		"stream": true,
-		"tools": [
-			{
-				"name": "Bash",
-				"description": "Run a shell command in the current working directory.",
-				"input_schema": {
-					"type": "object",
-					"properties": {
-						"command": {"type": "string"}
-					},
-					"required": ["command"]
-				}
-			}
-		],
-		"messages": [
-				{
-					"role": "user",
-					"content": "Use the Bash tool to run exactly ls -la in the current working directory. Do not answer from memory; call the tool first."
-				}
-		]
-	}`)
-
-	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
-		Model:   model,
-		Payload: rawRequest,
-	}, cliproxyexecutor.Options{
-		Stream:          true,
-		OriginalRequest: rawRequest,
-		SourceFormat:    sdktranslator.FromString("claude"),
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
-	}
-
-	var text strings.Builder
-	var toolUseNames []string
-	var toolUseIDs []string
-	var toolInput strings.Builder
-	stopReason := ""
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("stream error: %v", chunk.Err)
-		}
-		for _, event := range parseClaudeSSEEvents(string(chunk.Payload)) {
-			payload := gjson.Parse(event.data)
-			switch event.typ {
-			case "content_block_start":
-				if payload.Get("content_block.type").String() == "tool_use" {
-					toolUseNames = append(toolUseNames, payload.Get("content_block.name").String())
-					toolUseIDs = append(toolUseIDs, payload.Get("content_block.id").String())
-				}
-			case "content_block_delta":
-				switch payload.Get("delta.type").String() {
-				case "text_delta":
-					text.WriteString(payload.Get("delta.text").String())
-				case "input_json_delta":
-					toolInput.WriteString(payload.Get("delta.partial_json").String())
-				}
-			case "message_delta":
-				if sr := payload.Get("delta.stop_reason").String(); sr != "" {
-					stopReason = sr
-				}
-			}
-		}
-	}
-
-	t.Logf("Claude protocol tool_use count=%d names=%v stop_reason=%q text_len=%d input=%s",
-		len(toolUseNames), toolUseNames, stopReason, text.Len(), truncate(toolInput.String(), 300))
-
-	if len(toolUseNames) == 0 {
-		t.Fatalf("expected Claude tool_use for directory listing request, got none; stop_reason=%q text=%q",
-			stopReason, truncate(text.String(), 500))
-	}
-	if stopReason != "tool_use" {
-		t.Fatalf("stop_reason = %q, want tool_use", stopReason)
-	}
-	for i, id := range toolUseIDs {
-		if !strings.HasPrefix(id, "trae_") {
-			t.Fatalf("tool_use id[%d] = %q, want trae_ encoded id", i, id)
-		}
-		if _, errDecode := decodeTraeToolID(id); errDecode != nil {
-			t.Fatalf("decode tool_use id[%d]: %v", i, errDecode)
-		}
 	}
 }
 
@@ -1525,12 +1510,11 @@ func TestTraeE2E_V3_ToolCommitFallbackDeltaViaExecutor(t *testing.T) {
 		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
 			continue
 		}
-		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() {
+		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() && toolCallID == "" {
 			first := tc.Array()[0]
 			toolCallID = first.Get("id").String()
 			toolCallName = first.Get("function.name").String()
 			toolCallArguments = first.Get("function.arguments").String()
-			break
 		}
 	}
 	if toolCallID == "" {
@@ -1673,6 +1657,7 @@ func TestTraeE2E_V3_BeijingWeatherMockToolCommitViaExecutor(t *testing.T) {
 	var toolCallName string
 	var toolCallArguments string
 	var initialContent strings.Builder
+	var seenToolNames []string
 	initialFinishReason := ""
 	for chunk := range result.Chunks {
 		if chunk.Err != nil {
@@ -1689,18 +1674,26 @@ func TestTraeE2E_V3_BeijingWeatherMockToolCommitViaExecutor(t *testing.T) {
 			initialContent.WriteString(c.String())
 		}
 		if tc := gjson.Get(dataStr, "choices.0.delta.tool_calls"); tc.Exists() && tc.IsArray() && toolCallID == "" {
-			first := tc.Array()[0]
-			toolCallID = first.Get("id").String()
-			toolCallName = first.Get("function.name").String()
-			toolCallArguments = first.Get("function.arguments").String()
+			for _, item := range tc.Array() {
+				name := item.Get("function.name").String()
+				if name != "" {
+					seenToolNames = append(seenToolNames, name)
+				}
+				if name == "mcp__weather__get_current_weather" {
+					toolCallID = item.Get("id").String()
+					toolCallName = name
+					toolCallArguments = item.Get("function.arguments").String()
+					break
+				}
+			}
 		}
 		if fr := gjson.Get(dataStr, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
 			initialFinishReason = fr.String()
 		}
 	}
 	if toolCallID == "" {
-		t.Fatalf("expected Beijing weather tool_call, got none; finish_reason=%q content=%q",
-			initialFinishReason, truncate(initialContent.String(), 500))
+		t.Fatalf("expected Beijing weather tool_call, got names=%v; finish_reason=%q content=%q",
+			seenToolNames, initialFinishReason, truncate(initialContent.String(), 500))
 	}
 	state, err := decodeTraeToolID(toolCallID)
 	if err != nil {
@@ -1802,37 +1795,6 @@ func TestTraeE2E_V3_BeijingWeatherMockToolCommitViaExecutor(t *testing.T) {
 	if strings.TrimSpace(content.String()) == "" {
 		t.Fatal("commit ExecuteStream produced empty content")
 	}
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
-func requireOpenAIStreamPayload(t *testing.T, payload []byte) {
-	t.Helper()
-	for _, line := range strings.Split(string(payload), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		}
-		if line == "[DONE]" {
-			continue
-		}
-		if !gjson.Valid(line) {
-			t.Fatalf("stream payload is not valid OpenAI JSON data: %q", truncate(line, 300))
-		}
-	}
-}
-
-type traeE2EClaudeEvent struct {
-	typ  string
-	data string
 }
 
 // TestTraeE2E_V3_LargePayloadNoScannerError verifies that a request body exceeding 64KB
@@ -2054,26 +2016,4 @@ func buildLargeToolDefinitionsJSON(n int) string {
 	}
 	b, _ := json.Marshal(tools)
 	return string(b)
-}
-
-func parseClaudeSSEEvents(payload string) []traeE2EClaudeEvent {
-	var events []traeE2EClaudeEvent
-	currentEvent := ""
-	for _, line := range strings.Split(payload, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "event:") {
-			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if data != "" {
-				events = append(events, traeE2EClaudeEvent{typ: currentEvent, data: data})
-			}
-		}
-	}
-	return events
 }

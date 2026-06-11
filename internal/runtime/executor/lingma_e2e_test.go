@@ -11,13 +11,51 @@ import (
 	"testing"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	"github.com/tidwall/gjson"
 )
+
+func lingmaE2ETarget(t *testing.T) (executorE2ETarget, bool) {
+	t.Helper()
+	authFile := findLingmaTestAuthFile(t)
+	if authFile == "" {
+		t.Log("no Lingma auth JSON found; skipping Lingma target")
+		return executorE2ETarget{}, false
+	}
+	auth := loadLingmaTestAuthFromFile(t, authFile)
+	e := NewLingmaExecutor(nil)
+	modelName := strings.TrimSpace(os.Getenv("LINGMA_E2E_MODEL"))
+	if modelName == "" {
+		models, err := e.FetchModels(context.Background(), auth)
+		if err == nil && len(models) > 0 {
+			modelName = models[0].ID
+		}
+	}
+	if modelName == "" {
+		modelName = "qwen-2.5-max"
+	}
+	return executorE2ETarget{
+		Name:                       "lingma/" + modelName,
+		Executor:                   e,
+		Auth:                       auth,
+		Model:                      modelName,
+		SourceFormat:               sdktranslator.FromString("openai"),
+		SupportsClaudeTools:        true,
+		SupportsToolResultFollowUp: true,
+		RequiresTraeToolID:         false,
+	}, true
+}
 
 // loadLingmaTestAuth loads Lingma credentials from the local JSON auth file.
 func loadLingmaTestAuth(t *testing.T) *cliproxyauth.Auth {
+	t.Helper()
+	authFile := findLingmaTestAuthFile(t)
+	if authFile == "" {
+		t.Skip("no Lingma auth JSON found; set LINGMA_E2E_AUTH_FILE or place lingma-*.json in auths/")
+	}
+	return loadLingmaTestAuthFromFile(t, authFile)
+}
+
+func findLingmaTestAuthFile(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
 	if err != nil {
@@ -25,21 +63,30 @@ func loadLingmaTestAuth(t *testing.T) *cliproxyauth.Auth {
 	}
 	repoRoot := filepath.Join(wd, "..", "..", "..")
 
-	var authFile string
-	entries, err := os.ReadDir(repoRoot)
-	if err != nil {
-		t.Fatalf("read repo root: %v", err)
+	authFile := strings.TrimSpace(os.Getenv("LINGMA_E2E_AUTH_FILE"))
+	if authFile != "" && !filepath.IsAbs(authFile) {
+		authFile = filepath.Join(repoRoot, authFile)
 	}
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasPrefix(e.Name(), "lingma-") && strings.HasSuffix(e.Name(), ".json") {
-			authFile = filepath.Join(repoRoot, e.Name())
-			break
-		}
-	}
-	if authFile == "" {
-		t.Skip("no lingma-*.json auth file found in repo root, skipping E2E test")
+	if authFile != "" {
+		return authFile
 	}
 
+	for _, dir := range []string{filepath.Join(repoRoot, "auths"), repoRoot} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasPrefix(e.Name(), "lingma-") && strings.HasSuffix(e.Name(), ".json") {
+				return filepath.Join(dir, e.Name())
+			}
+		}
+	}
+	return ""
+}
+
+func loadLingmaTestAuthFromFile(t *testing.T, authFile string) *cliproxyauth.Auth {
+	t.Helper()
 	raw, err := os.ReadFile(authFile)
 	if err != nil {
 		t.Fatalf("read auth file: %v", err)
@@ -90,108 +137,5 @@ func TestLingmaE2E_FetchModels(t *testing.T) {
 
 	if len(models) == 0 {
 		t.Fatal("Lingma returned 0 models")
-	}
-}
-
-func TestLingmaE2E_Chat_Streaming(t *testing.T) {
-	auth := loadLingmaTestAuth(t)
-	e := NewLingmaExecutor(nil)
-	ctx := context.Background()
-
-	// Try to fetch models first to select a valid one, or default to qwen-2.5-max
-	modelName := "qwen-2.5-max"
-	models, err := e.FetchModels(ctx, auth)
-	if err == nil && len(models) > 0 {
-		modelName = models[0].ID
-	}
-	t.Logf("Using model %q for streaming test", modelName)
-
-	rawRequest := []byte(`{
-		"model": "` + modelName + `",
-		"messages": [
-			{"role": "user", "content": "Reply with exactly: LINGMA_E2E_STREAM_OK"}
-		],
-		"stream": true
-	}`)
-
-	result, err := e.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
-		Model:   modelName,
-		Payload: rawRequest,
-	}, cliproxyexecutor.Options{
-		Stream:          true,
-		OriginalRequest: rawRequest,
-		SourceFormat:    sdktranslator.FromString("openai"),
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
-	}
-
-	var rawChunks []string
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("stream error: %v", chunk.Err)
-		}
-		rawChunks = append(rawChunks, string(chunk.Payload))
-	}
-
-	t.Logf("Lingma streaming got %d raw chunks", len(rawChunks))
-	var aggContent strings.Builder
-	for _, c := range rawChunks {
-		dataStr := c
-		if strings.HasPrefix(dataStr, "data:") {
-			dataStr = strings.TrimSpace(strings.TrimPrefix(dataStr, "data:"))
-		}
-		if dataStr == "[DONE]" || !gjson.Valid(dataStr) {
-			continue
-		}
-		if val := gjson.Get(dataStr, "choices.0.delta.content"); val.Exists() && val.String() != "" {
-			aggContent.WriteString(val.String())
-		}
-	}
-
-	t.Logf("Lingma streaming content: %q", aggContent.String())
-	if strings.TrimSpace(aggContent.String()) == "" {
-		t.Fatal("Lingma streaming returned empty content")
-	}
-}
-
-func TestLingmaE2E_Chat_NonStreaming(t *testing.T) {
-	auth := loadLingmaTestAuth(t)
-	e := NewLingmaExecutor(nil)
-	ctx := context.Background()
-
-	// Try to fetch models first to select a valid one, or default to qwen-2.5-max
-	modelName := "qwen-2.5-max"
-	models, err := e.FetchModels(ctx, auth)
-	if err == nil && len(models) > 0 {
-		modelName = models[0].ID
-	}
-	t.Logf("Using model %q for non-streaming test", modelName)
-
-	rawRequest := []byte(`{
-		"model": "` + modelName + `",
-		"messages": [
-			{"role": "user", "content": "Reply with exactly: LINGMA_E2E_OK"}
-		],
-		"stream": false
-	}`)
-
-	resp, err := e.Execute(ctx, auth, cliproxyexecutor.Request{
-		Model:   modelName,
-		Payload: rawRequest,
-	}, cliproxyexecutor.Options{
-		Stream:          false,
-		OriginalRequest: rawRequest,
-		SourceFormat:    sdktranslator.FromString("openai"),
-	})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-
-	content := gjson.GetBytes(resp.Payload, "choices.0.message.content").String()
-	t.Logf("Lingma non-streaming content: %q", content)
-
-	if strings.TrimSpace(content) == "" {
-		t.Fatal("Lingma non-streaming returned empty content")
 	}
 }

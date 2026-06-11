@@ -66,3 +66,4 @@ tasks/
 # --- End local/dev files ---
 .tmp-gocache/
 start-server.sh
+checkpoint.md

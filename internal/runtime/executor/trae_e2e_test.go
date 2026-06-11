@@ -59,7 +59,7 @@ func traeE2ETargets(t *testing.T) []executorE2ETarget {
 			Model:                      v3Model,
 			SourceFormat:               sdktranslator.FromString("openai"),
 			SupportsClaudeTools:        true,
-			SupportsToolResultFollowUp: false,
+			SupportsToolResultFollowUp: true,
 			RequiresTraeToolID:         true,
 		},
 	}

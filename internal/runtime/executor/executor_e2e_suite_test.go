@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -252,18 +253,76 @@ func runExecutorE2EClaudeWorkspaceInspectionToolUse(t *testing.T, target executo
 
 func runExecutorE2EClaudeToolResultFollowUp(t *testing.T, target executorE2ETarget) {
 	t.Helper()
-	toolID := executorE2EToolUseID(t, target, "Bash")
-	rawRequest := mustMarshalExecutorE2EJSON(t, map[string]any{
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatalf("repo root: %v", err)
+	}
+	readmePath := filepath.Join(repoRoot, "README.md")
+
+	firstPrompt := fmt.Sprintf("Use the Read tool to read the file %s before answering. Do not reply from memory; call the tool first.", readmePath)
+	rawRequest1 := mustMarshalExecutorE2EJSON(t, map[string]any{
 		"model":      target.Model,
 		"max_tokens": 1024,
 		"stream":     true,
-		"tools":      []map[string]any{executorE2EClaudeBashTool()},
+		"tools":      []map[string]any{executorE2EClaudeReadTool()},
+		"messages": []map[string]any{{
+			"role":    "user",
+			"content": firstPrompt,
+		}},
+	})
+
+	parsed1 := executeAndCollectClaudeE2EStream(t, target, rawRequest1)
+	t.Logf("%s Claude tool_result follow-up First Turn: tool_use count=%d names=%v stop_reason=%q input=%s text=%q",
+		target.Name, len(parsed1.ToolUseNames), parsed1.ToolUseNames, parsed1.StopReason,
+		truncate(parsed1.ToolInput, 500), truncate(parsed1.Text, 500))
+
+	if len(parsed1.ToolUseNames) == 0 {
+		logExecutorE2ERawChunks(t, parsed1.RawChunks)
+		t.Fatalf("expected Claude tool_use for first turn of follow-up; stop_reason=%q text=%q",
+			parsed1.StopReason, truncate(parsed1.Text, 500))
+	}
+	toolName := parsed1.ToolUseNames[0]
+	toolID := parsed1.ToolUseIDs[0]
+	if toolName != "Read" {
+		t.Fatalf("expected tool_use name = %q, got = %q", "Read", toolName)
+	}
+	if toolID == "" {
+		t.Fatalf("expected non-empty tool_use ID on first turn")
+	}
+	validateExecutorE2EToolIDs(t, target, parsed1.ToolUseIDs)
+
+	if !gjson.Valid(parsed1.ToolInput) {
+		t.Fatalf("tool input is not valid JSON: %q", parsed1.ToolInput)
+	}
+
+	var toolResult string
+	localBytes, errRead := os.ReadFile(readmePath)
+	if errRead == nil {
+		if len(localBytes) > 200 {
+			toolResult = string(localBytes[:200]) + "\n... truncated ..."
+		} else {
+			toolResult = string(localBytes)
+		}
+	} else {
+		toolResult = "Mock README content: CLIProxyAPI proxy server providing OpenAI/Gemini/Claude compatible APIs."
+	}
+
+	var toolInputJSON any
+	if err := json.Unmarshal([]byte(parsed1.ToolInput), &toolInputJSON); err != nil {
+		t.Fatalf("failed to unmarshal parsed tool input: %v", err)
+	}
+
+	rawRequest2 := mustMarshalExecutorE2EJSON(t, map[string]any{
+		"model":      target.Model,
+		"max_tokens": 1024,
+		"stream":     true,
+		"tools":      []map[string]any{executorE2EClaudeReadTool()},
 		"messages": []map[string]any{
 			{
 				"role": "user",
 				"content": []map[string]any{{
 					"type": "text",
-					"text": "Inspect /tmp before answering.",
+					"text": firstPrompt,
 				}},
 			},
 			{
@@ -272,8 +331,8 @@ func runExecutorE2EClaudeToolResultFollowUp(t *testing.T, target executorE2ETarg
 					{
 						"type":  "tool_use",
 						"id":    toolID,
-						"name":  "Bash",
-						"input": map[string]any{"command": "ls -la /tmp | head -20"},
+						"name":  "Read",
+						"input": toolInputJSON,
 					},
 				},
 			},
@@ -282,7 +341,7 @@ func runExecutorE2EClaudeToolResultFollowUp(t *testing.T, target executorE2ETarg
 				"content": []map[string]any{{
 					"type":        "tool_result",
 					"tool_use_id": toolID,
-					"content":     "total 8\nlrwxr-xr-x  1 root  wheel  11 May 21 01:57 /tmp -> private/tmp",
+					"content":     toolResult,
 					"is_error":    false,
 				}},
 			},
@@ -291,11 +350,11 @@ func runExecutorE2EClaudeToolResultFollowUp(t *testing.T, target executorE2ETarg
 
 	result, err := target.Executor.ExecuteStream(context.Background(), target.Auth, cliproxyexecutor.Request{
 		Model:    target.Model,
-		Payload:  rawRequest,
+		Payload:  rawRequest2,
 		Metadata: target.Metadata,
 	}, cliproxyexecutor.Options{
 		Stream:          true,
-		OriginalRequest: rawRequest,
+		OriginalRequest: rawRequest2,
 		SourceFormat:    sdktranslator.FromString("claude"),
 		Metadata:        target.Metadata,
 	})
@@ -304,15 +363,17 @@ func runExecutorE2EClaudeToolResultFollowUp(t *testing.T, target executorE2ETarg
 		t.Fatalf("ExecuteStream setup error after tool_result follow-up: %v", err)
 	}
 
-	parsed := collectClaudeE2EStream(t, target, result)
-	t.Logf("%s Claude tool_result follow-up chunks=%d stop_reason=%q text=%q tools=%v",
-		target.Name, parsed.ChunkCount, parsed.StopReason, truncate(parsed.Text, 500), parsed.ToolUseNames)
-	if parsed.ChunkCount == 0 {
+	parsed2 := collectClaudeE2EStream(t, target, result)
+	t.Logf("%s Claude tool_result follow-up Second Turn: chunks=%d stop_reason=%q text=%q tools=%v",
+		target.Name, parsed2.ChunkCount, parsed2.StopReason, truncate(parsed2.Text, 500), parsed2.ToolUseNames)
+
+	if parsed2.ChunkCount == 0 {
 		t.Fatal("expected non-empty stream after tool_result follow-up")
 	}
-	if strings.TrimSpace(parsed.Text) == "" && len(parsed.ToolUseNames) == 0 {
+
+	if strings.TrimSpace(parsed2.Text) == "" && len(parsed2.ToolUseNames) == 0 {
 		t.Fatalf("expected text or follow-up tool_use after tool_result; stop_reason=%q chunks=%v",
-			parsed.StopReason, parsed.RawChunks)
+			parsed2.StopReason, parsed2.RawChunks)
 	}
 }
 
@@ -487,6 +548,13 @@ func requireClaudeE2EStreamHygiene(t *testing.T, target executorE2ETarget, raw s
 
 func requireNoExecutorE2EFollowUpStatus(t *testing.T, err error) {
 	t.Helper()
+	if err == nil {
+		return
+	}
+	errStr := err.Error()
+	if strings.Contains(errStr, "redis: nil") {
+		t.Fatalf("disallowed redis: nil error: %v", err)
+	}
 	var statusErr cliproxyexecutor.StatusError
 	if errors.As(err, &statusErr) {
 		switch statusErr.StatusCode() {

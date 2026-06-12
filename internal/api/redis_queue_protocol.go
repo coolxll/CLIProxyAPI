@@ -16,6 +16,7 @@ import (
 
 const (
 	redisUsageChannel  = "usage"
+	redisQueueChannel  = "queue"
 	redisErrorsChannel = "errors"
 )
 
@@ -225,7 +226,7 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 
 func subscribeRedisChannel(channel string) (<-chan []byte, func(), bool) {
 	switch strings.ToLower(strings.TrimSpace(channel)) {
-	case redisUsageChannel:
+	case redisUsageChannel, redisQueueChannel:
 		messages, unsubscribe := redisqueue.SubscribeUsage()
 		return messages, unsubscribe, true
 	case redisErrorsChannel:
@@ -238,7 +239,7 @@ func subscribeRedisChannel(channel string) (<-chan []byte, func(), bool) {
 
 func popRedisQueueItems(channel string, count int) ([][]byte, bool) {
 	switch strings.ToLower(strings.TrimSpace(channel)) {
-	case redisUsageChannel:
+	case redisUsageChannel, redisQueueChannel:
 		return redisqueue.PopOldest(count), true
 	default:
 		return nil, false

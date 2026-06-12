@@ -505,6 +505,16 @@ func TestRedisProtocol_AUTH_And_PopContracts(t *testing.T) {
 		t.Fatalf("expected empty array for empty queue with count, got %#v", emptyItems)
 	}
 
+	redisqueue.Enqueue([]byte("queue-alias"))
+	if errWrite := writeTestRESPCommand(conn, "RPOP", "queue"); errWrite != nil {
+		t.Fatalf("failed to write RPOP queue alias command: %v", errWrite)
+	}
+	if item, errRead := readTestRESPBulkString(reader); errRead != nil {
+		t.Fatalf("failed to read RPOP queue alias response: %v", errRead)
+	} else if string(item) != "queue-alias" {
+		t.Fatalf("unexpected RPOP queue alias item: %q", string(item))
+	}
+
 	if errWrite := writeTestRESPCommand(conn, "RPOP", "errors", "2"); errWrite != nil {
 		t.Fatalf("failed to write RPOP errors count command: %v", errWrite)
 	}

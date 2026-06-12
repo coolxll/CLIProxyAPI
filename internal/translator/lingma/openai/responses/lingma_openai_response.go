@@ -19,7 +19,7 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 	state := lingmaStreamStateFromParam(param, modelName)
 	if helpers.IsLingmaDone(rawJSON) {
 		if state.Finished {
-			return nil
+			return [][]byte{}
 		}
 		state.Finished = true
 		return [][]byte{state.openAIStreamChunk(true, "")}
@@ -27,7 +27,7 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 
 	data, ok := lingmaSSEData(rawJSON)
 	if !ok {
-		return nil
+		return [][]byte{}
 	}
 	res := gjson.ParseBytes(data)
 
@@ -36,7 +36,7 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 		inner := body.String()
 		if inner == "[DONE]" {
 			if state.Finished {
-				return nil
+				return [][]byte{}
 			}
 			state.Finished = true
 			return [][]byte{state.openAIStreamChunk(true, "")}
@@ -144,17 +144,13 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 
 	if res.Get("totalDuration").Exists() || res.Get("serverDuration").Exists() || res.Get("firstTokenDuration").Exists() {
 		if state.Finished {
-			return nil
+			return [][]byte{}
 		}
+		state.Finished = true
 		return [][]byte{state.openAIStreamChunk(true, "")}
 	}
 
-	// If it's [DONE], return empty
-	if string(data) == "[DONE]" {
-		return [][]byte{}
-	}
-
-	return nil
+	return [][]byte{}
 }
 
 // ConvertLingmaResponseToOpenAINonStream translates a non-streaming Lingma response.

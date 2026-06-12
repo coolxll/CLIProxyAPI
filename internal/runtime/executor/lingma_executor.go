@@ -167,7 +167,14 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if detail, ok := helps.ParseLingmaStreamUsageFromAggregate(data); ok {
 		reporter.PublishNonZero(ctx, detail)
 	} else {
-		reporter.PublishNonZero(ctx, helps.ParseUsageForFormat(from.String(), out))
+		detail := helps.ParseUsageForFormat(from.String(), out)
+		// The translator (extractOpenAIUsage) already subtracted cached tokens
+		// from InputTokens. Restore them so cpa-usage-keeper's formula
+		// promptTokens = inputTokens - cachedTokens works correctly.
+		if detail.CachedTokens > 0 {
+			detail.InputTokens += detail.CachedTokens
+		}
+		reporter.PublishNonZero(ctx, detail)
 	}
 	reporter.EnsurePublished(ctx)
 	return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil

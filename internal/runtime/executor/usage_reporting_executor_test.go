@@ -151,6 +151,28 @@ func TestLingmaExecutorClaudeNonStreamPublishesCacheUsage(t *testing.T) {
 	}
 }
 
+func TestLingmaCachedTokenRestoreOnlyAppliesToClaude(t *testing.T) {
+	tests := []struct {
+		name         string
+		sourceFormat string
+		want         bool
+	}{
+		{name: "claude", sourceFormat: "claude", want: true},
+		{name: "claude case insensitive", sourceFormat: " Claude ", want: true},
+		{name: "openai", sourceFormat: "openai", want: false},
+		{name: "gemini", sourceFormat: "gemini", want: false},
+		{name: "empty", sourceFormat: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRestoreLingmaCachedTokens(tt.sourceFormat); got != tt.want {
+				t.Fatalf("shouldRestoreLingmaCachedTokens(%q) = %v, want %v", tt.sourceFormat, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLingmaExecutorClaudeStreamE2EFullUsage(t *testing.T) {
 	setupExecutorUsageQueue(t)
 

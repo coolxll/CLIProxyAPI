@@ -226,7 +226,7 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 
 func subscribeRedisChannel(channel string) (<-chan []byte, func(), bool) {
 	switch strings.ToLower(strings.TrimSpace(channel)) {
-	case redisUsageChannel, redisQueueChannel:
+	case redisUsageChannel:
 		messages, unsubscribe := redisqueue.SubscribeUsage()
 		return messages, unsubscribe, true
 	case redisErrorsChannel:

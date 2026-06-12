@@ -169,9 +169,9 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	} else {
 		detail := helps.ParseUsageForFormat(from.String(), out)
 		// The translator (extractOpenAIUsage) already subtracted cached tokens
-		// from InputTokens. Restore them so cpa-usage-keeper's formula
+		// from Claude InputTokens. Restore them so cpa-usage-keeper's formula
 		// promptTokens = inputTokens - cachedTokens works correctly.
-		if detail.CachedTokens > 0 {
+		if shouldRestoreLingmaCachedTokens(from.String()) && detail.CachedTokens > 0 {
 			detail.InputTokens += detail.CachedTokens
 		}
 		reporter.PublishNonZero(ctx, detail)
@@ -476,6 +476,10 @@ func preserveLingmaClaudeCodeThinking(body, source []byte, sourceFormat string) 
 		return body
 	}
 	return result
+}
+
+func shouldRestoreLingmaCachedTokens(sourceFormat string) bool {
+	return strings.EqualFold(strings.TrimSpace(sourceFormat), constant.Claude)
 }
 
 func claudeCodeThinkingEnabled(source []byte) (bool, bool) {

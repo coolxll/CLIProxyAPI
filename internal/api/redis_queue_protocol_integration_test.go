@@ -359,6 +359,19 @@ func TestRedisProtocol_SUBSCRIBE_UsageSendsSupportRefresh(t *testing.T) {
 	}
 }
 
+func TestRedisProtocol_QueueAliasDoesNotSubscribeUsage(t *testing.T) {
+	messages, unsubscribe, ok := subscribeRedisChannel("queue")
+	if unsubscribe != nil {
+		unsubscribe()
+	}
+	if ok {
+		t.Fatalf("subscribeRedisChannel(queue) ok = true, want false")
+	}
+	if messages != nil {
+		t.Fatalf("subscribeRedisChannel(queue) messages = %v, want nil", messages)
+	}
+}
+
 func TestRedisProtocol_SUBSCRIBE_ErrorsReceivesErrorEvents(t *testing.T) {
 	const managementPassword = "test-management-password"
 

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -127,6 +128,9 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		if base != "" {
 			attrs["base_url"] = base
 		}
+		if ck.RebuildMidSystemMessage {
+			attrs["rebuild_mid_system_message"] = "true"
+		}
 		if hash := diff.ComputeClaudeModelsHash(ck.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
@@ -228,6 +232,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 		if providerName == "" {
 			providerName = "openai-compatibility"
 		}
+		internalProviderKey := util.OpenAICompatibleProviderKey(providerName)
 		base := strings.TrimSpace(compat.BaseURL)
 		disableCooling := compat.DisableCooling
 
@@ -243,7 +248,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
 				"base_url":     base,
 				"compat_name":  compat.Name,
-				"provider_key": providerName,
+				"provider_key": internalProviderKey,
 			}
 			metadata := map[string]any{}
 			if disableCooling {
@@ -261,7 +266,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
-				Provider:   providerName,
+				Provider:   internalProviderKey,
 				Label:      compat.Name,
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
@@ -285,7 +290,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
 				"base_url":     base,
 				"compat_name":  compat.Name,
-				"provider_key": providerName,
+				"provider_key": internalProviderKey,
 			}
 			metadata := map[string]any{}
 			if disableCooling {
@@ -300,7 +305,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
-				Provider:   providerName,
+				Provider:   internalProviderKey,
 				Label:      compat.Name,
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,

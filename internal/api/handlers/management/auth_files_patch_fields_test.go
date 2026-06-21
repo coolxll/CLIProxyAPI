@@ -19,7 +19,6 @@ import (
 
 func TestPatchAuthFileFields_MergeHeadersAndDeleteEmptyValues(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	store := &memoryAuthStore{}
 	manager := coreauth.NewManager(store, nil, nil)
@@ -114,7 +113,6 @@ func TestPatchAuthFileFields_MergeHeadersAndDeleteEmptyValues(t *testing.T) {
 
 func TestPatchAuthFileFields_HeadersEmptyMapIsNoop(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	store := &memoryAuthStore{}
 	manager := coreauth.NewManager(store, nil, nil)
@@ -169,7 +167,6 @@ func TestPatchAuthFileFields_HeadersEmptyMapIsNoop(t *testing.T) {
 
 func TestPatchAuthFileFields_WebsocketsFalseIsUpdate(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	store := &memoryAuthStore{}
 	manager := coreauth.NewManager(store, nil, nil)
@@ -218,7 +215,6 @@ func TestPatchAuthFileFields_WebsocketsFalseIsUpdate(t *testing.T) {
 
 func TestPatchAuthFileFields_ArbitraryFieldsPersistToFile(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	authDir := t.TempDir()
 	fileName := "generic.json"

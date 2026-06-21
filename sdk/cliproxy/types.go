@@ -89,6 +89,12 @@ type PluginAuthParser interface {
 	ParseAuth(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error)
 }
 
+// PluginMultiAuthParser expands one auth JSON payload into multiple plugin auth records.
+// Returning handled=true with an empty slice means the plugin intentionally suppresses built-in parsing.
+type PluginMultiAuthParser interface {
+	ParseAuths(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error)
+}
+
 // WatcherWrapper exposes the subset of watcher methods required by the SDK.
 type WatcherWrapper struct {
 	start func(ctx context.Context) error
@@ -100,6 +106,7 @@ type WatcherWrapper struct {
 	dispatchRuntimeUpdate func(update watcher.AuthUpdate) bool
 	dispatchPersistedAuth func(update watcher.AuthUpdate) bool
 	setPluginAuthParser   func(parser PluginAuthParser)
+	reloadConfigIfChanged func()
 }
 
 // Start proxies to the underlying watcher Start implementation.
@@ -124,6 +131,15 @@ func (w *WatcherWrapper) SetConfig(cfg *config.Config) {
 		return
 	}
 	w.setConfig(cfg)
+}
+
+// ReloadConfigIfChanged asks the underlying watcher to reload config from disk.
+func (w *WatcherWrapper) ReloadConfigIfChanged() bool {
+	if w == nil || w.reloadConfigIfChanged == nil {
+		return false
+	}
+	w.reloadConfigIfChanged()
+	return true
 }
 
 // SetPluginAuthParser updates the plugin auth parser used by the watcher.

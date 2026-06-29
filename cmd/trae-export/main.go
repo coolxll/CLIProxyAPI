@@ -55,6 +55,12 @@ func main() {
 	flag.BoolVar(&doLogin, "login", false, "Interactive OAuth login via browser")
 	flag.Parse()
 
+	// Resolve credentials (before login so runOAuthLogin can reuse them)
+	jwtToken = firstNonEmpty(jwtToken, os.Getenv("TRAE_JWT_TOKEN"))
+	machineID = firstNonEmpty(machineID, os.Getenv("TRAE_MACHINE_ID"), readFirstTrimmed(machineIDCandidates()...))
+	deviceID = firstNonEmpty(deviceID, os.Getenv("TRAE_DEVICE_ID"), readFirstTrimmed(deviceIDCandidates()...))
+	workspacePath = firstNonEmpty(workspacePath, os.Getenv("TRAE_WORKSPACE_PATH"))
+
 	// Handle OAuth login
 	if doLogin {
 		result, err := runOAuthLogin(machineID, deviceID)
@@ -70,8 +76,8 @@ func main() {
 		fmt.Printf("✅ Token expires: %s\n", result.ExpiresAt.Format(time.RFC3339))
 	}
 
-	// Handle token refresh
-	if doRefresh || refreshToken != "" {
+	// Handle token refresh (only when explicitly requested, not after login)
+	if doRefresh || (!doLogin && refreshToken != "") {
 		rt := firstNonEmpty(refreshToken, os.Getenv("TRAE_REFRESH_TOKEN"))
 		host := firstNonEmpty(loginHost, os.Getenv("TRAE_LOGIN_HOST"), TRAE_CN_API_HOST)
 
@@ -94,12 +100,6 @@ func main() {
 
 		fmt.Printf("✅ Token refreshed, expires: %s\n", result.ExpiresAt.Format(time.RFC3339))
 	}
-
-	// Resolve credentials
-	jwtToken = firstNonEmpty(jwtToken, os.Getenv("TRAE_JWT_TOKEN"))
-	machineID = firstNonEmpty(machineID, os.Getenv("TRAE_MACHINE_ID"), readFirstTrimmed(machineIDCandidates()...))
-	deviceID = firstNonEmpty(deviceID, os.Getenv("TRAE_DEVICE_ID"), readFirstTrimmed(deviceIDCandidates()...))
-	workspacePath = firstNonEmpty(workspacePath, os.Getenv("TRAE_WORKSPACE_PATH"))
 
 	creds, err := traeauth.ParseTraeCredentials(jwtToken, machineID, deviceID)
 	if err != nil {
@@ -298,9 +298,6 @@ func runOAuthLogin(machineID, deviceID string) (*OAuthLoginResult, error) {
 	host := resolveLoginHost(loginTraceID)
 
 	// 4. Build verification URL
-	machineID = firstNonEmpty(machineID, os.Getenv("TRAE_MACHINE_ID"), readFirstTrimmed(machineIDCandidates()...))
-	deviceID = firstNonEmpty(deviceID, os.Getenv("TRAE_DEVICE_ID"), readFirstTrimmed(deviceIDCandidates()...))
-
 	verificationURL := buildVerificationURL(host, loginTraceID, callbackURL, machineID, deviceID)
 
 	// 5. Start callback server

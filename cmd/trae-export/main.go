@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,7 +17,11 @@ import (
 	traeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/trae"
 )
 
-const defaultOutPath = "trae_import.json"
+const (
+	defaultOutPath      = "trae_import.json"
+	TRAE_AUTH_CLIENT_ID = "ono9krqynydwx5"
+	TRAE_CN_API_HOST    = "https://api.trae.com.cn"
+)
 
 func main() {
 	var outPath string
@@ -24,6 +31,9 @@ func main() {
 	var machineID string
 	var deviceID string
 	var workspacePath string
+	var refreshToken string
+	var doRefresh bool
+	var loginHost string
 
 	flag.StringVar(&outPath, "out", defaultOutPath, "Output JSON file path")
 	flag.StringVar(&manualName, "name", "", "Manual name label (auto-generated if empty)")
@@ -32,13 +42,56 @@ func main() {
 	flag.StringVar(&machineID, "machine-id", "", "Trae machine id override")
 	flag.StringVar(&deviceID, "device-id", "", "Trae device id override")
 	flag.StringVar(&workspacePath, "workspace-path", "", "Optional workspace path for Trae agent payloads")
+	flag.StringVar(&refreshToken, "refresh-token", "", "Trae refresh token for token refresh")
+	flag.BoolVar(&doRefresh, "refresh", false, "Refresh access token using refresh token from .env or -refresh-token")
+	flag.StringVar(&loginHost, "login-host", "", "Trae API host for token exchange (default: "+TRAE_CN_API_HOST+")")
 	flag.Parse()
 
+	// Collect env values
 	envValues, err := collectEnvValues(envPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Handle token refresh
+	if doRefresh || refreshToken != "" {
+		rt := firstNonEmpty(refreshToken, os.Getenv("TRAE_REFRESH_TOKEN"), envValues["TRAE_REFRESH_TOKEN"])
+		host := firstNonEmpty(loginHost, os.Getenv("TRAE_LOGIN_HOST"), envValues["TRAE_LOGIN_HOST"], TRAE_CN_API_HOST)
+
+		if rt == "" {
+			fmt.Fprintln(os.Stderr, "Error: No refresh token available. Use -refresh-token or set TRAE_REFRESH_TOKEN in .env")
+			os.Exit(1)
+		}
+
+		fmt.Println("⏳ Refreshing access token...")
+		result, err := refreshAccessToken(host, rt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error refreshing token: %v\n", err)
+			os.Exit(1)
+		}
+
+		jwtToken = result.AccessToken
+		if result.RefreshToken != "" {
+			envValues["TRAE_REFRESH_TOKEN"] = result.RefreshToken
+		}
+
+		// Update .env file if it exists
+		if envPath != "" {
+			if err := updateEnvFile(envPath, map[string]string{
+				"TRAE_JWT_TOKEN":     result.AccessToken,
+				"TRAE_REFRESH_TOKEN": result.RefreshToken,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to update .env: %v\n", err)
+			} else {
+				fmt.Printf("✅ Updated .env: %s\n", envPath)
+			}
+		}
+
+		fmt.Printf("✅ Token refreshed, expires: %s\n", result.ExpiresAt.Format(time.RFC3339))
+	}
+
+	// Resolve credentials
 	jwtToken = firstNonEmpty(jwtToken, os.Getenv("TRAE_JWT_TOKEN"), envValues["TRAE_JWT_TOKEN"])
 	machineID = firstNonEmpty(machineID, os.Getenv("TRAE_MACHINE_ID"), envValues["TRAE_MACHINE_ID"], readFirstTrimmed(machineIDCandidates()...))
 	deviceID = firstNonEmpty(deviceID, os.Getenv("TRAE_DEVICE_ID"), envValues["TRAE_DEVICE_ID"], readFirstTrimmed(deviceIDCandidates()...))
@@ -86,11 +139,175 @@ func main() {
 	}
 
 	absOut, _ := filepath.Abs(outPath)
-	fmt.Printf("Successfully generated importable JSON at: %s\n", absOut)
+	fmt.Printf("\nSuccessfully generated importable JSON at: %s\n", absOut)
 	fmt.Printf("Import Name: %s\n", finalName)
 	fmt.Printf("JWT Token: %s\n", maskSecret(creds.JWTToken))
 	fmt.Printf("Machine ID: %s\n", maskSecret(creds.MachineID))
 	fmt.Printf("Device ID: %s\n", maskSecret(creds.DeviceID))
+}
+
+// TokenRefreshResult holds the result of a token refresh
+type TokenRefreshResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    time.Time
+}
+
+// refreshAccessToken refreshes the access token using the refresh token
+func refreshAccessToken(host, refreshToken string) (*TokenRefreshResult, error) {
+	payload := map[string]string{
+		"ClientID":     TRAE_AUTH_CLIENT_ID,
+		"ClientSecret": "-",
+		"UserID":       "",
+		"RefreshToken": refreshToken,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := strings.TrimRight(host, "/") + "/cloudide/api/v3/trae/oauth/ExchangeToken"
+	req, err := http.NewRequest("POST", url, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body[:min(len(body), 1000)]))
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	accessToken := extractString(result, [][]string{
+		{"Result", "Token"},
+		{"Result", "AccessToken"},
+		{"Result", "accessToken"},
+		{"result", "accessToken"},
+		{"result", "access_token"},
+		{"data", "accessToken"},
+		{"data", "access_token"},
+		{"accessToken"},
+		{"access_token"},
+		{"data", "token"},
+		{"Token"},
+		{"token"},
+	})
+
+	newRefresh := extractString(result, [][]string{
+		{"Result", "RefreshToken"},
+		{"Result", "refreshToken"},
+		{"result", "refreshToken"},
+		{"result", "refresh_token"},
+		{"data", "refreshToken"},
+		{"data", "refresh_token"},
+		{"refreshToken"},
+		{"refresh_token"},
+	})
+
+	if accessToken == "" {
+		return nil, fmt.Errorf("no access token in response: %s", string(body[:min(len(body), 500)]))
+	}
+
+	// Parse JWT expiry
+	var expiresAt time.Time
+	if exp, ok := jwtExpiresAt(accessToken); ok {
+		expiresAt = exp
+	}
+
+	return &TokenRefreshResult{
+		AccessToken:  accessToken,
+		RefreshToken: newRefresh,
+		ExpiresAt:    expiresAt,
+	}, nil
+}
+
+// extractString extracts a string value from nested map using path candidates
+func extractString(data map[string]any, paths [][]string) string {
+	for _, path := range paths {
+		val := data
+		for i, key := range path {
+			v, ok := val[key]
+			if !ok {
+				break
+			}
+			if i == len(path)-1 {
+				if s, ok := v.(string); ok && s != "" {
+					return s
+				}
+			} else if m, ok := v.(map[string]any); ok {
+				val = m
+			} else {
+				break
+			}
+		}
+	}
+	return ""
+}
+
+func updateEnvFile(path string, updates map[string]string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read env file: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	updated := make(map[string]bool)
+	var newLines []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip comment lines
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			newLines = append(newLines, line)
+			continue
+		}
+		// Strip "export " prefix for matching
+		keyPart := trimmed
+		exportPrefix := ""
+		if strings.HasPrefix(keyPart, "export ") {
+			exportPrefix = "export "
+			keyPart = strings.TrimPrefix(keyPart, "export ")
+		}
+		parts := strings.SplitN(keyPart, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			if val, ok := updates[key]; ok {
+				newLines = append(newLines, exportPrefix+key+"="+val)
+				updated[key] = true
+				continue
+			}
+		}
+		newLines = append(newLines, line)
+	}
+
+	for key, val := range updates {
+		if !updated[key] {
+			newLines = append(newLines, key+"="+val)
+		}
+	}
+
+	if err := os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0600); err != nil {
+		return fmt.Errorf("write env file: %w", err)
+	}
+	return nil
 }
 
 func collectEnvValues(explicitPath string) (map[string]string, error) {

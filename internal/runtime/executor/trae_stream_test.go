@@ -84,6 +84,55 @@ func TestTraeExecutorStreamStripsSplitThinkTagsFromReasoning(t *testing.T) {
 	}
 }
 
+func TestTraeExecutorStreamStripsDeepSeekR1ThinkTag(t *testing.T) {
+	t.Run("full close tag", func(t *testing.T) {
+		body := "data: {\"reasoning_content\":\"reason\"}\n\n" +
+			"data: {\"reasoning_content\":\"</think_never_used_51bce0c785ca2f68081bfa7d91973934>\"}\n\n" +
+			"data: {\"reasoning_content\":\" done\"}\n\n"
+		result := runTraeStreamWithBody(t, body)
+
+		var reasoning strings.Builder
+		for _, data := range collectOpenAIStreamData(t, result) {
+			if data == "[DONE]" || !gjson.Valid(data) {
+				continue
+			}
+			if val := gjson.Get(data, "choices.0.delta.reasoning_content"); val.Exists() {
+				reasoning.WriteString(val.String())
+			}
+		}
+		got := reasoning.String()
+		if strings.Contains(got, "think") {
+			t.Fatalf("reasoning leaked think tag: %q", got)
+		}
+		if got != "reason done" {
+			t.Fatalf("reasoning = %q, want %q", got, "reason done")
+		}
+	})
+
+	t.Run("cut off close tag at EOF", func(t *testing.T) {
+		body := "data: {\"reasoning_content\":\"reason\"}\n\n" +
+			"data: {\"reasoning_content\":\"</think_never_used_51bce0c785ca2f68081bfa7d91973934\"}\n\n"
+		result := runTraeStreamWithBody(t, body)
+
+		var reasoning strings.Builder
+		for _, data := range collectOpenAIStreamData(t, result) {
+			if data == "[DONE]" || !gjson.Valid(data) {
+				continue
+			}
+			if val := gjson.Get(data, "choices.0.delta.reasoning_content"); val.Exists() {
+				reasoning.WriteString(val.String())
+			}
+		}
+		got := reasoning.String()
+		if strings.Contains(got, "think") {
+			t.Fatalf("reasoning leaked think tag: %q", got)
+		}
+		if got != "reason" {
+			t.Fatalf("reasoning = %q, want %q", got, "reason")
+		}
+	})
+}
+
 func TestTraeExecutorStreamStripsInlineToolCallFromReasoning(t *testing.T) {
 	// After a tool commit, the V3 API may return reasoning_content that
 	// contains inline tool_calls= markers. These must be stripped from the

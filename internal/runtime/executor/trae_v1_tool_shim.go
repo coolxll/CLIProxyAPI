@@ -500,7 +500,9 @@ func (p *deepSeekThinkTagStripper) consume(final bool) string {
 		if strings.HasPrefix(p.buffer, "<think") || strings.HasPrefix(p.buffer, "</think") {
 			closeIdx := strings.IndexByte(p.buffer, '>')
 			if closeIdx < 0 {
-				if final || len(p.buffer) > maxDeepSeekThinkTagBuffer {
+				if final {
+					p.buffer = "" // Discard unclosed think tag at the end of stream
+				} else if len(p.buffer) > maxDeepSeekThinkTagBuffer {
 					out.WriteString(p.buffer)
 					p.buffer = ""
 				}

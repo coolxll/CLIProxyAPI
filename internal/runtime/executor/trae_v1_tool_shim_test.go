@@ -486,6 +486,26 @@ func TestDeepSeekThinkTagStripperAcrossChunks(t *testing.T) {
 			chunks: []string{"<think type=\"deep", "\">reason</think>"},
 			want:   "reason",
 		},
+		{
+			name:   "malformed closing tag missing bracket at EOF",
+			chunks: []string{"reason</think_never_used_123"},
+			want:   "reason",
+		},
+		{
+			name:   "normal closing tag missing bracket at EOF",
+			chunks: []string{"reason</think"},
+			want:   "reason",
+		},
+		{
+			name:   "unclosed opening tag at EOF",
+			chunks: []string{"reason<think"},
+			want:   "reason",
+		},
+		{
+			name:   "unclosed opening tag with content at EOF",
+			chunks: []string{"reason<think some reasoning"},
+			want:   "reason",
+		},
 	}
 
 	for _, tt := range tests {

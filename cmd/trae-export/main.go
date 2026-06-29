@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,18 +18,22 @@ import (
 	"time"
 
 	traeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/trae"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 )
 
 const (
 	defaultOutPath      = "trae_import.json"
 	TRAE_AUTH_CLIENT_ID = "ono9krqynydwx5"
 	TRAE_CN_API_HOST    = "https://api.trae.com.cn"
+	TRAE_CN_AUTH_HOST   = "https://www.trae.cn"
+	CALLBACK_PATH       = "/authorize"
+	OAUTH_TIMEOUT       = 10 * time.Minute
 )
 
 func main() {
 	var outPath string
 	var manualName string
-	var envPath string
 	var jwtToken string
 	var machineID string
 	var deviceID string
@@ -34,33 +41,42 @@ func main() {
 	var refreshToken string
 	var doRefresh bool
 	var loginHost string
+	var doLogin bool
 
 	flag.StringVar(&outPath, "out", defaultOutPath, "Output JSON file path")
 	flag.StringVar(&manualName, "name", "", "Manual name label (auto-generated if empty)")
-	flag.StringVar(&envPath, "env", "", "Optional .env file path to read TRAE_* values from")
 	flag.StringVar(&jwtToken, "jwt-token", "", "Trae JWT token override")
 	flag.StringVar(&machineID, "machine-id", "", "Trae machine id override")
 	flag.StringVar(&deviceID, "device-id", "", "Trae device id override")
 	flag.StringVar(&workspacePath, "workspace-path", "", "Optional workspace path for Trae agent payloads")
 	flag.StringVar(&refreshToken, "refresh-token", "", "Trae refresh token for token refresh")
-	flag.BoolVar(&doRefresh, "refresh", false, "Refresh access token using refresh token from .env or -refresh-token")
+	flag.BoolVar(&doRefresh, "refresh", false, "Refresh access token using -refresh-token or TRAE_REFRESH_TOKEN env")
 	flag.StringVar(&loginHost, "login-host", "", "Trae API host for token exchange (default: "+TRAE_CN_API_HOST+")")
+	flag.BoolVar(&doLogin, "login", false, "Interactive OAuth login via browser")
 	flag.Parse()
 
-	// Collect env values
-	envValues, err := collectEnvValues(envPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Handle OAuth login
+	if doLogin {
+		result, err := runOAuthLogin(machineID, deviceID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
+			os.Exit(1)
+		}
+		jwtToken = result.AccessToken
+		if result.RefreshToken != "" {
+			refreshToken = result.RefreshToken
+		}
+		fmt.Printf("✅ Logged in as %s (%s)\n", result.Nickname, result.Email)
+		fmt.Printf("✅ Token expires: %s\n", result.ExpiresAt.Format(time.RFC3339))
 	}
 
 	// Handle token refresh
 	if doRefresh || refreshToken != "" {
-		rt := firstNonEmpty(refreshToken, os.Getenv("TRAE_REFRESH_TOKEN"), envValues["TRAE_REFRESH_TOKEN"])
-		host := firstNonEmpty(loginHost, os.Getenv("TRAE_LOGIN_HOST"), envValues["TRAE_LOGIN_HOST"], TRAE_CN_API_HOST)
+		rt := firstNonEmpty(refreshToken, os.Getenv("TRAE_REFRESH_TOKEN"))
+		host := firstNonEmpty(loginHost, os.Getenv("TRAE_LOGIN_HOST"), TRAE_CN_API_HOST)
 
 		if rt == "" {
-			fmt.Fprintln(os.Stderr, "Error: No refresh token available. Use -refresh-token or set TRAE_REFRESH_TOKEN in .env")
+			fmt.Fprintln(os.Stderr, "Error: No refresh token available. Use -refresh-token or set TRAE_REFRESH_TOKEN env")
 			os.Exit(1)
 		}
 
@@ -73,34 +89,22 @@ func main() {
 
 		jwtToken = result.AccessToken
 		if result.RefreshToken != "" {
-			envValues["TRAE_REFRESH_TOKEN"] = result.RefreshToken
-		}
-
-		// Update .env file if it exists
-		if envPath != "" {
-			if err := updateEnvFile(envPath, map[string]string{
-				"TRAE_JWT_TOKEN":     result.AccessToken,
-				"TRAE_REFRESH_TOKEN": result.RefreshToken,
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to update .env: %v\n", err)
-			} else {
-				fmt.Printf("✅ Updated .env: %s\n", envPath)
-			}
+			refreshToken = result.RefreshToken
 		}
 
 		fmt.Printf("✅ Token refreshed, expires: %s\n", result.ExpiresAt.Format(time.RFC3339))
 	}
 
 	// Resolve credentials
-	jwtToken = firstNonEmpty(jwtToken, os.Getenv("TRAE_JWT_TOKEN"), envValues["TRAE_JWT_TOKEN"])
-	machineID = firstNonEmpty(machineID, os.Getenv("TRAE_MACHINE_ID"), envValues["TRAE_MACHINE_ID"], readFirstTrimmed(machineIDCandidates()...))
-	deviceID = firstNonEmpty(deviceID, os.Getenv("TRAE_DEVICE_ID"), envValues["TRAE_DEVICE_ID"], readFirstTrimmed(deviceIDCandidates()...))
-	workspacePath = firstNonEmpty(workspacePath, os.Getenv("TRAE_WORKSPACE_PATH"), envValues["TRAE_WORKSPACE_PATH"])
+	jwtToken = firstNonEmpty(jwtToken, os.Getenv("TRAE_JWT_TOKEN"))
+	machineID = firstNonEmpty(machineID, os.Getenv("TRAE_MACHINE_ID"), readFirstTrimmed(machineIDCandidates()...))
+	deviceID = firstNonEmpty(deviceID, os.Getenv("TRAE_DEVICE_ID"), readFirstTrimmed(deviceIDCandidates()...))
+	workspacePath = firstNonEmpty(workspacePath, os.Getenv("TRAE_WORKSPACE_PATH"))
 
 	creds, err := traeauth.ParseTraeCredentials(jwtToken, machineID, deviceID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		fmt.Fprintln(os.Stderr, "Provide credentials with -jwt-token or TRAE_JWT_TOKEN in the environment/.env file.")
+		fmt.Fprintln(os.Stderr, "Provide credentials with -jwt-token or TRAE_JWT_TOKEN env var.")
 		os.Exit(1)
 	}
 
@@ -262,162 +266,335 @@ func extractString(data map[string]any, paths [][]string) string {
 	return ""
 }
 
-func updateEnvFile(path string, updates map[string]string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read env file: %w", err)
-	}
-
-	lines := strings.Split(string(data), "\n")
-	updated := make(map[string]bool)
-	var newLines []string
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		// Skip comment lines
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			newLines = append(newLines, line)
-			continue
-		}
-		// Strip "export " prefix for matching
-		keyPart := trimmed
-		exportPrefix := ""
-		if strings.HasPrefix(keyPart, "export ") {
-			exportPrefix = "export "
-			keyPart = strings.TrimPrefix(keyPart, "export ")
-		}
-		parts := strings.SplitN(keyPart, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			if val, ok := updates[key]; ok {
-				newLines = append(newLines, exportPrefix+key+"="+val)
-				updated[key] = true
-				continue
-			}
-		}
-		newLines = append(newLines, line)
-	}
-
-	for key, val := range updates {
-		if !updated[key] {
-			newLines = append(newLines, key+"="+val)
-		}
-	}
-
-	if err := os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0600); err != nil {
-		return fmt.Errorf("write env file: %w", err)
-	}
-	return nil
+// OAuthLoginResult holds the result of a successful OAuth login.
+type OAuthLoginResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    time.Time
+	Email        string
+	Nickname     string
+	LoginHost    string
+	LoginRegion  string
 }
 
-func collectEnvValues(explicitPath string) (map[string]string, error) {
-	values := make(map[string]string)
-	explicitPath = strings.TrimSpace(explicitPath)
-	for _, path := range envCandidates(explicitPath) {
-		fileValues, err := readEnvFile(path)
+// runOAuthLogin performs the full browser-based OAuth login flow.
+func runOAuthLogin(machineID, deviceID string) (*OAuthLoginResult, error) {
+	// 1. Find a free port for the callback server
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("find free port: %w", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	callbackURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, CALLBACK_PATH)
+
+	// 2. Generate login trace ID
+	loginTraceID, err := misc.GenerateRandomState()
+	if err != nil {
+		return nil, fmt.Errorf("generate trace id: %w", err)
+	}
+
+	// 3. Resolve login host
+	host := resolveLoginHost(loginTraceID)
+
+	// 4. Build verification URL
+	machineID = firstNonEmpty(machineID, os.Getenv("TRAE_MACHINE_ID"), readFirstTrimmed(machineIDCandidates()...))
+	deviceID = firstNonEmpty(deviceID, os.Getenv("TRAE_DEVICE_ID"), readFirstTrimmed(deviceIDCandidates()...))
+
+	verificationURL := buildVerificationURL(host, loginTraceID, callbackURL, machineID, deviceID)
+
+	// 5. Start callback server
+	type callbackResult struct {
+		RefreshToken  string
+		LoginHost     string
+		LoginRegion   string
+		CloudideToken string
+	}
+	resultCh := make(chan callbackResult, 1)
+	errCh := make(chan error, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(CALLBACK_PATH, func(w http.ResponseWriter, r *http.Request) {
+		qs := r.URL.Query()
+		if qs.Get("isRedirect") != "true" {
+			// Serve JS to convert hash to query params
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!doctype html><html><body><h2>Processing...</h2>`+
+				`<script>(function(){if(location.hash&&location.hash.length>1){`+
+				`location.replace(location.origin+location.pathname+"?"+location.hash.slice(1));`+
+				`}})();</script></body></html>`)
+			return
+		}
+
+		rt := qs.Get("refreshToken")
+		if rt == "" {
+			http.Error(w, "Missing refreshToken", http.StatusBadRequest)
+			errCh <- fmt.Errorf("callback missing refreshToken")
+			return
+		}
+
+		lh := qs.Get("loginHost")
+		if lh == "" {
+			lh = qs.Get("host")
+		}
+		region := qs.Get("userRegion")
+		if region == "" {
+			region = inferRegion(lh)
+		}
+
+		resultCh <- callbackResult{
+			RefreshToken:  rt,
+			LoginHost:     lh,
+			LoginRegion:   region,
+			CloudideToken: qs.Get("cloudideToken"),
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<html><body><h2>Login successful! You may close this tab.</h2></body></html>`)
+	})
+
+	server := &http.Server{Handler: mux}
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("callback server: %w", err)
+		}
+	}()
+
+	// 6. Print URL and open browser
+	fmt.Printf("\n🔗 Open this URL in your browser to login:\n\n%s\n\n", verificationURL)
+	fmt.Printf("Waiting for callback on port %d (timeout: %s)...\n", port, OAUTH_TIMEOUT)
+
+	if err := browser.OpenURL(verificationURL); err != nil {
+		fmt.Printf("⚠️  Could not open browser automatically: %v\n", err)
+	}
+
+	// 7. Wait for callback
+	select {
+	case cb := <-resultCh:
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownCtx)
+
+		loginHost := firstNonEmpty(cb.LoginHost, host)
+
+		// 8. Exchange token
+		fmt.Println("⏳ Exchanging token...")
+		tokenResult, err := refreshAccessToken(loginHost, cb.RefreshToken)
 		if err != nil {
-			if explicitPath != "" && samePath(path, explicitPath) {
-				return nil, fmt.Errorf("read env file %q: %w", explicitPath, err)
+			return nil, fmt.Errorf("exchange token: %w", err)
+		}
+
+		accessToken := tokenResult.AccessToken
+		refreshToken := tokenResult.RefreshToken
+		if refreshToken == "" {
+			refreshToken = cb.RefreshToken
+		}
+
+		// 9. Get user info
+		email, nickname := "", ""
+		if accessToken != "" {
+			var infoErr error
+			email, nickname, infoErr = getUserInfo(loginHost, accessToken)
+			if infoErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not fetch user info: %v\n", infoErr)
 			}
+		}
+
+		return &OAuthLoginResult{
+			AccessToken:  accessToken,
+			RefreshToken: refreshToken,
+			ExpiresAt:    tokenResult.ExpiresAt,
+			Email:        email,
+			Nickname:     nickname,
+			LoginHost:    loginHost,
+			LoginRegion:  cb.LoginRegion,
+		}, nil
+
+	case err := <-errCh:
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownCtx)
+		return nil, err
+
+	case <-time.After(OAUTH_TIMEOUT):
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownCtx)
+		return nil, fmt.Errorf("login timed out after %s", OAUTH_TIMEOUT)
+	}
+}
+
+// buildVerificationURL constructs the Trae OAuth authorization URL.
+func buildVerificationURL(host, loginTraceID, callbackURL, machineID, deviceID string) string {
+	params := url.Values{
+		"login_version":     {"1"},
+		"auth_from":         {"trae"},
+		"login_channel":     {"native_ide"},
+		"plugin_version":    {"2.3.33255"},
+		"auth_type":         {"local"},
+		"client_id":         {TRAE_AUTH_CLIENT_ID},
+		"redirect":          {"0"},
+		"login_trace_id":    {loginTraceID},
+		"auth_callback_url": {callbackURL},
+		"x_device_type":     {"desktop"},
+		"x_os_version":      {runtime.GOOS},
+		"x_device_brand":    {""},
+		"x_app_version":     {"3.5.54"},
+		"x_app_type":        {"stable"},
+		"x_env":             {"production"},
+	}
+	if machineID != "" {
+		params.Set("machine_id", machineID)
+		params.Set("x_machine_id", machineID)
+	}
+	if deviceID != "" {
+		params.Set("device_id", deviceID)
+		params.Set("x_device_id", deviceID)
+	}
+	parsed, _ := url.Parse(host)
+	if parsed == nil || parsed.Host == "" {
+		host = TRAE_CN_AUTH_HOST
+	}
+	origin := host
+	if parsed != nil && parsed.Host != "" {
+		origin = parsed.Scheme + "://" + parsed.Host
+	}
+	return origin + "/authorization?" + params.Encode()
+}
+
+// resolveLoginHost asks Trae guidance endpoints for the browser login host.
+func resolveLoginHost(loginTraceID string) string {
+	endpoints := []string{
+		TRAE_CN_API_HOST + "/cloudide/api/v3/trae/GetLoginGuidance",
+		TRAE_CN_AUTH_HOST + "/cloudide/api/v3/trae/GetLoginGuidance",
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"loginTraceID":   loginTraceID,
+		"login_trace_id": loginTraceID,
+	})
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	for _, endpoint := range endpoints {
+		req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+		if err != nil {
 			continue
 		}
-		for key, value := range fileValues {
-			if _, exists := values[key]; !exists {
-				values[key] = value
-			}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "Trae/1.0.0 trae-export")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", closeErr)
+		}
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(body, &result); err != nil {
+			continue
+		}
+
+		loginHost := extractString(result, [][]string{
+			{"Result", "LoginHost"},
+			{"Result", "loginHost"},
+			{"result", "LoginHost"},
+			{"result", "loginHost"},
+			{"data", "loginHost"},
+			{"LoginHost"},
+			{"loginHost"},
+		})
+		if loginHost != "" {
+			return loginHost
 		}
 	}
-	return values, nil
+	return TRAE_CN_AUTH_HOST
 }
 
-func envCandidates(explicitPath string) []string {
-	seen := map[string]struct{}{}
-	var out []string
-	add := func(path string) {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return
-		}
-		if abs, err := filepath.Abs(path); err == nil {
-			path = abs
-		}
-		if _, ok := seen[path]; ok {
-			return
-		}
-		seen[path] = struct{}{}
-		out = append(out, path)
-	}
-
-	add(explicitPath)
-	if wd, err := os.Getwd(); err == nil {
-		add(filepath.Join(wd, ".env"))
-	}
-	return out
-}
-
-func readEnvFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
+// getUserInfo fetches user info (email, nickname) from the Trae API.
+func getUserInfo(host, accessToken string) (email, nickname string, err error) {
+	payload := []byte(`{}`)
+	req, err := http.NewRequest("POST", host+"/cloudide/api/v3/trae/GetUserInfo", bytes.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return "", "", fmt.Errorf("create request: %w", err)
 	}
-	values := make(map[string]string)
-	for _, line := range strings.Split(string(data), "\n") {
-		key, value, ok := parseEnvLine(line)
-		if ok {
-			values[key] = value
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-cloudide-token", accessToken)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("request failed: %w", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", closeErr)
 		}
+	}()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("read response: %w", err)
 	}
-	return values, nil
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body[:min(len(body), 500)]))
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", "", fmt.Errorf("parse response: %w", err)
+	}
+
+	email = extractString(result, [][]string{
+		{"Result", "NonPlainTextEmail"},
+		{"Result", "Email"},
+		{"Result", "email"},
+		{"result", "email"},
+		{"data", "email"},
+		{"email"},
+	})
+
+	nickname = extractString(result, [][]string{
+		{"Result", "ScreenName"},
+		{"Result", "Nickname"},
+		{"Result", "nickname"},
+		{"Result", "Name"},
+		{"result", "nickname"},
+		{"result", "name"},
+		{"data", "nickname"},
+		{"data", "name"},
+		{"nickname"},
+		{"name"},
+	})
+
+	return email, nickname, nil
 }
 
-func parseEnvLine(line string) (string, string, bool) {
-	line = strings.TrimPrefix(line, "\ufeff")
-	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, "#") {
-		return "", "", false
+// inferRegion infers the region code from a login host.
+func inferRegion(host string) string {
+	host = strings.ToLower(host)
+	if strings.Contains(host, "trae.com.cn") || strings.Contains(host, "trae.cn") {
+		return "cn"
 	}
-	line = strings.TrimPrefix(line, "export ")
-	idx := strings.Index(line, "=")
-	if idx <= 0 {
-		return "", "", false
+	if strings.Contains(host, "sg") {
+		return "sg"
 	}
-	key := strings.TrimPrefix(strings.TrimSpace(line[:idx]), "\ufeff")
-	value := strings.TrimSpace(line[idx+1:])
-	if key == "" {
-		return "", "", false
+	if strings.Contains(host, "us") {
+		return "us"
 	}
-	if len(value) >= 2 {
-		quote := value[0]
-		if (quote == '"' || quote == '\'') && value[len(value)-1] == quote {
-			value = value[1 : len(value)-1]
-			if quote == '"' {
-				value = strings.ReplaceAll(value, `\"`, `"`)
-				value = strings.ReplaceAll(value, `\\`, `\`)
-			}
-			return key, value, true
-		}
-	}
-	if hash := strings.Index(value, " #"); hash >= 0 {
-		value = strings.TrimSpace(value[:hash])
-	}
-	return key, value, true
-}
-
-func samePath(left, right string) bool {
-	left = strings.TrimSpace(left)
-	right = strings.TrimSpace(right)
-	if left == "" || right == "" {
-		return false
-	}
-	leftAbs, leftErr := filepath.Abs(left)
-	rightAbs, rightErr := filepath.Abs(right)
-	if leftErr == nil {
-		left = leftAbs
-	}
-	if rightErr == nil {
-		right = rightAbs
-	}
-	return filepath.Clean(left) == filepath.Clean(right)
+	return "cn"
 }
 
 func machineIDCandidates() []string {

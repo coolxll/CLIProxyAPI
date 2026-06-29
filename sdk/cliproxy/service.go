@@ -1424,19 +1424,6 @@ func (s *Service) applyHomeOverlay(remoteCfg *config.Config) {
 	if errApply := s.applyHomeOverlayContext(context.Background(), remoteCfg); errApply != nil {
 		log.Warnf("failed to apply home config payload: %v", errApply)
 	}
-
-	// Register baseline executors so home-dispatched auth entries can execute without
-	// requiring any local auth-dir credentials.
-	s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, "", s.wsGateway))
-	s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewTraeExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewLingmaExecutor(s.cfg))
-	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
 }
 
 func (s *Service) applyHomeOverlayContext(ctx context.Context, remoteCfg *config.Config) error {

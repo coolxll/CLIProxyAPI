@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -80,6 +81,7 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 					}
 				}
 				if terminalErr != nil {
+					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), terminalErr)
 					if opts.WriteTerminalError != nil {
 						opts.WriteTerminalError(terminalErr)
 					}
@@ -102,6 +104,7 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 			}
 			if errMsg != nil {
 				terminalErr = errMsg
+				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 				if opts.WriteTerminalError != nil {
 					opts.WriteTerminalError(errMsg)
 					flusher.Flush()

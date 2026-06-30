@@ -104,6 +104,49 @@ func TestLingmaExecutorClaudeStreamPublishesFinalUsage(t *testing.T) {
 	}
 }
 
+func TestLingmaExecutorClaudeStreamPublishesTTFT(t *testing.T) {
+	setupExecutorUsageQueue(t)
+
+	const delay = 40 * time.Millisecond
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		time.Sleep(delay)
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":null}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"Ping"}],"max_tokens":1024,"stream":true}`)
+	result, err := NewLingmaExecutor(nil).ExecuteStream(ctx, &cliproxyauth.Auth{
+		Provider: "lingma",
+		Metadata: map[string]any{
+			"uid":             "test-user",
+			"key":             "test-cosy-key",
+			"organization_id": "test-org",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "gm51model",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream returned setup error: %v", err)
+	}
+	drainStream(t, result)
+
+	got := waitForExecutorQueuedUsage(t, "lingma", "gm51model")
+	if got.TTFTMs < delay.Milliseconds() {
+		t.Fatalf("queued usage ttft_ms = %d, want >= %d", got.TTFTMs, delay.Milliseconds())
+	}
+}
+
 func TestLingmaExecutorClaudeNonStreamPublishesCacheUsage(t *testing.T) {
 	setupExecutorUsageQueue(t)
 
@@ -148,6 +191,49 @@ func TestLingmaExecutorClaudeNonStreamPublishesCacheUsage(t *testing.T) {
 	}
 	if got.Tokens.CachedTokens != 3 {
 		t.Fatalf("queued usage cached tokens = %d, want 3", got.Tokens.CachedTokens)
+	}
+}
+
+func TestLingmaExecutorClaudeNonStreamPublishesTTFT(t *testing.T) {
+	setupExecutorUsageQueue(t)
+
+	const delay = 40 * time.Millisecond
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		time.Sleep(delay)
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	rawRequest := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"Ping"}],"max_tokens":1024,"stream":false}`)
+	resp, err := NewLingmaExecutor(nil).Execute(ctx, &cliproxyauth.Auth{
+		Provider: "lingma",
+		Metadata: map[string]any{
+			"uid":             "test-user",
+			"key":             "test-cosy-key",
+			"organization_id": "test-org",
+		},
+	}, cliproxyexecutor.Request{
+		Model:   "gm51model",
+		Payload: rawRequest,
+	}, cliproxyexecutor.Options{
+		OriginalRequest: rawRequest,
+		SourceFormat:    sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(resp.Payload) == 0 {
+		t.Fatal("response payload is empty")
+	}
+
+	got := waitForExecutorQueuedUsage(t, "lingma", "gm51model")
+	if got.TTFTMs < delay.Milliseconds() {
+		t.Fatalf("queued usage ttft_ms = %d, want >= %d", got.TTFTMs, delay.Milliseconds())
 	}
 }
 
@@ -449,6 +535,7 @@ type executorQueuedUsagePayload struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	Failed   bool   `json:"failed"`
+	TTFTMs   int64  `json:"ttft_ms"`
 	Tokens   struct {
 		InputTokens         int64 `json:"input_tokens"`
 		OutputTokens        int64 `json:"output_tokens"`

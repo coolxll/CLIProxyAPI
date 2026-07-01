@@ -742,6 +742,28 @@ func TestManager_MarkResult_LingmaTransientErrorsDoNotCooldownAuth(t *testing.T)
 			if updated.Unavailable {
 				t.Errorf("expected lingma %d auth to remain available for retry", code)
 			}
+			// The bypass must not leave stale error state on an available auth:
+			// Status should be active, and StatusMessage/LastError cleared so
+			// management endpoints and self-healing reconciliation see a clean
+			// credential rather than a contradictory error/available snapshot.
+			if modelState.Status != StatusActive {
+				t.Errorf("expected lingma %d model state Status to be active, got %v", code, modelState.Status)
+			}
+			if modelState.StatusMessage != "" {
+				t.Errorf("expected lingma %d model state StatusMessage to be empty, got %q", code, modelState.StatusMessage)
+			}
+			if modelState.LastError != nil {
+				t.Errorf("expected lingma %d model state LastError to be nil, got %v", code, modelState.LastError)
+			}
+			if updated.Status != StatusActive {
+				t.Errorf("expected lingma %d auth Status to be active, got %v", code, updated.Status)
+			}
+			if updated.StatusMessage != "" {
+				t.Errorf("expected lingma %d auth StatusMessage to be empty, got %q", code, updated.StatusMessage)
+			}
+			if updated.LastError != nil {
+				t.Errorf("expected lingma %d auth LastError to be nil, got %v", code, updated.LastError)
+			}
 		})
 
 		t.Run(fmt.Sprintf("auth_only_%d", code), func(t *testing.T) {
@@ -770,6 +792,16 @@ func TestManager_MarkResult_LingmaTransientErrorsDoNotCooldownAuth(t *testing.T)
 			}
 			if updated.Unavailable {
 				t.Errorf("expected lingma %d auth-only to remain available for retry", code)
+			}
+			// The bypass must not leave stale error state on an available auth.
+			if updated.Status != StatusActive {
+				t.Errorf("expected lingma %d auth-only Status to be active, got %v", code, updated.Status)
+			}
+			if updated.StatusMessage != "" {
+				t.Errorf("expected lingma %d auth-only StatusMessage to be empty, got %q", code, updated.StatusMessage)
+			}
+			if updated.LastError != nil {
+				t.Errorf("expected lingma %d auth-only LastError to be nil, got %v", code, updated.LastError)
 			}
 		})
 	}

@@ -3641,11 +3641,25 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					}
 
 					if skipTransientCooldown {
-						state.Unavailable = false
-						auth.Unavailable = false
+						// The transient error was applied above; undo it fully so
+						// the auth stays available for retry without stale
+						// Status/StatusMessage/LastError. resetModelState clears
+						// the model-scoped error fields; the auth-level fields
+						// are cleared only when no other model still has an error.
+						// (auth.Unavailable is recomputed by
+						// updateAggregatedAvailability below, so it is not set
+						// here.)
+						resetModelState(state, now)
+						if !hasModelError(auth, now) {
+							auth.LastError = nil
+							auth.StatusMessage = ""
+							auth.Status = StatusActive
+						}
+						shouldResumeModel = true
+					} else {
+						auth.Status = StatusError
 					}
 
-					auth.Status = StatusError
 					auth.UpdatedAt = now
 					updateAggregatedAvailability(auth, now)
 				}
@@ -4160,8 +4174,31 @@ func applyAuthFailureState(auth *Auth, provider string, resultErr *Error, retryA
 		}
 	}
 	if skipTransientCooldown {
+		// Undo the failure state fully so the auth stays available for retry
+		// without stale Status/StatusMessage/LastError. There is no
+		// updateAggregatedAvailability call on this path, so auth.Unavailable
+		// must be cleared explicitly.
 		auth.Unavailable = false
+		auth.Status = StatusActive
+		auth.StatusMessage = ""
+		auth.LastError = nil
 	}
+}
+
+// isTransientHTTPStatus reports whether an HTTP status code is a transient
+// upstream error (408/500/502/503/504) that may resolve on retry. This is the
+// single source of truth for the transient-status set used by the cooldown
+// switches and the Lingma transient bypass.
+func isTransientHTTPStatus(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout, // 408
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout:      // 504
+		return true
+	}
+	return false
 }
 
 // bypassLingmaTransientCooldown reports whether a Lingma upstream transient
@@ -4176,15 +4213,7 @@ func bypassLingmaTransientCooldown(provider string, resultErr *Error) bool {
 	if !strings.EqualFold(strings.TrimSpace(provider), "lingma") {
 		return false
 	}
-	switch statusCodeFromResult(resultErr) {
-	case http.StatusRequestTimeout, // 408
-		http.StatusInternalServerError, // 500
-		http.StatusBadGateway,          // 502
-		http.StatusServiceUnavailable,  // 503
-		http.StatusGatewayTimeout:      // 504
-		return true
-	}
-	return false
+	return isTransientHTTPStatus(statusCodeFromResult(resultErr))
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.

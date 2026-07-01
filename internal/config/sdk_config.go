@@ -9,6 +9,13 @@ type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// DisableHTTP11 opts out of HTTP/1.1 forcing for upstream channels that use
+	// it by default (currently Lingma). By default (false) those channels use
+	// HTTP/1.1 to avoid mid-stream HTTP/2 RST_STREAM errors from the upstream
+	// surfacing as raw "stream error: stream ID N; INTERNAL_ERROR" messages to
+	// clients. Set true to negotiate HTTP/2 via ALPN as before.
+	DisableHTTP11 bool `yaml:"disable-http11" json:"disable-http11"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:

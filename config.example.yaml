@@ -106,6 +106,12 @@ redis-usage-queue-retention-seconds: 60
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
 
+# Opt out of HTTP/1.1 forcing for upstream channels that use it by default (currently Lingma).
+# By default (false) those channels use HTTP/1.1 to avoid mid-stream HTTP/2 RST_STREAM errors from
+# the upstream surfacing as raw "stream error: stream ID N; INTERNAL_ERROR" messages to clients.
+# Set true to negotiate HTTP/2 via ALPN as before.
+disable-http11: false
+
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
 

@@ -36,6 +36,16 @@ func lingmaChatURLForModel(modelName string) string {
 	return fmt.Sprintf("https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=%s&Encode=1", agentID)
 }
 
+// newLingmaHTTPClient creates an HTTP client for Lingma, forcing HTTP/1.1 by
+// default to avoid mid-stream HTTP/2 RST_STREAM errors from the upstream
+// surfacing as raw "stream error: stream ID N; INTERNAL_ERROR" messages to
+// clients. Set cfg.DisableHTTP11=true to opt out and negotiate HTTP/2 via ALPN
+// as before.
+func newLingmaHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+	forceHTTP11 := cfg == nil || !cfg.DisableHTTP11
+	return helps.NewHTTP11Client(ctx, cfg, auth, timeout, forceHTTP11)
+}
+
 // LingmaExecutor is a stateless executor for the Lingma API.
 type LingmaExecutor struct {
 	cfg *config.Config
@@ -71,7 +81,7 @@ func (e *LingmaExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := newLingmaHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
 }
 
@@ -134,7 +144,7 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := newLingmaHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -238,7 +248,7 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := newLingmaHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {

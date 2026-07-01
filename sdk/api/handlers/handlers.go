@@ -935,6 +935,45 @@ func executionErrorMessage(err error) *interfaces.ErrorMessage {
 	return &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
 }
 
+// upstreamStreamError is a clean, client-facing translation of a raw Go HTTP/2
+// stream error (e.g. a mid-stream RST_STREAM INTERNAL_ERROR from the upstream).
+// Without this, the raw "stream error: stream ID N; INTERNAL_ERROR; received
+// from peer" string from Go's HTTP/2 client reaches the client verbatim.
+type upstreamStreamError struct {
+	code int
+	msg  string
+}
+
+func (e upstreamStreamError) Error() string   { return e.msg }
+func (e upstreamStreamError) StatusCode() int { return e.code }
+
+// translateUpstreamStreamError converts a raw HTTP/2 stream error into a clean
+// client-facing message. Non-stream errors are returned unchanged. The
+// StatusCode() method on the returned error is picked up by the existing
+// interface{ StatusCode() int } checks, so the 502 status flows through.
+//
+// Note: detection is by string match, not errors.As against
+// golang.org/x/net/http2.StreamError. The stdlib net/http HTTP/2 client (used
+// by http.DefaultTransport, the transport non-fingerprint upstreams go through)
+// bundles its own unexported http2StreamError type, which is a distinct
+// concrete type from x/net's exported StreamError — errors.As cannot match
+// across them. The string format is Go's internal StreamError.Error():
+// "stream error: stream ID N; <code>; received from peer" (peer-initiated
+// resets carry the "received from peer" cause). If Go changes this wording,
+// the translation silently no-ops and the raw error reaches the client again.
+func translateUpstreamStreamError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if s := err.Error(); strings.Contains(s, "stream error: stream ID") && strings.Contains(s, "received from peer") {
+		return upstreamStreamError{
+			code: http.StatusBadGateway,
+			msg:  "upstream stream interrupted (HTTP/2 stream reset by peer)",
+		}
+	}
+	return err
+}
+
 // ExecuteStreamWithAuthManager executes a streaming request via the core auth manager.
 // This path is the only supported execution route.
 // The returned http.Header carries upstream response headers captured before streaming begins.
@@ -1032,7 +1071,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 			}
 			if chunk.Err != nil {
 				select {
-				case errChan <- executionErrorMessage(chunk.Err):
+				case errChan <- executionErrorMessage(translateUpstreamStreamError(chunk.Err)):
 				case <-done:
 				}
 				return
@@ -1321,6 +1360,12 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 							streamErr = enrichAuthSelectionError(retryErr, providers, normalizedModel)
 						}
 					}
+
+					// Translate raw HTTP/2 stream errors (e.g. mid-stream RST_STREAM
+					// from the upstream) into a clean client-facing 502 after the
+					// bootstrap-retry check, so the StatusCode() detection below
+					// picks up the 502.
+					streamErr = translateUpstreamStreamError(streamErr)
 
 					status := http.StatusInternalServerError
 					if se, ok := streamErr.(interface{ StatusCode() int }); ok && se != nil {

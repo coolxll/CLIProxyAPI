@@ -3552,6 +3552,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						auth.StatusMessage = result.Error.Message
 					}
 
+					skipTransientCooldown := bypassLingmaTransientCooldown(result.Provider, result.Error)
 					statusCode := statusCodeFromResult(result.Error)
 					if isModelSupportResultError(result.Error) {
 						next := now.Add(12 * time.Hour)
@@ -3627,7 +3628,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								setModelQuota = true
 							}
 						case 408, 500, 502, 503, 504:
-							if disableCooling {
+							if skipTransientCooldown {
+								state.NextRetryAfter = time.Time{}
+							} else if disableCooling {
 								state.NextRetryAfter = time.Time{}
 							} else {
 								state.NextRetryAfter = nextTransientErrorRetryAfter(now)
@@ -3637,13 +3640,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						}
 					}
 
+					if skipTransientCooldown {
+						state.Unavailable = false
+						auth.Unavailable = false
+					}
+
 					auth.Status = StatusError
 					auth.UpdatedAt = now
 					updateAggregatedAvailability(auth, now)
 				}
 			} else {
 				disableCooling := m.cooldownDisabledForAuth(auth)
-				applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
+				applyAuthFailureState(auth, result.Provider, result.Error, result.RetryAfter, now, disableCooling)
 			}
 		}
 
@@ -4067,13 +4075,14 @@ func isRequestInvalidError(err error) bool {
 	}
 }
 
-func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time, disableCooling bool) {
+func applyAuthFailureState(auth *Auth, provider string, resultErr *Error, retryAfter *time.Duration, now time.Time, disableCooling bool) {
 	if auth == nil {
 		return
 	}
 	if isRequestScopedNotFoundResultError(resultErr) {
 		return
 	}
+	skipTransientCooldown := bypassLingmaTransientCooldown(provider, resultErr)
 	auth.Unavailable = true
 	auth.Status = StatusError
 	auth.UpdatedAt = now
@@ -4138,7 +4147,9 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.NextRetryAfter = next
 	case 408, 500, 502, 503, 504:
 		auth.StatusMessage = "transient upstream error"
-		if disableCooling {
+		if skipTransientCooldown {
+			auth.NextRetryAfter = time.Time{}
+		} else if disableCooling {
 			auth.NextRetryAfter = time.Time{}
 		} else {
 			auth.NextRetryAfter = nextTransientErrorRetryAfter(now)
@@ -4148,6 +4159,32 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.StatusMessage = "request failed"
 		}
 	}
+	if skipTransientCooldown {
+		auth.Unavailable = false
+	}
+}
+
+// bypassLingmaTransientCooldown reports whether a Lingma upstream transient
+// error (408/500/502/503/504) should skip the transient-error cooldown.
+//
+// Lingma's upstream is prone to intermittent transient failures (mid-stream
+// HTTP/2 RST_STREAM surfaced as 502, gateway timeouts as 504, etc.) that do
+// not indicate a credential problem. Cooldown-ing the auth on every such
+// failure would needlessly remove credentials from the round-robin rotation.
+// Only credential-scoped errors (401/402/403/429) should affect auth state.
+func bypassLingmaTransientCooldown(provider string, resultErr *Error) bool {
+	if !strings.EqualFold(strings.TrimSpace(provider), "lingma") {
+		return false
+	}
+	switch statusCodeFromResult(resultErr) {
+	case http.StatusRequestTimeout, // 408
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout:      // 504
+		return true
+	}
+	return false
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.

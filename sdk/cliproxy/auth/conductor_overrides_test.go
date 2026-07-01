@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -676,6 +677,141 @@ func TestManager_MarkResult_TransientErrorCooldownDoesNotDisableAuthErrors(t *te
 	diff := time.Until(state.NextRetryAfter)
 	if diff < 29*time.Minute || diff > 31*time.Minute {
 		t.Fatalf("expected auth error cooldown to be ~30 minutes, got %v", diff)
+	}
+}
+
+func TestManager_MarkResult_LingmaTransientErrorsDoNotCooldownAuth(t *testing.T) {
+	prevQuota := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	prevTransient := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(0)
+	t.Cleanup(func() {
+		quotaCooldownDisabled.Store(prevQuota)
+		transientErrorCooldownSeconds.Store(prevTransient)
+	})
+
+	// Lingma transient upstream errors (408/500/502/503/504) should not
+	// cooldown the auth — they do not indicate a credential problem. 502 is
+	// the status a mid-stream HTTP/2 RST_STREAM is translated to; 504 is a
+	// gateway timeout. Both must keep the auth available for retry.
+	transientCodes := []int{
+		http.StatusRequestTimeout,      // 408
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout,      // 504
+	}
+
+	for _, code := range transientCodes {
+		t.Run(fmt.Sprintf("model_%d", code), func(t *testing.T) {
+			modelAuth := &Auth{
+				ID:       fmt.Sprintf("auth-lingma-model-%d", code),
+				Provider: "lingma",
+			}
+			m := NewManager(nil, nil, nil)
+			if _, errRegister := m.Register(context.Background(), modelAuth); errRegister != nil {
+				t.Fatalf("register model auth: %v", errRegister)
+			}
+
+			model := "lingma-test-model"
+			m.MarkResult(context.Background(), Result{
+				AuthID:   modelAuth.ID,
+				Provider: modelAuth.Provider,
+				Model:    model,
+				Success:  false,
+				Error:    &Error{HTTPStatus: code, Message: "transient"},
+			})
+
+			updated, ok := m.GetByID(modelAuth.ID)
+			if !ok || updated == nil {
+				t.Fatalf("expected model auth to be present")
+			}
+			modelState := updated.ModelStates[model]
+			if modelState == nil {
+				t.Fatalf("expected model state to be present")
+			}
+			if !modelState.NextRetryAfter.IsZero() {
+				t.Errorf("expected lingma %d model state NextRetryAfter to be zero, got %v", code, modelState.NextRetryAfter)
+			}
+			if modelState.Unavailable {
+				t.Errorf("expected lingma %d model state to remain available for retry", code)
+			}
+			if !updated.NextRetryAfter.IsZero() {
+				t.Errorf("expected lingma %d auth NextRetryAfter to be zero, got %v", code, updated.NextRetryAfter)
+			}
+			if updated.Unavailable {
+				t.Errorf("expected lingma %d auth to remain available for retry", code)
+			}
+		})
+
+		t.Run(fmt.Sprintf("auth_only_%d", code), func(t *testing.T) {
+			authOnly := &Auth{
+				ID:       fmt.Sprintf("auth-lingma-auth-%d", code),
+				Provider: "lingma",
+			}
+			m := NewManager(nil, nil, nil)
+			if _, errRegister := m.Register(context.Background(), authOnly); errRegister != nil {
+				t.Fatalf("register auth-only auth: %v", errRegister)
+			}
+
+			m.MarkResult(context.Background(), Result{
+				AuthID:   authOnly.ID,
+				Provider: authOnly.Provider,
+				Success:  false,
+				Error:    &Error{HTTPStatus: code, Message: "transient"},
+			})
+
+			updated, ok := m.GetByID(authOnly.ID)
+			if !ok || updated == nil {
+				t.Fatalf("expected auth-only auth to be present")
+			}
+			if !updated.NextRetryAfter.IsZero() {
+				t.Errorf("expected lingma %d auth-only NextRetryAfter to be zero, got %v", code, updated.NextRetryAfter)
+			}
+			if updated.Unavailable {
+				t.Errorf("expected lingma %d auth-only to remain available for retry", code)
+			}
+		})
+	}
+}
+
+func TestManager_MarkResult_NonLingmaTransientErrorStillCooldowns(t *testing.T) {
+	// A 504 from a non-lingma provider must still apply the transient
+	// cooldown — the bypass is lingma-specific.
+	prevQuota := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	prevTransient := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(1)
+	t.Cleanup(func() {
+		quotaCooldownDisabled.Store(prevQuota)
+		transientErrorCooldownSeconds.Store(prevTransient)
+	})
+
+	auth := &Auth{
+		ID:       "auth-other-504",
+		Provider: "other",
+	}
+	m := NewManager(nil, nil, nil)
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Success:  false,
+		Error:    &Error{HTTPStatus: http.StatusGatewayTimeout, Message: "gateway timeout"},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be present")
+	}
+	if updated.NextRetryAfter.IsZero() {
+		t.Fatalf("expected non-lingma 504 auth NextRetryAfter to be set (cooldown applied)")
+	}
+	if !updated.Unavailable {
+		t.Fatalf("expected non-lingma 504 auth to be marked unavailable")
 	}
 }
 

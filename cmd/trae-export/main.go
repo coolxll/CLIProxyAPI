@@ -79,13 +79,20 @@ func main() {
 	if strings.TrimSpace(configPath) == "" {
 		configPath = filepath.Join(wd, "config.yaml")
 	}
-	cfg, err := config.LoadConfigOptional(configPath, false)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: failed to load config file %s: %v\n", configPath, err)
-		os.Exit(1)
-	}
-	if cfg == nil {
-		cfg = &config.Config{}
+	// Load the config read-only: we only need cfg.AuthDir, so parse the bytes
+	// directly via ParseConfigBytes (which never persists to disk) instead of
+	// LoadConfigOptional (which hashes and writes back a plaintext
+	// remote-management secret-key). A missing config file is tolerated — the
+	// tool falls back to the default auth dir — so it stays self-contained.
+	cfg := &config.Config{}
+	if data, errRead := os.ReadFile(configPath); errRead == nil {
+		if parsed, errParse := config.ParseConfigBytes(data); errParse == nil {
+			cfg = parsed
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: failed to parse config file %s: %v (using default auth dir)\n", configPath, errParse)
+		}
+	} else if !os.IsNotExist(errRead) {
+		fmt.Fprintf(os.Stderr, "Warning: failed to read config file %s: %v (using default auth dir)\n", configPath, errRead)
 	}
 
 	if !authsDirOverridden {
@@ -185,7 +192,17 @@ func main() {
 		// Default: write directly into the resolved auth directory using the
 		// sanitized name, so the file is immediately usable by the proxy.
 		outPath = filepath.Join(authsDir, sanitizeFileComponent(finalName)+".json")
-	} else if !filepath.IsAbs(outPath) && !strings.HasPrefix(outPath, "~") {
+	} else if strings.HasPrefix(outPath, "~") {
+		// A -out path beginning with ~ is expanded to the user's home directory,
+		// matching how authsDir is resolved, so os.WriteFile does not receive a
+		// literal "~/..." path.
+		if expanded, errExpand := util.ResolveAuthDir(outPath); errExpand == nil {
+			outPath = expanded
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: failed to resolve output path %s: %v\n", outPath, errExpand)
+			os.Exit(1)
+		}
+	} else if !filepath.IsAbs(outPath) {
 		// Relative -out paths are resolved against the auth directory so they
 		// still land inside the auth tree by default.
 		outPath = filepath.Join(authsDir, outPath)

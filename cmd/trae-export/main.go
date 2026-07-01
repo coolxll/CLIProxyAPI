@@ -19,7 +19,9 @@ import (
 
 	traeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/trae"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
 
 const (
@@ -33,6 +35,8 @@ const (
 
 func main() {
 	var outPath string
+	var authsDir string
+	var configPath string
 	var manualName string
 	var jwtToken string
 	var machineID string
@@ -43,7 +47,9 @@ func main() {
 	var loginHost string
 	var doLogin bool
 
-	flag.StringVar(&outPath, "out", defaultOutPath, "Output JSON file path")
+	flag.StringVar(&outPath, "out", defaultOutPath, "Output JSON file path (default: <auth-dir>/<name>.json)")
+	flag.StringVar(&authsDir, "auths-dir", "", "Directory for auth JSON files (overrides config auth-dir)")
+	flag.StringVar(&configPath, "config", "", "Config file path (default: config.yaml in working dir)")
 	flag.StringVar(&manualName, "name", "", "Manual name label (auto-generated if empty)")
 	flag.StringVar(&jwtToken, "jwt-token", "", "Trae JWT token override")
 	flag.StringVar(&machineID, "machine-id", "", "Trae machine id override")
@@ -54,6 +60,47 @@ func main() {
 	flag.StringVar(&loginHost, "login-host", "", "Trae API host for token exchange (default: "+TRAE_CN_API_HOST+")")
 	flag.BoolVar(&doLogin, "login", false, "Interactive OAuth login via browser")
 	flag.Parse()
+
+	// Resolve the auth directory from config (or -auths-dir override), so the
+	// generated importable JSON lands directly where the proxy reads auth files.
+	authsDirOverridden := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "auths-dir" {
+			authsDirOverridden = true
+		}
+	})
+
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot get working directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(configPath) == "" {
+		configPath = filepath.Join(wd, "config.yaml")
+	}
+	cfg, err := config.LoadConfigOptional(configPath, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to load config file %s: %v\n", configPath, err)
+		os.Exit(1)
+	}
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+
+	if !authsDirOverridden {
+		authsDir = cfg.AuthDir
+	} else if strings.TrimSpace(authsDir) != "" && !strings.HasPrefix(strings.TrimSpace(authsDir), "~") && !filepath.IsAbs(authsDir) {
+		authsDir = filepath.Join(wd, authsDir)
+	}
+	if authsDir, err = util.ResolveAuthDir(authsDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve auth directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(authsDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to create auth directory %s: %v\n", authsDir, err)
+		os.Exit(1)
+	}
 
 	// Resolve credentials (before login so runOAuthLogin can reuse them)
 	jwtToken = firstNonEmpty(jwtToken, os.Getenv("TRAE_JWT_TOKEN"))
@@ -135,7 +182,13 @@ func main() {
 	}
 
 	if outPath == defaultOutPath {
-		outPath = sanitizeFileComponent(finalName) + ".json"
+		// Default: write directly into the resolved auth directory using the
+		// sanitized name, so the file is immediately usable by the proxy.
+		outPath = filepath.Join(authsDir, sanitizeFileComponent(finalName)+".json")
+	} else if !filepath.IsAbs(outPath) && !strings.HasPrefix(outPath, "~") {
+		// Relative -out paths are resolved against the auth directory so they
+		// still land inside the auth tree by default.
+		outPath = filepath.Join(authsDir, outPath)
 	}
 	if err := os.WriteFile(outPath, outBytes, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing output file: %v\n", err)

@@ -136,6 +136,15 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		isReasoning = ir.Bool()
 	}
 
+	// When thinking is disabled, use agent_common to prevent upstream from
+	// returning reasoning content.
+	agentID := helpers.AgentID(modelName)
+	modelConfigSource := helpers.ModelConfigSource(modelName)
+	if !isReasoning {
+		agentID = helpers.AgentCommon
+		modelConfigSource = ""
+	}
+
 	innerBody := map[string]any{
 		"request_id":       requestID,
 		"request_set_id":   "",
@@ -150,7 +159,7 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		"version":          "3",
 		"chat_prompt":      "",
 		"aliyun_user_type": "enterprise_standard",
-		"agent_id":         helpers.AgentID(modelName),
+		"agent_id":         agentID,
 		"task_id":          "question_refine",
 		"model_config": map[string]any{
 			"key":                   modelName,
@@ -161,7 +170,7 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 			"is_reasoning":          isReasoning,
 			"api_key":               "",
 			"url":                   "",
-			"source":                helpers.ModelConfigSource(modelName),
+			"source":                modelConfigSource,
 			"max_input_tokens":      0,
 			"enable":                false,
 			"price_factor":          0,

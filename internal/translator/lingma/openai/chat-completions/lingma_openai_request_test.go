@@ -187,6 +187,25 @@ func TestConvertOpenAIRequestToLingmaAgentChatModel(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIRequestToLingmaAgentChatWithReasoningNone(t *testing.T) {
+	raw := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"hi"}],"stream":true,"reasoning_effort":"none"}`)
+	payload := decodeLingmaRequestPayload(t, ConvertOpenAIRequestToLingma("gm51model", raw, true))
+
+	if got := payload["agent_id"]; got != "agent_common" {
+		t.Fatalf("agent_id = %v, want agent_common", got)
+	}
+	modelConfig, ok := payload["model_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("model_config = %T, want object", payload["model_config"])
+	}
+	if got := modelConfig["source"]; got != "" {
+		t.Fatalf("model_config.source = %v, want empty string", got)
+	}
+	if got := modelConfig["is_reasoning"]; got != false {
+		t.Fatalf("is_reasoning = %v, want false", got)
+	}
+}
+
 func TestConvertOpenAIRequestToLingmaAgentCommonModel(t *testing.T) {
 	raw := []byte(`{"model":"kmodel","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	payload := decodeLingmaRequestPayload(t, ConvertOpenAIRequestToLingma("kmodel", raw, true))

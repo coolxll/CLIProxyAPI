@@ -31,9 +31,24 @@ const (
 	lingmaModelListURL = "https://lingma-api.tongyi.aliyun.com/algo/api/v2/model/list"
 )
 
-func lingmaChatURLForModel(modelName string) string {
-	agentID := helpers.AgentID(modelName)
+// lingmaChatURLForAgent builds the upstream SSE endpoint URL for the given
+// agent_id. The URL's AgentId query param must match the body's agent_id, so
+// callers resolve the final agent_id from the translated body (which may flip
+// to agent_common when reasoning is disabled) and pass it here.
+func lingmaChatURLForAgent(agentID string) string {
 	return fmt.Sprintf("https://lingma-api.tongyi.aliyun.com/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=%s&Encode=1", agentID)
+}
+
+// lingmaAgentIDFromBody extracts the final agent_id from a translated Lingma
+// request body. ApplyThinking and preserveLingmaClaudeCodeThinking only touch
+// model_config.is_reasoning, so the agent_id set by the translator is the final
+// value. Falls back to the model-name-derived agent_id if the body is missing
+// the field (defensive; should not happen in practice).
+func lingmaAgentIDFromBody(body []byte, modelName string) string {
+	if v := gjson.GetBytes(body, "agent_id"); v.Exists() && v.String() != "" {
+		return v.String()
+	}
+	return helpers.AgentID(modelName)
 }
 
 // newLingmaHTTPClient creates an HTTP client for Lingma, forcing HTTP/1.1 by
@@ -91,7 +106,6 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "lingma: openai-response format is not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	chatURL := lingmaChatURLForModel(baseModel)
 	creds, err := e.getLingmaCreds(auth)
 	if err != nil {
 		return resp, err
@@ -108,6 +122,11 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 	body, _ = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	body = preserveLingmaClaudeCodeThinking(body, req.Payload, from.String())
+
+	// Build the URL from the final body's agent_id so the URL's AgentId query
+	// param matches the body's agent_id (the translator may flip to agent_common
+	// when reasoning is disabled).
+	chatURL := lingmaChatURLForAgent(lingmaAgentIDFromBody(body, baseModel))
 
 	// Final encoding after thinking application
 	encodedBody := lingmaencoding.Encode(body)
@@ -197,7 +216,6 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "lingma: openai-response format is not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	chatURL := lingmaChatURLForModel(baseModel)
 	creds, err := e.getLingmaCreds(auth)
 	if err != nil {
 		return nil, err
@@ -212,6 +230,11 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 	body, _ = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	body = preserveLingmaClaudeCodeThinking(body, req.Payload, from.String())
+
+	// Build the URL from the final body's agent_id so the URL's AgentId query
+	// param matches the body's agent_id (the translator may flip to agent_common
+	// when reasoning is disabled).
+	chatURL := lingmaChatURLForAgent(lingmaAgentIDFromBody(body, baseModel))
 
 	// Final encoding after thinking application
 	encodedBody := lingmaencoding.Encode(body)

@@ -16,6 +16,10 @@ type SDKConfig struct {
 	// clients. Set true to negotiate HTTP/2 via ALPN as before.
 	DisableHTTP11 bool `yaml:"disable-http11" json:"disable-http11"`
 
+	// LingmaThinkingFallback configures a one-shot no-thinking fallback for
+	// large gm51model requests canceled before the upstream produces data.
+	LingmaThinkingFallback LingmaThinkingFallbackConfig `yaml:"lingma-thinking-fallback" json:"lingma-thinking-fallback"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:
@@ -62,6 +66,17 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+}
+
+// LingmaThinkingFallbackConfig controls Lingma's one-shot retry downgrade.
+type LingmaThinkingFallbackConfig struct {
+	// Enabled allows the next identical large gm51model thinking request to
+	// retry once with reasoning disabled after a pre-response cancellation.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// TTL controls how long a canceled request fingerprint remains eligible.
+	// Empty or invalid values use the default of 2m.
+	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

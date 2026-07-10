@@ -21,6 +21,9 @@ const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 // ReasoningEffortMetadataKey stores the client-requested reasoning effort for usage logs.
 const ReasoningEffortMetadataKey = "reasoning_effort"
 
+// FallbackHeaderName reports an automatic proxy fallback applied to a request.
+const FallbackHeaderName = "X-CLIProxy-Fallback"
+
 // ServiceTierMetadataKey stores the client-requested service tier for usage logs.
 const ServiceTierMetadataKey = "service_tier"
 

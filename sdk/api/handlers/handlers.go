@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -746,19 +748,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
-		status := http.StatusInternalServerError
-		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-			if code := se.StatusCode(); code > 0 {
-				status = code
-			}
-		}
-		var addon http.Header
-		if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-			if hdr := he.Headers(); hdr != nil {
-				addon = hdr.Clone()
-			}
-		}
-		return nil, nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+		return nil, nil, executionErrorMessage(err)
 	}
 	executedReq, executedOpts := afterAuthCapture.apply(req, opts)
 	rawResponseHeaders := cloneHeader(resp.Headers)
@@ -920,6 +910,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx co
 }
 
 func executionErrorMessage(err error) *interfaces.ErrorMessage {
+	err = translateTransportError(err)
 	status := http.StatusInternalServerError
 	if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
 		if code := se.StatusCode(); code > 0 {
@@ -935,22 +926,22 @@ func executionErrorMessage(err error) *interfaces.ErrorMessage {
 	return &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
 }
 
-// upstreamStreamError is a clean, client-facing translation of a raw Go HTTP/2
-// stream error (e.g. a mid-stream RST_STREAM INTERNAL_ERROR from the upstream).
-// Without this, the raw "stream error: stream ID N; INTERNAL_ERROR; received
-// from peer" string from Go's HTTP/2 client reaches the client verbatim.
-type upstreamStreamError struct {
+const statusClientClosedRequest = 499
+
+// transportStatusError is a clean, client-facing translation of a transport
+// lifecycle failure such as client cancellation, upstream timeout, unexpected
+// EOF, or HTTP/2 stream reset.
+type transportStatusError struct {
 	code int
 	msg  string
 }
 
-func (e upstreamStreamError) Error() string   { return e.msg }
-func (e upstreamStreamError) StatusCode() int { return e.code }
+func (e transportStatusError) Error() string   { return e.msg }
+func (e transportStatusError) StatusCode() int { return e.code }
 
-// translateUpstreamStreamError converts a raw HTTP/2 stream error into a clean
-// client-facing message. Non-stream errors are returned unchanged. The
-// StatusCode() method on the returned error is picked up by the existing
-// interface{ StatusCode() int } checks, so the 502 status flows through.
+// translateTransportError converts recognizable transport errors into clean
+// client-facing messages. Errors that already carry an HTTP status and
+// unrecognized failures are returned unchanged.
 //
 // Note: detection is by string match, not errors.As against
 // golang.org/x/net/http2.StreamError. The stdlib net/http HTTP/2 client (used
@@ -961,12 +952,40 @@ func (e upstreamStreamError) StatusCode() int { return e.code }
 // "stream error: stream ID N; <code>; received from peer" (peer-initiated
 // resets carry the "received from peer" cause). If Go changes this wording,
 // the translation silently no-ops and the raw error reaches the client again.
-func translateUpstreamStreamError(err error) error {
+func translateTransportError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if statusFromError(err) > 0 {
+		return err
+	}
+	if errors.Is(err, context.Canceled) {
+		return transportStatusError{
+			code: statusClientClosedRequest,
+			msg:  "client closed request while waiting for upstream response",
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return transportStatusError{
+			code: http.StatusGatewayTimeout,
+			msg:  "upstream timeout while waiting for response data",
+		}
+	}
+	var timeoutErr net.Error
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return transportStatusError{
+			code: http.StatusGatewayTimeout,
+			msg:  "upstream timeout while waiting for response data",
+		}
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || strings.TrimSpace(err.Error()) == "unexpected EOF" {
+		return transportStatusError{
+			code: http.StatusBadGateway,
+			msg:  "upstream connection closed unexpectedly",
+		}
+	}
 	if s := err.Error(); strings.Contains(s, "stream error: stream ID") && strings.Contains(s, "received from peer") {
-		return upstreamStreamError{
+		return transportStatusError{
 			code: http.StatusBadGateway,
 			msg:  "upstream stream interrupted (HTTP/2 stream reset by peer)",
 		}
@@ -1071,7 +1090,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 			}
 			if chunk.Err != nil {
 				select {
-				case errChan <- executionErrorMessage(translateUpstreamStreamError(chunk.Err)):
+				case errChan <- executionErrorMessage(translateTransportError(chunk.Err)):
 				case <-done:
 				}
 				return
@@ -1176,19 +1195,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
-		status := http.StatusInternalServerError
-		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-			if code := se.StatusCode(); code > 0 {
-				status = code
-			}
-		}
-		var addon http.Header
-		if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-			if hdr := he.Headers(); hdr != nil {
-				addon = hdr.Clone()
-			}
-		}
-		errChan <- &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+		errChan <- executionErrorMessage(err)
 		close(errChan)
 		return nil, nil, errChan
 	}
@@ -1365,7 +1372,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 					// from the upstream) into a clean client-facing 502 after the
 					// bootstrap-retry check, so the StatusCode() detection below
 					// picks up the 502.
-					streamErr = translateUpstreamStreamError(streamErr)
+					streamErr = translateTransportError(streamErr)
 
 					status := http.StatusInternalServerError
 					if se, ok := streamErr.(interface{ StatusCode() int }); ok && se != nil {
@@ -1681,9 +1688,22 @@ func finalInterceptorHeaders(current, intercepted http.Header) http.Header {
 
 func downstreamHeadersFromExecutor(headers http.Header, passthrough bool) http.Header {
 	if !passthrough {
-		return nil
+		return proxyOwnedResponseHeaders(headers)
 	}
 	return FilterUpstreamHeaders(headers)
+}
+
+func proxyOwnedResponseHeaders(headers http.Header) http.Header {
+	if headers == nil {
+		return nil
+	}
+	value := headers.Values(coreexecutor.FallbackHeaderName)
+	if len(value) == 0 {
+		return nil
+	}
+	result := make(http.Header)
+	result[http.CanonicalHeaderKey(coreexecutor.FallbackHeaderName)] = append([]string(nil), value...)
+	return result
 }
 
 func downstreamHeadersAfterInterceptors(baseRaw, finalRaw http.Header, passthrough bool) http.Header {

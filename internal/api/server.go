@@ -58,6 +58,7 @@ var corsExposedResponseHeaders = []string{
 	"X-CPA-HOME-BUILD-DATE",
 	"X-SERVER-VERSION",
 	"X-SERVER-BUILD-DATE",
+	"X-CLIProxy-Fallback",
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")

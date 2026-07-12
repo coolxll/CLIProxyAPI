@@ -120,6 +120,15 @@ lingma-thinking-fallback:
   enabled: false
   ttl: "2m"
 
+# Same-request recovery for transient Lingma upstream failures. Recovery is
+# attempted only before a complete non-stream response or any translated stream
+# chunk is exposed downstream. Retries use capped exponential backoff with full
+# jitter and honor Retry-After. No network/read deadline is added after connect.
+lingma-upstream-recovery:
+  disabled: false
+  max-attempts: 3
+  base-delay: "200ms"
+
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
 

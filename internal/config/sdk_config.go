@@ -20,6 +20,10 @@ type SDKConfig struct {
 	// large gm51model requests canceled before the upstream produces data.
 	LingmaThinkingFallback LingmaThinkingFallbackConfig `yaml:"lingma-thinking-fallback" json:"lingma-thinking-fallback"`
 
+	// LingmaUpstreamRecovery configures same-request recovery for transient
+	// Lingma upstream failures before any response is exposed downstream.
+	LingmaUpstreamRecovery LingmaUpstreamRecoveryConfig `yaml:"lingma-upstream-recovery" json:"lingma-upstream-recovery"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:
@@ -77,6 +81,20 @@ type LingmaThinkingFallbackConfig struct {
 	// TTL controls how long a canceled request fingerprint remains eligible.
 	// Empty or invalid values use the default of 2m.
 	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+}
+
+// LingmaUpstreamRecoveryConfig controls same-request Lingma recovery.
+type LingmaUpstreamRecoveryConfig struct {
+	// Disabled turns off same-request recovery. Recovery is enabled by default.
+	Disabled bool `yaml:"disabled" json:"disabled"`
+
+	// MaxAttempts includes the initial request. Values outside 1-5 are clamped;
+	// zero uses the default of 3.
+	MaxAttempts int `yaml:"max-attempts,omitempty" json:"max-attempts,omitempty"`
+
+	// BaseDelay is the initial context-aware retry backoff. Empty, invalid, or
+	// non-positive values use the default of 200ms.
+	BaseDelay string `yaml:"base-delay,omitempty" json:"base-delay,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

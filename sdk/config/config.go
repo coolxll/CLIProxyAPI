@@ -12,6 +12,7 @@ type Config = internalconfig.Config
 
 type StreamingConfig = internalconfig.StreamingConfig
 type LingmaThinkingFallbackConfig = internalconfig.LingmaThinkingFallbackConfig
+type LingmaUpstreamRecoveryConfig = internalconfig.LingmaUpstreamRecoveryConfig
 type TLSConfig = internalconfig.TLSConfig
 type RemoteManagement = internalconfig.RemoteManagement
 type OAuthModelAlias = internalconfig.OAuthModelAlias

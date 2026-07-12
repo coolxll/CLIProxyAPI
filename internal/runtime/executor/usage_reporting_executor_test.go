@@ -16,11 +16,13 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
+const lingmaTestDoneFrame = "data:{\"body\":\"[DONE]\"}\n\n"
+
 func TestLingmaExecutorStreamPublishesUsageWithoutUsageFrame(t *testing.T) {
 	setupExecutorUsageQueue(t)
 
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}]}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}]}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" + lingmaTestDoneFrame
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -65,7 +67,7 @@ func TestLingmaExecutorClaudeStreamPublishesFinalUsage(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":null}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
 			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
-			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" + lingmaTestDoneFrame
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -111,7 +113,7 @@ func TestLingmaExecutorClaudeStreamPublishesTTFT(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		time.Sleep(delay)
 		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":null}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
-			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" + lingmaTestDoneFrame
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -151,7 +153,7 @@ func TestLingmaExecutorClaudeNonStreamPublishesCacheUsage(t *testing.T) {
 	setupExecutorUsageQueue(t)
 
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"cache_read_input_tokens\":3}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"cache_read_input_tokens\":3}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" + lingmaTestDoneFrame
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -200,7 +202,7 @@ func TestLingmaExecutorClaudeNonStreamPublishesTTFT(t *testing.T) {
 	const delay = 40 * time.Millisecond
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		time.Sleep(delay)
-		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" + lingmaTestDoneFrame
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -266,7 +268,7 @@ func TestLingmaExecutorClaudeStreamE2EFullUsage(t *testing.T) {
 		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
 			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":null}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
 			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" +
-			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":30},\"output_tokens_details\":{\"reasoning_tokens\":10},\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+			`data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":30},\"output_tokens_details\":{\"reasoning_tokens\":10},\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" + lingmaTestDoneFrame
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -330,7 +332,7 @@ func TestLingmaExecutorClaudeNonStreamE2EFullUsage(t *testing.T) {
 	// preserving Lingma-format input_tokens which includes cached tokens.
 	// This matches cpa-usage-keeper's cost formula: promptTokens = inputTokens - cachedTokens.
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Hello world\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":30},\"output_tokens_details\":{\"reasoning_tokens\":10},\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n"
+		body := `data:{"headers":{"Content-Type":["application/json"]},"body":"{\"id\":\"chatcmpl-e2e\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"Hello world\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":30},\"output_tokens_details\":{\"reasoning_tokens\":10},\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}","statusCodeValue":200,"statusCode":"OK"}` + "\n\n" + lingmaTestDoneFrame
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -304,6 +305,425 @@ func TestLingmaThinkingFallbackAppliesOnceAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestLingmaRecoverySettingsDefaultsAndClamp(t *testing.T) {
+	attempts, delay := lingmaRecoverySettings(nil)
+	if attempts != lingmaRecoveryDefaultAttempts || delay != lingmaRecoveryDefaultDelay {
+		t.Fatalf("defaults = (%d, %s), want (%d, %s)", attempts, delay, lingmaRecoveryDefaultAttempts, lingmaRecoveryDefaultDelay)
+	}
+
+	cfg := &config.Config{}
+	cfg.LingmaUpstreamRecovery.MaxAttempts = 99
+	cfg.LingmaUpstreamRecovery.BaseDelay = "5ms"
+	attempts, delay = lingmaRecoverySettings(cfg)
+	if attempts != lingmaRecoveryMaxAttempts || delay != 5*time.Millisecond {
+		t.Fatalf("clamped = (%d, %s), want (%d, 5ms)", attempts, delay, lingmaRecoveryMaxAttempts)
+	}
+
+	cfg.LingmaUpstreamRecovery.Disabled = true
+	attempts, _ = lingmaRecoverySettings(cfg)
+	if attempts != 1 {
+		t.Fatalf("disabled attempts = %d, want 1", attempts)
+	}
+}
+
+func TestLingmaExecuteRetries503AndRefreshesIdentity(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	var attempts [][]byte
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		attempts = append(attempts, decodeLingmaTestRequest(t, req))
+		if len(attempts) == 1 {
+			return lingmaTestResponse(http.StatusServiceUnavailable, "busy"), nil
+		}
+		return lingmaTestResponse(http.StatusOK, lingmaOpenAIContentFrame("recovered")+lingmaTestDoneFrame), nil
+	}))
+
+	payload := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	resp, err := executor.Execute(ctx, lingmaTestAuth(), cliproxyexecutor.Request{Model: "gm51model", Payload: payload}, cliproxyexecutor.Options{
+		OriginalRequest: payload,
+		SourceFormat:    sdktranslator.FormatOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(resp.Payload) == 0 {
+		t.Fatal("Execute returned empty payload")
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(attempts))
+	}
+	firstRequestID := gjson.GetBytes(attempts[0], "request_id").String()
+	secondRequestID := gjson.GetBytes(attempts[1], "request_id").String()
+	if firstRequestID == "" || secondRequestID == "" || firstRequestID == secondRequestID {
+		t.Fatalf("request IDs were not refreshed: first=%q second=%q", firstRequestID, secondRequestID)
+	}
+	if gjson.GetBytes(attempts[0], "business.id").String() == gjson.GetBytes(attempts[1], "business.id").String() {
+		t.Fatal("business.id was not refreshed")
+	}
+	if beginAt := gjson.GetBytes(attempts[1], "business.begin_at").Int(); beginAt <= 0 {
+		t.Fatalf("retry business.begin_at = %d, want positive timestamp", beginAt)
+	}
+	if gjson.GetBytes(attempts[0], "session_id").String() != gjson.GetBytes(attempts[1], "session_id").String() {
+		t.Fatal("session_id changed across recovery attempts")
+	}
+	if !gjson.GetBytes(attempts[1], "is_retry").Bool() {
+		t.Fatal("retry attempt did not set is_retry=true")
+	}
+}
+
+func TestLingmaRetryAfterAndJitter(t *testing.T) {
+	now := time.Date(2026, time.July, 12, 0, 0, 0, 0, time.UTC)
+	if got := parseLingmaRetryAfter("3", now); got != 3*time.Second {
+		t.Fatalf("delta Retry-After = %s, want 3s", got)
+	}
+	if got := parseLingmaRetryAfter(now.Add(5*time.Second).Format(http.TimeFormat), now); got != 5*time.Second {
+		t.Fatalf("date Retry-After = %s, want 5s", got)
+	}
+	for i := 0; i < 32; i++ {
+		delay := lingmaRetryDelay(200*time.Millisecond, 0, 0)
+		if delay < 0 || delay > 200*time.Millisecond {
+			t.Fatalf("jitter delay = %s, want [0, 200ms]", delay)
+		}
+	}
+	if got := lingmaRetryDelay(200*time.Millisecond, 0, 750*time.Millisecond); got != 750*time.Millisecond {
+		t.Fatalf("Retry-After delay = %s, want 750ms", got)
+	}
+	if got := lingmaRetryDelay(20*time.Second, 4, time.Minute); got != lingmaRecoveryMaxDelay {
+		t.Fatalf("capped delay = %s, want %s", got, lingmaRecoveryMaxDelay)
+	}
+}
+
+func TestLingmaRetryableSSEErrorClassification(t *testing.T) {
+	for _, line := range []string{
+		`data:{"body":"{\"error\":{\"type\":\"server_error\",\"message\":\"temporary\"}}"}`,
+		`data:{"body":"{\"error\":{\"type\":\"rate_limit_error\",\"message\":\"temporary\"}}"}`,
+		`data:{"body":"{\"error\":{\"code\":429,\"message\":\"temporary\"}}"}`,
+	} {
+		if err := lingmaRetryableSSEError([]byte(line)); err == nil {
+			t.Fatalf("SSE error should be retryable: %s", line)
+		}
+	}
+	for _, line := range []string{
+		`data:{"body":"{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad request\"}}"}`,
+		`data:{"body":"{\"error\":{\"code\":400,\"message\":\"bad request\"}}"}`,
+	} {
+		if err := lingmaRetryableSSEError([]byte(line)); err != nil {
+			t.Fatalf("SSE error should not be retryable: %s", line)
+		}
+	}
+}
+
+func TestLingmaExecuteStreamRetries503BeforeReturning(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return lingmaTestResponse(http.StatusServiceUnavailable, "busy"), nil
+		}
+		return lingmaTestResponse(http.StatusOK, lingmaOpenAIContentFrame("recovered")+lingmaTestDoneFrame), nil
+	}))
+
+	result, err := executor.ExecuteStream(ctx, lingmaTestAuth(), lingmaOpenAIStreamRequest(), lingmaOpenAIStreamOptions())
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	chunks := collectLingmaTestChunks(t, result)
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	assertNoLingmaTestStreamError(t, chunks)
+}
+
+func TestLingmaExecuteRetriesTransportEOF(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, io.EOF
+		}
+		return lingmaTestResponse(http.StatusOK, lingmaOpenAIContentFrame("recovered")+lingmaTestDoneFrame), nil
+	}))
+
+	payload := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	_, err := executor.Execute(ctx, lingmaTestAuth(), cliproxyexecutor.Request{Model: "gm51model", Payload: payload}, cliproxyexecutor.Options{
+		OriginalRequest: payload,
+		SourceFormat:    sdktranslator.FormatOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestLingmaExecuteRetriesIncompleteAggregate(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return lingmaTestResponse(http.StatusOK, lingmaOpenAIContentFrame("incomplete")), nil
+		}
+		return lingmaTestResponse(http.StatusOK, lingmaOpenAIContentFrame("recovered")+lingmaTestDoneFrame), nil
+	}))
+
+	payload := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	resp, err := executor.Execute(ctx, lingmaTestAuth(), cliproxyexecutor.Request{Model: "gm51model", Payload: payload}, cliproxyexecutor.Options{
+		OriginalRequest: payload,
+		SourceFormat:    sdktranslator.FormatOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(resp.Payload) == 0 {
+		t.Fatal("Execute returned empty payload")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestLingmaLargeThinkingRecoveryDisablesReasoning(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	executor.cfg.LingmaThinkingFallback.Enabled = true
+	var attempts [][]byte
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		attempts = append(attempts, decodeLingmaTestRequest(t, req))
+		if len(attempts) == 1 {
+			return lingmaTestResponse(http.StatusServiceUnavailable, "busy"), nil
+		}
+		return lingmaTestResponse(http.StatusOK, lingmaTestDoneFrame), nil
+	}))
+
+	payload := largeLingmaThinkingSourcePayload(t)
+	result, err := executor.ExecuteStream(ctx, lingmaTestAuth(), cliproxyexecutor.Request{Model: "gm51model", Payload: payload}, cliproxyexecutor.Options{
+		OriginalRequest: payload,
+		SourceFormat:    sdktranslator.FormatOpenAI,
+		Stream:          true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	assertNoLingmaTestStreamError(t, collectLingmaTestChunks(t, result))
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(attempts))
+	}
+	if got := gjson.GetBytes(attempts[1], "agent_id").String(); got != helpers.AgentCommon {
+		t.Fatalf("retry agent_id = %q, want %q", got, helpers.AgentCommon)
+	}
+	if gjson.GetBytes(attempts[1], "model_config.is_reasoning").Bool() {
+		t.Fatal("retry kept reasoning enabled")
+	}
+	if got := gjson.GetBytes(attempts[1], "model_config.source").String(); got != "" {
+		t.Fatalf("retry model_config.source = %q, want empty", got)
+	}
+	if got := result.Headers.Get(cliproxyexecutor.FallbackHeaderName); got != lingmaThinkingFallbackHeaderValue {
+		t.Fatalf("fallback header = %q, want %q", got, lingmaThinkingFallbackHeaderValue)
+	}
+}
+
+func TestLingmaExecuteStreamRetriesEmptyOutputEOF(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return lingmaTestResponse(http.StatusOK, `data:{"body":"{}"}`+"\n"), nil
+		}
+		return lingmaTestResponse(http.StatusOK, lingmaOpenAIContentFrame("recovered")+lingmaTestDoneFrame), nil
+	}))
+
+	result, err := executor.ExecuteStream(ctx, lingmaTestAuth(), lingmaOpenAIStreamRequest(), lingmaOpenAIStreamOptions())
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	chunks := collectLingmaTestChunks(t, result)
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	assertNoLingmaTestStreamError(t, chunks)
+}
+
+func TestLingmaExecuteStreamRetriesTransientSSEErrorBeforeOutput(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return lingmaTestResponse(http.StatusOK, `data:{"body":"{\"error\":{\"type\":\"server_error\",\"message\":\"temporary\"}}"}`+"\n"), nil
+		}
+		return lingmaTestResponse(http.StatusOK, lingmaOpenAIContentFrame("recovered")+lingmaTestDoneFrame), nil
+	}))
+
+	result, err := executor.ExecuteStream(ctx, lingmaTestAuth(), lingmaOpenAIStreamRequest(), lingmaOpenAIStreamOptions())
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	chunks := collectLingmaTestChunks(t, result)
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	assertNoLingmaTestStreamError(t, chunks)
+}
+
+func TestLingmaExecuteStreamDoesNotRetryAfterOutput(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		body := io.MultiReader(
+			strings.NewReader(lingmaOpenAIContentFrame("partial")),
+			iotest.ErrReader(io.ErrUnexpectedEOF),
+		)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(body)}, nil
+	}))
+
+	result, err := executor.ExecuteStream(ctx, lingmaTestAuth(), lingmaOpenAIStreamRequest(), lingmaOpenAIStreamOptions())
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	chunks := collectLingmaTestChunks(t, result)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	var sawPayload, sawError bool
+	for _, chunk := range chunks {
+		sawPayload = sawPayload || len(chunk.Payload) > 0
+		sawError = sawError || chunk.Err != nil
+	}
+	if !sawPayload || !sawError {
+		t.Fatalf("chunks = %#v, want partial payload followed by terminal error", chunks)
+	}
+}
+
+func TestLingmaExecuteStreamDoneIgnoresTrailingReadError(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		body := io.MultiReader(
+			strings.NewReader(lingmaOpenAIContentFrame("complete")+lingmaTestDoneFrame),
+			iotest.ErrReader(io.ErrUnexpectedEOF),
+		)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(body)}, nil
+	}))
+
+	result, err := executor.ExecuteStream(ctx, lingmaTestAuth(), lingmaOpenAIStreamRequest(), lingmaOpenAIStreamOptions())
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	chunks := collectLingmaTestChunks(t, result)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	assertNoLingmaTestStreamError(t, chunks)
+}
+
+func TestLingmaExecuteStreamParentCancellationDoesNotRetry(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx = context.WithValue(ctx, "cliproxy.roundtripper", lingmaTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		return nil, req.Context().Err()
+	}))
+
+	_, err := executor.ExecuteStream(ctx, lingmaTestAuth(), lingmaOpenAIStreamRequest(), lingmaOpenAIStreamOptions())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ExecuteStream error = %v, want context canceled", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestLingmaExecuteStreamRecoveryExhaustionReturns502(t *testing.T) {
+	executor := newLingmaRecoveryTestExecutor()
+	attempts := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return nil, io.EOF
+	}))
+
+	_, err := executor.ExecuteStream(ctx, lingmaTestAuth(), lingmaOpenAIStreamRequest(), lingmaOpenAIStreamOptions())
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok || status.StatusCode() != http.StatusBadGateway {
+		t.Fatalf("error = %T %v, want status %d", err, err, http.StatusBadGateway)
+	}
+	if attempts != lingmaRecoveryDefaultAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, lingmaRecoveryDefaultAttempts)
+	}
+}
+
+func newLingmaRecoveryTestExecutor() *LingmaExecutor {
+	cfg := &config.Config{}
+	cfg.LingmaUpstreamRecovery.MaxAttempts = 3
+	cfg.LingmaUpstreamRecovery.BaseDelay = "1ns"
+	return NewLingmaExecutor(cfg)
+}
+
+func lingmaTestAuth() *cliproxyauth.Auth {
+	return &cliproxyauth.Auth{
+		Provider: "lingma",
+		Metadata: map[string]any{
+			"uid": "test-user",
+			"key": "test-key",
+		},
+	}
+}
+
+func lingmaOpenAIStreamRequest() cliproxyexecutor.Request {
+	payload := []byte(`{"model":"gm51model","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	return cliproxyexecutor.Request{Model: "gm51model", Payload: payload}
+}
+
+func lingmaOpenAIStreamOptions() cliproxyexecutor.Options {
+	request := lingmaOpenAIStreamRequest()
+	return cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: request.Payload, Stream: true}
+}
+
+func lingmaTestResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+}
+
+func lingmaOpenAIContentFrame(content string) string {
+	return `data:{"body":"{\"id\":\"chatcmpl-test\",\"model\":\"gm51model\",\"choices\":[{\"delta\":{\"content\":\"` + content + `\"},\"finish_reason\":null}],\"usage\":null}"}` + "\n"
+}
+
+func decodeLingmaTestRequest(t *testing.T, req *http.Request) []byte {
+	t.Helper()
+	encoded, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read encoded request: %v", err)
+	}
+	decoded, err := lingmaencoding.Decode(string(encoded))
+	if err != nil {
+		t.Fatalf("decode Lingma request: %v", err)
+	}
+	return decoded
+}
+
+func collectLingmaTestChunks(t *testing.T, result *cliproxyexecutor.StreamResult) []cliproxyexecutor.StreamChunk {
+	t.Helper()
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+func assertNoLingmaTestStreamError(t *testing.T, chunks []cliproxyexecutor.StreamChunk) {
+	t.Helper()
+	for _, chunk := range chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+	}
+}
+
 func executeCapturedLingmaStream(t *testing.T, executor *LingmaExecutor, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) ([]byte, http.Header) {
 	t.Helper()
 	var captured []byte
@@ -373,6 +793,8 @@ func TestLingmaExecuteStreamEmptyEOFDoesNotEmitDone(t *testing.T) {
 
 func assertLingmaStreamBodyError(t *testing.T, body io.ReadCloser, wantMessage string) {
 	t.Helper()
+	cfg := &config.Config{}
+	cfg.LingmaUpstreamRecovery.Disabled = true
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", lingmaTestRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -393,7 +815,7 @@ func assertLingmaStreamBodyError(t *testing.T, body io.ReadCloser, wantMessage s
 	}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: req.Payload, Stream: true}
 
-	result, err := NewLingmaExecutor(nil).ExecuteStream(ctx, auth, req, opts)
+	result, err := NewLingmaExecutor(cfg).ExecuteStream(ctx, auth, req, opts)
 	if err != nil {
 		t.Fatalf("ExecuteStream error: %v", err)
 	}

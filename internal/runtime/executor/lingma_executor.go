@@ -22,7 +22,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	lingmaencoding "github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/lingma"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -302,78 +301,61 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		warnLingmaLargeThinkingRequest(profile, baseModel)
 	}
 
-	// Build the URL from the final body's agent_id so the URL's AgentId query
-	// param matches the body's agent_id (the translator may flip to agent_common
-	// when reasoning is disabled).
-	chatURL := lingmaChatURLForAgent(lingmaAgentIDFromBody(body, baseModel))
-
-	// Final encoding after thinking application
-	encodedBody := lingmaencoding.Encode(body)
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, strings.NewReader(encodedBody))
-	if err != nil {
-		return resp, err
-	}
-
-	headers, err := lingma.BuildHeaders(creds, encodedBody, chatURL)
-	if err != nil {
-		return resp, err
-	}
-	for k, v := range headers {
-		httpReq.Header.Set(k, v)
-	}
-	e.PrepareRequest(httpReq, auth)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       chatURL,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      body,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
 	httpClient := newLingmaHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		e.rememberThinkingFallback(err, fallback, profile, baseModel)
-		return resp, normalizeLingmaUpstreamError(err, profile)
-	}
-	defer httpResp.Body.Close()
+	plan := newLingmaUpstreamPlan(ctx, e, auth, creds, httpClient, body, baseModel, profile, fallback)
 
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, err := io.ReadAll(httpResp.Body)
-		if err != nil {
-			return resp, fmt.Errorf("lingma: failed to read error response body: %w", err)
+	var data []byte
+	var responseBody []byte
+	var responseHeaders http.Header
+	for {
+		httpResp, attemptBody, errOpen := plan.open()
+		if errOpen != nil {
+			e.rememberThinkingFallback(errOpen, fallback, profile, baseModel)
+			return resp, normalizeLingmaUpstreamError(errOpen, profile)
 		}
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		return resp, statusErr{code: httpResp.StatusCode, msg: string(b)}
-	}
 
-	data, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		if len(data) == 0 {
-			e.rememberThinkingFallback(err, fallback, profile, baseModel)
+		data, err = io.ReadAll(httpResp.Body)
+		responseHeaders = httpResp.Header.Clone()
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.WithFields(log.Fields{"provider": "lingma", "model": baseModel}).Debugf("failed to close Lingma response: %v", errClose)
 		}
-		return resp, normalizeLingmaUpstreamError(err, profile)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+		hasDone := lingmaAggregateHasDone(data)
+		if sseErr := lingmaAggregateRetryableSSEError(data); sseErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, sseErr)
+			if plan.canRetryIncomplete() {
+				plan.logRetry(plan.nextAttempt-1, 0, sseErr)
+				continue
+			}
+			return resp, sseErr
+		}
+		if err != nil && !hasDone {
+			helps.RecordAPIResponseError(ctx, e.cfg, err)
+			if plan.canRetryTransport(err) {
+				plan.logRetry(plan.nextAttempt-1, 0, err)
+				continue
+			}
+			if len(data) == 0 {
+				e.rememberThinkingFallback(err, fallback, profile, baseModel)
+			}
+			return resp, normalizeLingmaUpstreamError(err, profile)
+		}
+		if !hasDone {
+			incompleteErr := statusErr{code: http.StatusBadGateway, msg: "lingma upstream stream ended before completion"}
+			helps.RecordAPIResponseError(ctx, e.cfg, incompleteErr)
+			if plan.canRetryIncomplete() {
+				plan.logRetry(plan.nextAttempt-1, 0, incompleteErr)
+				continue
+			}
+			return resp, incompleteErr
+		}
+		responseBody = attemptBody
+		break
 	}
-	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 
 	var param any
-	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, body, data, &param)
+	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, responseBody, data, &param)
 	// Extract usage from raw Lingma SSE data (not from translated output) to preserve
 	// Lingma-format input_tokens which includes cached tokens, matching cpa-usage-keeper's
 	// cost formula: promptTokens = inputTokens - cachedTokens.
@@ -390,7 +372,7 @@ func (e *LingmaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		reporter.PublishNonZero(ctx, detail)
 	}
 	reporter.EnsurePublished(ctx)
-	return cliproxyexecutor.Response{Payload: out, Headers: lingmaResponseHeaders(httpResp.Header, fallback.Applied)}, nil
+	return cliproxyexecutor.Response{Payload: out, Headers: lingmaResponseHeaders(responseHeaders, plan.fallbackApplied)}, nil
 }
 
 // ExecuteStream performs a streaming chat completion request to Lingma.
@@ -419,134 +401,112 @@ func (e *LingmaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		warnLingmaLargeThinkingRequest(profile, baseModel)
 	}
 
-	// Build the URL from the final body's agent_id so the URL's AgentId query
-	// param matches the body's agent_id (the translator may flip to agent_common
-	// when reasoning is disabled).
-	chatURL := lingmaChatURLForAgent(lingmaAgentIDFromBody(body, baseModel))
-
-	// Final encoding after thinking application
-	encodedBody := lingmaencoding.Encode(body)
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, strings.NewReader(encodedBody))
-	if err != nil {
-		return nil, err
-	}
-
-	headers, err := lingma.BuildHeaders(creds, encodedBody, chatURL)
-	if err != nil {
-		return nil, err
-	}
-	for k, v := range headers {
-		httpReq.Header.Set(k, v)
-	}
-	e.PrepareRequest(httpReq, auth)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       chatURL,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      body,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
 	httpClient := newLingmaHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
+	plan := newLingmaUpstreamPlan(ctx, e, auth, creds, httpClient, body, baseModel, profile, fallback)
+	httpResp, body, err := plan.open()
 	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		e.rememberThinkingFallback(err, fallback, profile, baseModel)
 		return nil, normalizeLingmaUpstreamError(err, profile)
 	}
-
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		httpResp.Body.Close()
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		return nil, statusErr{code: httpResp.StatusCode, msg: string(b)}
-	}
+	responseHeaders := lingmaResponseHeaders(httpResp.Header, plan.fallbackApplied)
 
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
-		defer httpResp.Body.Close()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		// Lingma responses can be large
-		scanner.Buffer(nil, 5*1024*1024)
-
 		var param any
-		sawUpstreamData := false
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			sawUpstreamData = true
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := helps.ParseLingmaStreamUsage(line); ok {
-				reporter.PublishNonZero(ctx, detail)
-			}
+		emittedOutput := false
+		for {
+			scanner := bufio.NewScanner(httpResp.Body)
+			scanner.Buffer(nil, 5*1024*1024)
+			sawUpstreamData := false
+			sawDone := false
+			var retryableSSEErr error
 
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
-			for i := range chunks {
-				if detail, ok := helps.ParseStreamUsageForFormat(from.String(), chunks[i]); ok {
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				if len(line) == 0 {
+					continue
+				}
+				sawUpstreamData = true
+				sawDone = sawDone || helpers.IsLingmaDone(line)
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+				if !emittedOutput {
+					if retryableSSEErr = lingmaRetryableSSEError(line); retryableSSEErr != nil {
+						break
+					}
+				}
+				if detail, ok := helps.ParseLingmaStreamUsage(line); ok {
 					reporter.PublishNonZero(ctx, detail)
 				}
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
+
+				chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
+				for i := range chunks {
+					if detail, ok := helps.ParseStreamUsageForFormat(from.String(), chunks[i]); ok {
+						reporter.PublishNonZero(ctx, detail)
+					}
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+						emittedOutput = true
+					case <-ctx.Done():
+						return
+					}
+				}
+				if sawDone {
+					break
 				}
 			}
-		}
 
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			if !sawUpstreamData {
-				e.rememberThinkingFallback(errScan, fallback, profile, baseModel)
+			errScan := scanner.Err()
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.WithFields(log.Fields{"provider": "lingma", "model": baseModel}).Debugf("failed to close Lingma stream response: %v", errClose)
 			}
-			streamErr := normalizeLingmaUpstreamError(errScan, profile)
-			reporter.PublishFailure(ctx, streamErr)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-			case <-ctx.Done():
-			}
-			return
-		}
-		if !sawUpstreamData {
-			streamErr := statusErr{code: http.StatusBadGateway, msg: "lingma upstream connection closed before response data"}
-			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-			reporter.PublishFailure(ctx, streamErr)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-			case <-ctx.Done():
-			}
-			return
-		}
-
-		doneChunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param)
-		for i := range doneChunks {
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Payload: doneChunks[i]}:
-			case <-ctx.Done():
+			if sawDone {
+				reporter.EnsurePublished(ctx)
 				return
 			}
+
+			var streamErr error
+			if retryableSSEErr != nil {
+				streamErr = retryableSSEErr
+			} else if errScan != nil {
+				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+				streamErr = normalizeLingmaUpstreamError(errScan, profile)
+			} else if !sawUpstreamData {
+				streamErr = statusErr{code: http.StatusBadGateway, msg: "lingma upstream connection closed before response data"}
+			} else {
+				streamErr = statusErr{code: http.StatusBadGateway, msg: "lingma upstream stream ended before completion"}
+			}
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+
+			canRetry := !emittedOutput && ((retryableSSEErr != nil && plan.canRetryIncomplete()) ||
+				(retryableSSEErr == nil && errScan != nil && plan.canRetryTransport(errScan)) ||
+				(retryableSSEErr == nil && errScan == nil && plan.canRetryIncomplete()))
+			if canRetry {
+				plan.logRetry(plan.nextAttempt-1, 0, streamErr)
+				nextResp, nextBody, errOpen := plan.open()
+				if errOpen == nil {
+					httpResp = nextResp
+					body = nextBody
+					param = nil
+					continue
+				}
+				streamErr = normalizeLingmaUpstreamError(errOpen, profile)
+			}
+
+			if !emittedOutput {
+				e.rememberThinkingFallback(streamErr, fallback, profile, baseModel)
+			}
+			reporter.PublishFailure(ctx, streamErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+			case <-ctx.Done():
+			}
+			return
 		}
-		reporter.EnsurePublished(ctx)
 	}()
 
-	return &cliproxyexecutor.StreamResult{Headers: lingmaResponseHeaders(httpResp.Header, fallback.Applied), Chunks: out}, nil
+	return &cliproxyexecutor.StreamResult{Headers: responseHeaders, Chunks: out}, nil
 }
 
 // CountTokens returns an approximate token count for Lingma requests.

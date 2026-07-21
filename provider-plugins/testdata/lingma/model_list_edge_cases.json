@@ -1,0 +1,8 @@
+{
+  "chat": [
+    {"key": "  whitespace-key  ", "display_name": "Whitespace Model"},
+    {"key": "", "modelId": "fallback-id", "displayName": "Fallback ID"},
+    {"key": "duplicate-model"},
+    {"key": "DUPLICATE-MODEL"}
+  ]
+}

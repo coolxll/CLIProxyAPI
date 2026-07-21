@@ -158,28 +158,28 @@ do not require network access or real credentials.
 
 ### M1: Lingma authentication and model discovery
 
-- Move credential storage types and validation into the plugin.
-- Implement imported credential parsing under `lingma-plugin`.
-- Implement refresh through `AuthProvider.RefreshAuth`.
+- [x] Move credential storage types and validation into the plugin.
+- [x] Implement imported credential parsing under `lingma-plugin`.
+- [x] Implement refresh through `AuthProvider.RefreshAuth`.
 - [x] Add the HTTP/1.1 host transport option.
-- Implement per-auth model discovery using host HTTP callbacks.
-- Port sanitized model-list fixtures and golden tests.
+- [x] Implement per-auth model discovery using host HTTP callbacks.
+- [x] Port sanitized model-list fixtures and golden tests.
 
 Exit criterion: a shadow Lingma credential refreshes and publishes the same
-models as the native implementation.
+models as the native implementation. ✓
 
 ### M2: Lingma translation and execution
 
-- Port OpenAI chat-completions request translation.
-- Port Claude request translation.
-- Port provider response and SSE translation.
-- Implement non-streaming aggregation and true streaming execution.
-- Port reasoning behavior, cached-token restoration, and usage parsing.
-- Port one-shot thinking fallback and same-request recovery.
-- Run native-versus-plugin golden parity tests.
+- [x] Port OpenAI chat-completions request translation.
+- [x] Port Claude request translation.
+- [x] Port provider response and SSE translation.
+- [x] Implement non-streaming aggregation and true streaming execution.
+- [x] Port reasoning behavior, cached-token restoration, and usage parsing.
+- [x] Port one-shot thinking fallback and same-request recovery.
+- [x] Run native-versus-plugin golden parity tests.
 
 Exit criterion: request payloads, stream events, terminal errors, and usage are
-equivalent for the supported protocol matrix.
+equivalent for the supported protocol matrix. ✓
 
 ### M3: Lingma cutover
 

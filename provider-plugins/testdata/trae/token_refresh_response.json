@@ -1,0 +1,6 @@
+{
+  "Result": {
+    "Token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoidGVzdC11c2VyLTEyMyJ9LCJleHAiOjE3MzU2OTMyMDB9.newtoken",
+    "RefreshToken": "new-refresh-token"
+  }
+}

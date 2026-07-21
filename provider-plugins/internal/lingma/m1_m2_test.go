@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -380,5 +381,66 @@ func (h *scriptedStreamHost) call(method string, raw []byte) ([]byte, error) {
 	default:
 		h.t.Fatalf("unexpected host method %q", method)
 		return nil, nil
+	}
+}
+
+// TestParseModelsGoldenParityWithNative verifies that the plugin parseModels
+// produces identical model IDs and display names as the native parseLingmaModels
+// for all sanitized fixtures. The Type field differs intentionally (lingma-plugin
+// vs lingma) during the shadow phase.
+func TestParseModelsGoldenParityWithNative(t *testing.T) {
+	fixtures := []string{
+		"../../testdata/lingma/model_list_categorized.json",
+		"../../testdata/lingma/model_list_array.json",
+		"../../testdata/lingma/model_list_wrapped.json",
+	}
+
+	for _, fixture := range fixtures {
+		t.Run(fixture, func(t *testing.T) {
+			data, err := os.ReadFile(fixture)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+
+			now := int64(1234567890)
+			pluginModels := parseModels(data, now)
+			nativeModels := nativeParseLingmaModelsForTest(data, now)
+
+			if len(pluginModels) != len(nativeModels) {
+				t.Fatalf("model count mismatch: plugin=%d, native=%d",
+					len(pluginModels), len(nativeModels))
+			}
+
+			for i := range pluginModels {
+				plugin := pluginModels[i]
+				native := nativeModels[i]
+
+				if plugin.ID != native.ID {
+					t.Errorf("model[%d].ID: plugin=%q, native=%q", i, plugin.ID, native.ID)
+				}
+				if plugin.DisplayName != native.DisplayName {
+					t.Errorf("model[%d].DisplayName: plugin=%q, native=%q",
+						i, plugin.DisplayName, native.DisplayName)
+				}
+				if plugin.Object != native.Object {
+					t.Errorf("model[%d].Object: plugin=%q, native=%q",
+						i, plugin.Object, native.Object)
+				}
+				if plugin.OwnedBy != native.OwnedBy {
+					t.Errorf("model[%d].OwnedBy: plugin=%q, native=%q",
+						i, plugin.OwnedBy, native.OwnedBy)
+				}
+				if plugin.Created != native.Created {
+					t.Errorf("model[%d].Created: plugin=%d, native=%d",
+						i, plugin.Created, native.Created)
+				}
+
+				// Type is intentionally different during shadow phase
+				if plugin.Type == native.Type {
+					t.Errorf("model[%d].Type should differ: plugin=%q, native=%q",
+						i, plugin.Type, native.Type)
+				}
+			}
+		})
 	}
 }

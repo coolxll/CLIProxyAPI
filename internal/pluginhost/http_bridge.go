@@ -123,7 +123,7 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest) 
 	}
 	httpReq.Header = cloneHeader(req.Headers)
 	c.recordHTTPRequest(ctx, cfg, httpReq, req.Body)
-	client := helps.NewProxyAwareHTTPClient(ctx, cfg, c.auth, 0)
+	client := c.httpClientForRequest(ctx, cfg, req)
 	if client == nil {
 		client = &http.Client{}
 	}
@@ -133,6 +133,13 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest) 
 		return nil, cfg, fmt.Errorf("execute host http request: %w", errDo)
 	}
 	return resp, cfg, nil
+}
+
+func (c *hostHTTPClient) httpClientForRequest(ctx context.Context, cfg *config.Config, req pluginapi.HTTPRequest) *http.Client {
+	if req.Transport.ForceHTTP11 {
+		return helps.NewHTTP11Client(ctx, cfg, c.auth, 0, true)
+	}
+	return helps.NewProxyAwareHTTPClient(ctx, cfg, c.auth, 0)
 }
 
 func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Config, req *http.Request, body []byte) {

@@ -3009,6 +3009,25 @@ func TestMapExecutorStreamChunksExitsWhenContextCanceledWithoutDownstreamConsume
 	}
 }
 
+func TestMapExecutorStreamChunksDropsUsageOnlyFrames(t *testing.T) {
+	in := make(chan pluginapi.ExecutorStreamChunk, 2)
+	in <- pluginapi.ExecutorStreamChunk{Usage: &pluginapi.UsageDetail{InputTokens: 12, OutputTokens: 4}}
+	in <- pluginapi.ExecutorStreamChunk{Payload: []byte("visible")}
+	close(in)
+
+	out := mapExecutorStreamChunks(context.Background(), in)
+	chunk, ok := <-out
+	if !ok {
+		t.Fatal("stream closed before visible payload")
+	}
+	if string(chunk.Payload) != "visible" {
+		t.Fatalf("payload = %q", chunk.Payload)
+	}
+	if _, ok = <-out; ok {
+		t.Fatal("usage-only frame was forwarded downstream")
+	}
+}
+
 func newHostWithRecords(records ...capabilityRecord) *Host {
 	host := New()
 	setHostSnapshotForTest(host, true, records...)

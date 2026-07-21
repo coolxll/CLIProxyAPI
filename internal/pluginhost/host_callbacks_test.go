@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +69,58 @@ func TestHostHTTPDoCallbackUsesHostHTTPClient(t *testing.T) {
 	}
 	if resp.Headers.Get("X-Test") != "ok" {
 		t.Fatalf("X-Test = %q, want ok", resp.Headers.Get("X-Test"))
+	}
+}
+
+func TestDecodeHostHTTPRequestPreservesTransportOptions(t *testing.T) {
+	raw := []byte(`{
+		"method":"POST",
+		"url":"https://example.invalid/stream",
+		"transport":{"force_http_1_1":true}
+	}`)
+	req, _, errDecode := decodeHostHTTPRequestWithCallbackID(raw)
+	if errDecode != nil {
+		t.Fatalf("decodeHostHTTPRequestWithCallbackID() error = %v", errDecode)
+	}
+	if !req.Transport.ForceHTTP11 {
+		t.Fatal("Transport.ForceHTTP11 = false, want true")
+	}
+
+	nestedRaw := []byte(`{
+		"request":{
+			"method":"POST",
+			"url":"https://example.invalid/stream",
+			"transport":{"force_http_1_1":true}
+		}
+	}`)
+	nestedReq, _, errDecode := decodeHostHTTPRequestWithCallbackID(nestedRaw)
+	if errDecode != nil {
+		t.Fatalf("decode nested host request error = %v", errDecode)
+	}
+	if !nestedReq.Transport.ForceHTTP11 {
+		t.Fatal("nested Transport.ForceHTTP11 = false, want true")
+	}
+}
+
+func TestHostHTTPClientSelectsHTTP11Transport(t *testing.T) {
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.ForceAttemptHTTP2 = true
+	base.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{
+		"h2": func(string, *tls.Conn) http.RoundTripper { return nil },
+	}
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", base)
+	client := (&hostHTTPClient{}).httpClientForRequest(ctx, nil, pluginapi.HTTPRequest{
+		Transport: pluginapi.HTTPTransportOptions{ForceHTTP11: true},
+	})
+	transport, okTransport := client.Transport.(*http.Transport)
+	if !okTransport {
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ForceAttemptHTTP2 || len(transport.TLSNextProto) != 0 {
+		t.Fatalf("HTTP/2 remains enabled: ForceAttemptHTTP2=%v TLSNextProto=%v", transport.ForceAttemptHTTP2, transport.TLSNextProto)
+	}
+	if transport.TLSClientConfig == nil || len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
+		t.Fatalf("TLS NextProtos = %#v, want [http/1.1]", transport.TLSClientConfig)
 	}
 }
 

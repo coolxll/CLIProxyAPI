@@ -14,6 +14,7 @@ temp/*
 refs/*
 plugins/*
 examples/plugin/bin/*
+/provider-plugins/bin/*
 
 # Storage backends
 pgstore/*
@@ -27,6 +28,10 @@ static/*
 auths/*
 /auths
 !auths/.gitkeep
+/lingma-*.json
+/lingma_import.json
+/trae-*.json
+/trae_import.json
 
 # Documentation
 docs/*

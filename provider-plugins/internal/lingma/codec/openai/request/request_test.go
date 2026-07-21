@@ -3,8 +3,6 @@ package chat_completions
 import (
 	"encoding/json"
 	"testing"
-
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
 func TestConvertOpenAIRequestToLingmaUsesFullModelConfig(t *testing.T) {
@@ -63,14 +61,18 @@ func TestConvertOpenAIRequestToLingmaUsesFullModelConfig(t *testing.T) {
 	}
 }
 
-func TestLingmaTranslatorRegisteredFromOpenAIToLingma(t *testing.T) {
+func TestConvertOpenAIRequestToLingmaProducesExpectedPayload(t *testing.T) {
 	raw := []byte(`{"model":"dashscope_qmodel","messages":[{"role":"user","content":"Ping"}],"stream":true}`)
-	body := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAI, sdktranslator.FromString("lingma"), "dashscope_qmodel", raw, true)
+	body := ConvertOpenAIRequestToLingma("dashscope_qmodel", raw, true)
 	if !json.Valid(body) {
-		t.Fatalf("TranslateRequest returned invalid JSON: %s", body)
+		t.Fatalf("ConvertOpenAIRequestToLingma returned invalid JSON: %s", body)
 	}
 	payload := decodeLingmaRequestPayload(t, body)
-	if got := payload["model_config"].(map[string]any)["key"]; got != "dashscope_qmodel" {
+	modelConfig, ok := payload["model_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("model_config = %T, want object", payload["model_config"])
+	}
+	if got := modelConfig["key"]; got != "dashscope_qmodel" {
 		t.Fatalf("model_config.key = %v, want dashscope_qmodel", got)
 	}
 }

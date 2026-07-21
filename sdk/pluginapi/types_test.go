@@ -51,6 +51,58 @@ func TestMetadataConfigFieldsExposePluginSchema(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestTransportOptionsRoundTrip(t *testing.T) {
+	req := HTTPRequest{
+		Method: "POST",
+		URL:    "https://example.invalid/stream",
+		Transport: HTTPTransportOptions{
+			ForceHTTP11: true,
+		},
+	}
+	raw, errMarshal := json.Marshal(req)
+	if errMarshal != nil {
+		t.Fatalf("Marshal() error = %v", errMarshal)
+	}
+	if !strings.Contains(string(raw), `"force_http_1_1":true`) {
+		t.Fatalf("Marshal() = %s, want force_http_1_1", raw)
+	}
+	var decoded HTTPRequest
+	if errUnmarshal := json.Unmarshal(raw, &decoded); errUnmarshal != nil {
+		t.Fatalf("Unmarshal() error = %v", errUnmarshal)
+	}
+	if !decoded.Transport.ForceHTTP11 {
+		t.Fatal("decoded Transport.ForceHTTP11 = false, want true")
+	}
+}
+
+func TestExecutorUsageJSONRoundTrip(t *testing.T) {
+	response := ExecutorResponse{Usage: &UsageDetail{InputTokens: 11, OutputTokens: 7, CachedTokens: 3, TotalTokens: 18}}
+	raw, errMarshal := json.Marshal(response)
+	if errMarshal != nil {
+		t.Fatalf("Marshal() error = %v", errMarshal)
+	}
+	var decoded ExecutorResponse
+	if errUnmarshal := json.Unmarshal(raw, &decoded); errUnmarshal != nil {
+		t.Fatalf("Unmarshal() error = %v", errUnmarshal)
+	}
+	if decoded.Usage == nil || decoded.Usage.InputTokens != 11 || decoded.Usage.CachedTokens != 3 {
+		t.Fatalf("decoded usage = %#v", decoded.Usage)
+	}
+
+	chunk := ExecutorStreamChunk{Payload: []byte("frame"), Usage: response.Usage}
+	raw, errMarshal = json.Marshal(chunk)
+	if errMarshal != nil {
+		t.Fatalf("Marshal(stream chunk) error = %v", errMarshal)
+	}
+	var decodedChunk ExecutorStreamChunk
+	if errUnmarshal := json.Unmarshal(raw, &decodedChunk); errUnmarshal != nil {
+		t.Fatalf("Unmarshal(stream chunk) error = %v", errUnmarshal)
+	}
+	if string(decodedChunk.Payload) != "frame" || decodedChunk.Usage == nil || decodedChunk.Usage.OutputTokens != 7 {
+		t.Fatalf("decoded chunk = %#v", decodedChunk)
+	}
+}
+
 func TestAuthParseResponseSupportsMultipleAuths(t *testing.T) {
 	resp := AuthParseResponse{
 		Handled: true,

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type callbackContextRegistry struct {
@@ -17,6 +19,8 @@ type callbackContextRegistry struct {
 type callbackContextEntry struct {
 	ctx      context.Context
 	pluginID string
+	provider string
+	auth     *coreauth.Auth
 	cleanup  []func()
 }
 
@@ -24,7 +28,7 @@ func newCallbackContextRegistry() *callbackContextRegistry {
 	return &callbackContextRegistry{contexts: make(map[string]callbackContextEntry)}
 }
 
-func (r *callbackContextRegistry) open(ctx context.Context, pluginID string) (string, func()) {
+func (r *callbackContextRegistry) open(ctx context.Context, pluginID string, auth *coreauth.Auth, providers ...string) (string, func()) {
 	if r == nil {
 		return "", func() {}
 	}
@@ -32,10 +36,14 @@ func (r *callbackContextRegistry) open(ctx context.Context, pluginID string) (st
 		ctx = context.Background()
 	}
 	pluginID = strings.TrimSpace(pluginID)
+	provider := ""
+	if len(providers) > 0 {
+		provider = providers[0]
+	}
 	ctx = withHostCallbackPluginID(ctx, pluginID)
 	id := strconv.FormatUint(r.next.Add(1), 10)
 	r.mu.Lock()
-	r.contexts[id] = callbackContextEntry{ctx: ctx, pluginID: pluginID}
+	r.contexts[id] = callbackContextEntry{ctx: ctx, pluginID: pluginID, provider: provider, auth: auth}
 	r.mu.Unlock()
 
 	var once sync.Once
@@ -64,6 +72,16 @@ func (r *callbackContextRegistry) pluginID(id string) string {
 	entry := r.contexts[id]
 	r.mu.RUnlock()
 	return strings.TrimSpace(entry.pluginID)
+}
+
+func (r *callbackContextRegistry) providerAndAuth(id string) (string, *coreauth.Auth) {
+	if r == nil || id == "" {
+		return "", nil
+	}
+	r.mu.RLock()
+	entry := r.contexts[id]
+	r.mu.RUnlock()
+	return entry.provider, entry.auth
 }
 
 func (r *callbackContextRegistry) addCleanup(id string, cleanup func()) bool {
@@ -101,14 +119,14 @@ func (r *callbackContextRegistry) resolve(id string, fallback context.Context) c
 }
 
 func (h *Host) openCallbackContext(ctx context.Context) (string, func()) {
-	return h.openCallbackContextForPlugin(ctx, "")
+	return h.openCallbackContextForPlugin(ctx, "", nil)
 }
 
-func (h *Host) openCallbackContextForPlugin(ctx context.Context, pluginID string) (string, func()) {
+func (h *Host) openCallbackContextForPlugin(ctx context.Context, pluginID string, auth *coreauth.Auth, providers ...string) (string, func()) {
 	if h == nil || h.callbackContexts == nil {
 		return "", func() {}
 	}
-	return h.callbackContexts.open(ctx, pluginID)
+	return h.callbackContexts.open(ctx, pluginID, auth, providers...)
 }
 
 func (h *Host) addCallbackCleanup(id string, cleanup func()) bool {
@@ -136,4 +154,11 @@ func (h *Host) callbackContextPluginID(id string) string {
 		return ""
 	}
 	return h.callbackContexts.pluginID(id)
+}
+
+func (h *Host) callbackContextProviderAndAuth(id string) (string, *coreauth.Auth) {
+	if h == nil || h.callbackContexts == nil {
+		return "", nil
+	}
+	return h.callbackContexts.providerAndAuth(id)
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -327,11 +328,21 @@ func marshalRPCError(code, message string) []byte {
 	return raw
 }
 
-func (a *rpcPluginAdapter) openHostCallbackContext(ctx context.Context) (string, func()) {
+func (a *rpcPluginAdapter) openHostCallbackContext(ctx context.Context, httpClient pluginapi.HostHTTPClient, provider string) (string, func()) {
 	if a == nil || a.host == nil {
 		return "", func() {}
 	}
-	return a.host.openCallbackContextForPlugin(ctx, a.id)
+	var auth *coreauth.Auth
+	if client, ok := httpClient.(*hostHTTPClient); ok && client != nil {
+		auth = client.auth
+		if strings.TrimSpace(provider) == "" {
+			provider = client.provider
+		}
+	}
+	if strings.TrimSpace(provider) == "" {
+		provider = a.id
+	}
+	return a.host.openCallbackContextForPlugin(ctx, a.id, auth, provider)
 }
 
 func (a *rpcPluginAdapter) RegisterModels(ctx context.Context, req pluginapi.ModelRegistrationRequest) (pluginapi.ModelRegistrationResponse, error) {
@@ -343,7 +354,7 @@ func (a *rpcPluginAdapter) StaticModels(ctx context.Context, req pluginapi.Stati
 }
 
 func (a *rpcPluginAdapter) ModelsForAuth(ctx context.Context, req pluginapi.AuthModelRequest) (pluginapi.ModelResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, req.HTTPClient, req.AuthProvider)
 	defer closeCallback()
 	return callPlugin[pluginapi.ModelResponse](ctx, a.client, pluginabi.MethodModelForAuth, rpcAuthModelRequest{
 		AuthModelRequest: req,
@@ -356,7 +367,7 @@ func (a *rpcPluginAdapter) Pick(ctx context.Context, req pluginapi.SchedulerPick
 }
 
 func (a *rpcPluginAdapter) RouteModel(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, nil, a.id)
 	defer closeCallback()
 	return callPlugin[pluginapi.ModelRouteResponse](ctx, a.client, pluginabi.MethodModelRoute, rpcModelRouteRequest{
 		ModelRouteRequest: req,
@@ -393,7 +404,7 @@ func (a *rpcPluginAdapter) ParseAuth(ctx context.Context, req pluginapi.AuthPars
 }
 
 func (a *rpcPluginAdapter) StartLogin(ctx context.Context, req pluginapi.AuthLoginStartRequest) (pluginapi.AuthLoginStartResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, req.HTTPClient, req.Provider)
 	defer closeCallback()
 	return callPlugin[pluginapi.AuthLoginStartResponse](ctx, a.client, pluginabi.MethodAuthLoginStart, rpcAuthLoginStartRequest{
 		AuthLoginStartRequest: req,
@@ -402,7 +413,7 @@ func (a *rpcPluginAdapter) StartLogin(ctx context.Context, req pluginapi.AuthLog
 }
 
 func (a *rpcPluginAdapter) PollLogin(ctx context.Context, req pluginapi.AuthLoginPollRequest) (pluginapi.AuthLoginPollResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, req.HTTPClient, req.Provider)
 	defer closeCallback()
 	return callPlugin[pluginapi.AuthLoginPollResponse](ctx, a.client, pluginabi.MethodAuthLoginPoll, rpcAuthLoginPollRequest{
 		AuthLoginPollRequest: req,
@@ -411,7 +422,7 @@ func (a *rpcPluginAdapter) PollLogin(ctx context.Context, req pluginapi.AuthLogi
 }
 
 func (a *rpcPluginAdapter) RefreshAuth(ctx context.Context, req pluginapi.AuthRefreshRequest) (pluginapi.AuthRefreshResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, req.HTTPClient, req.AuthProvider)
 	defer closeCallback()
 	return callPlugin[pluginapi.AuthRefreshResponse](ctx, a.client, pluginabi.MethodAuthRefresh, rpcAuthRefreshRequest{
 		AuthRefreshRequest: req,
@@ -424,7 +435,7 @@ func (a *rpcPluginAdapter) Authenticate(ctx context.Context, req pluginapi.Front
 }
 
 func (a *rpcPluginAdapter) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, req.HTTPClient, req.AuthProvider)
 	defer closeCallback()
 	return callPlugin[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorExecute, rpcExecutorRequest{
 		ExecutorRequest: req,
@@ -433,7 +444,7 @@ func (a *rpcPluginAdapter) Execute(ctx context.Context, req pluginapi.ExecutorRe
 }
 
 func (a *rpcPluginAdapter) CountTokens(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, req.HTTPClient, req.AuthProvider)
 	defer closeCallback()
 	return callPlugin[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorCountTokens, rpcExecutorRequest{
 		ExecutorRequest: req,
@@ -442,7 +453,7 @@ func (a *rpcPluginAdapter) CountTokens(ctx context.Context, req pluginapi.Execut
 }
 
 func (a *rpcPluginAdapter) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRequest) (pluginapi.ExecutorHTTPResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, req.HTTPClient, "")
 	defer closeCallback()
 	return callPlugin[pluginapi.ExecutorHTTPResponse](ctx, a.client, pluginabi.MethodExecutorHTTPRequest, rpcExecutorHTTPRequest{
 		ExecutorHTTPRequest: req,
@@ -459,7 +470,7 @@ func (a *rpcPluginAdapter) NormalizeRequest(ctx context.Context, req pluginapi.R
 }
 
 func (a *rpcPluginAdapter) InterceptRequestBeforeAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, nil, a.id)
 	defer closeCallback()
 	return callPlugin[pluginapi.RequestInterceptResponse](ctx, a.client, pluginabi.MethodRequestInterceptBefore, rpcRequestInterceptRequest{
 		RequestInterceptRequest: req,
@@ -468,7 +479,7 @@ func (a *rpcPluginAdapter) InterceptRequestBeforeAuth(ctx context.Context, req p
 }
 
 func (a *rpcPluginAdapter) InterceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, nil, a.id)
 	defer closeCallback()
 	return callPlugin[pluginapi.RequestInterceptResponse](ctx, a.client, pluginabi.MethodRequestInterceptAfter, rpcRequestInterceptRequest{
 		RequestInterceptRequest: req,
@@ -485,7 +496,7 @@ func (a rpcResponseNormalizer) NormalizeResponse(ctx context.Context, req plugin
 }
 
 func (a *rpcPluginAdapter) InterceptResponse(ctx context.Context, req pluginapi.ResponseInterceptRequest) (pluginapi.ResponseInterceptResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, nil, a.id)
 	defer closeCallback()
 	return callPlugin[pluginapi.ResponseInterceptResponse](ctx, a.client, pluginabi.MethodResponseInterceptAfter, rpcResponseInterceptRequest{
 		ResponseInterceptRequest: req,
@@ -494,7 +505,7 @@ func (a *rpcPluginAdapter) InterceptResponse(ctx context.Context, req pluginapi.
 }
 
 func (a *rpcPluginAdapter) InterceptStreamChunk(ctx context.Context, req pluginapi.StreamChunkInterceptRequest) (pluginapi.StreamChunkInterceptResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, nil, a.id)
 	defer closeCallback()
 	return callPlugin[pluginapi.StreamChunkInterceptResponse](ctx, a.client, pluginabi.MethodResponseInterceptStreamChunk, rpcStreamChunkInterceptRequest{
 		StreamChunkInterceptRequest: req,
@@ -503,7 +514,7 @@ func (a *rpcPluginAdapter) InterceptStreamChunk(ctx context.Context, req plugina
 }
 
 func (a rpcThinkingApplier) ApplyThinking(ctx context.Context, req pluginapi.ThinkingApplyRequest) (pluginapi.PayloadResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, nil, a.id)
 	defer closeCallback()
 	return callPlugin[pluginapi.PayloadResponse](ctx, a.client, pluginabi.MethodThinkingApply, rpcThinkingApplyRequest{
 		ThinkingApplyRequest: req,
@@ -542,7 +553,7 @@ func (a *rpcPluginAdapter) RegisterManagement(ctx context.Context, req pluginapi
 }
 
 func (a *rpcPluginAdapter) HandleManagement(ctx context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	callbackID, closeCallback := a.openHostCallbackContext(ctx, nil, a.id)
 	defer closeCallback()
 	return callPlugin[pluginapi.ManagementResponse](ctx, a.client, pluginabi.MethodManagementHandle, rpcManagementRequest{
 		ManagementRequest: req,

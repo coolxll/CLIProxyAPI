@@ -39,8 +39,36 @@ func (h *Handler) GetOAuthCallback(c *gin.Context) {
 		State:    strings.TrimSpace(c.Query("state")),
 		Error:    firstNonEmpty(c.Query("error"), c.Query("error_description")),
 	}
+	if req.State != "" && req.Code == "" && req.Error == "" {
+		_, _, isPlugin, _, ok := GetOAuthSessionDetails(req.State)
+		if ok && isPlugin {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusOK, pluginOAuthFragmentBridgeHTML)
+			return
+		}
+	}
 	h.handleOAuthCallback(c, req)
 }
+
+const pluginOAuthFragmentBridgeHTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Authentication callback</title></head>
+<body><p id="status">Completing authentication…</p>
+<script>
+(async function () {
+  const status = document.getElementById("status");
+  try {
+    const response = await fetch(window.location.pathname, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({redirect_url: window.location.href})
+    });
+    if (!response.ok) throw new Error("callback rejected");
+    status.textContent = "Authentication successful. You may close this tab.";
+  } catch (_) {
+    status.textContent = "Authentication failed. Return to the application for details.";
+  }
+})();
+</script></body></html>`
 
 func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) {
 	if h == nil || h.cfg == nil {
@@ -69,6 +97,12 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 			errMsg = strings.TrimSpace(q.Get("error"))
 			if errMsg == "" {
 				errMsg = strings.TrimSpace(q.Get("error_description"))
+			}
+		}
+		if code == "" && errMsg == "" && strings.TrimSpace(u.Fragment) != "" {
+			code = strings.TrimSpace(u.RawFragment)
+			if code == "" {
+				code = strings.TrimSpace(u.Fragment)
 			}
 		}
 	}

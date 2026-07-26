@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -69,9 +70,26 @@ func (c *hostHTTPClient) DoStream(ctx context.Context, req pluginapi.HTTPRequest
 	chunks := make(chan pluginapi.HTTPStreamChunk)
 	go func() {
 		defer close(chunks)
+		var closeOnce sync.Once
+		var errClose error
+		closeBody := func() {
+			closeOnce.Do(func() {
+				errClose = resp.Body.Close()
+			})
+		}
+		readDone := make(chan struct{})
+		defer close(readDone)
 		defer func() {
-			if errClose := resp.Body.Close(); errClose != nil {
+			closeBody()
+			if errClose != nil {
 				log.Warnf("pluginhost: stream response body close error: %v", errClose)
+			}
+		}()
+		go func() {
+			select {
+			case <-ctx.Done():
+				closeBody()
+			case <-readDone:
 			}
 		}()
 		buf := make([]byte, 32*1024)

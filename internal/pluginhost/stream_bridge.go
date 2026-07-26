@@ -13,7 +13,18 @@ import (
 type streamBridge struct {
 	next    atomic.Uint64
 	mu      sync.Mutex
-	streams map[string]chan pluginapi.ExecutorStreamChunk
+	streams map[string]*outputStreamEntry
+}
+
+type outputStreamEntry struct {
+	ctx       context.Context
+	chunks    chan pluginapi.ExecutorStreamChunk
+	done      chan struct{}
+	closeOnce sync.Once
+	mu        sync.Mutex
+	cond      *sync.Cond
+	active    int
+	closed    bool
 }
 
 type rpcStreamEmitRequest struct {
@@ -29,7 +40,7 @@ type rpcStreamCloseRequest struct {
 }
 
 func newStreamBridge() *streamBridge {
-	return &streamBridge{streams: make(map[string]chan pluginapi.ExecutorStreamChunk)}
+	return &streamBridge{streams: make(map[string]*outputStreamEntry)}
 }
 
 func (b *streamBridge) open(ctx context.Context) (string, <-chan pluginapi.ExecutorStreamChunk, func()) {
@@ -38,21 +49,29 @@ func (b *streamBridge) open(ctx context.Context) (string, <-chan pluginapi.Execu
 		close(chunks)
 		return "", chunks, func() {}
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	id := strconv.FormatUint(b.next.Add(1), 10)
-	chunks := make(chan pluginapi.ExecutorStreamChunk, 16)
+	entry := &outputStreamEntry{
+		ctx:    ctx,
+		chunks: make(chan pluginapi.ExecutorStreamChunk, 16),
+		done:   make(chan struct{}),
+	}
+	entry.cond = sync.NewCond(&entry.mu)
 	b.mu.Lock()
-	b.streams[id] = chunks
+	b.streams[id] = entry
 	b.mu.Unlock()
 	cleanup := func() {
 		b.close(id, "")
 	}
-	if ctx != nil && ctx.Done() != nil {
+	if ctx.Done() != nil {
 		go func() {
 			<-ctx.Done()
 			b.close(id, ctx.Err().Error())
 		}()
 	}
-	return id, chunks, cleanup
+	return id, entry.chunks, cleanup
 }
 
 func (b *streamBridge) emit(ctx context.Context, id string, chunk pluginapi.ExecutorStreamChunk) error {
@@ -60,18 +79,23 @@ func (b *streamBridge) emit(ctx context.Context, id string, chunk pluginapi.Exec
 		return fmt.Errorf("stream id is required")
 	}
 	b.mu.Lock()
-	chunks := b.streams[id]
+	entry := b.streams[id]
 	b.mu.Unlock()
-	if chunks == nil {
+	if entry == nil || !entry.beginEmit() {
 		return fmt.Errorf("stream %s is not open", id)
 	}
+	defer entry.endEmit()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case chunks <- chunk:
+	case <-entry.ctx.Done():
+		return entry.ctx.Err()
+	case <-entry.done:
+		return fmt.Errorf("stream %s is closed", id)
+	case entry.chunks <- chunk:
 		return nil
 	}
 }
@@ -81,14 +105,64 @@ func (b *streamBridge) close(id string, errorMessage string) {
 		return
 	}
 	b.mu.Lock()
-	chunks := b.streams[id]
+	entry := b.streams[id]
 	delete(b.streams, id)
 	b.mu.Unlock()
-	if chunks == nil {
+	if entry == nil {
 		return
 	}
-	if errorMessage != "" {
-		chunks <- pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("%s", errorMessage)}
+	entry.finish(errorMessage)
+}
+
+func (e *outputStreamEntry) beginEmit() bool {
+	if e == nil {
+		return false
 	}
-	close(chunks)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return false
+	}
+	e.active++
+	return true
+}
+
+func (e *outputStreamEntry) endEmit() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.active--
+	if e.active == 0 {
+		e.cond.Broadcast()
+	}
+	e.mu.Unlock()
+}
+
+func (e *outputStreamEntry) finish(errorMessage string) {
+	if e == nil {
+		return
+	}
+	e.closeOnce.Do(func() {
+		e.mu.Lock()
+		e.closed = true
+		close(e.done)
+		e.mu.Unlock()
+
+		go func() {
+			e.mu.Lock()
+			for e.active > 0 {
+				e.cond.Wait()
+			}
+			e.mu.Unlock()
+
+			if errorMessage != "" {
+				select {
+				case e.chunks <- pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("%s", errorMessage)}:
+				case <-e.ctx.Done():
+				}
+			}
+			close(e.chunks)
+		}()
+	})
 }

@@ -86,6 +86,64 @@ func TestGetOAuthCallbackWritesPluginProviderCallback(t *testing.T) {
 	}
 }
 
+func TestGetOAuthCallbackServesPluginFragmentBridge(t *testing.T) {
+	state := "plugin-fragment-state"
+	if errRegister := RegisterPluginOAuthSession(state, "trae-plugin", nil); errRegister != nil {
+		t.Fatalf("register plugin session: %v", errRegister)
+	}
+	t.Cleanup(func() { CompleteOAuthSession(state) })
+
+	h := &Handler{cfg: &config.Config{AuthDir: t.TempDir()}}
+	router := gin.New()
+	router.GET("/v0/management/oauth-callback", h.GetOAuthCallback)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/oauth-callback?provider=trae-plugin&state="+state, nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "window.location.href") {
+		t.Fatalf("callback response does not contain fragment bridge: %s", recorder.Body.String())
+	}
+}
+
+func TestPostOAuthCallbackPersistsPluginFragmentAsCode(t *testing.T) {
+	authDir := t.TempDir()
+	state := "plugin-fragment-post-state"
+	if errRegister := RegisterPluginOAuthSession(state, "trae-plugin", nil); errRegister != nil {
+		t.Fatalf("register plugin session: %v", errRegister)
+	}
+	t.Cleanup(func() { CompleteOAuthSession(state) })
+
+	h := &Handler{cfg: &config.Config{AuthDir: authDir}}
+	router := gin.New()
+	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
+
+	body := `{"redirect_url":"http://127.0.0.1/v0/management/oauth-callback?provider=trae-plugin&state=` + state + `#refreshToken=refresh-1&loginHost=https%3A%2F%2Fapi.trae.com.cn"}`
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	path := filepath.Join(authDir, ".oauth-trae-plugin-"+state+".oauth")
+	data, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("read callback file: %v", errRead)
+	}
+	var payload oauthCallbackFilePayload
+	if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
+		t.Fatalf("decode callback file: %v", errUnmarshal)
+	}
+	if payload.Code != "refreshToken=refresh-1&loginHost=https%3A%2F%2Fapi.trae.com.cn" {
+		t.Fatalf("code = %q", payload.Code)
+	}
+}
+
 func TestGetOAuthCallbackDoesNotAliasPluginProvider(t *testing.T) {
 	authDir := filepath.Join(t.TempDir(), "missing-auth")
 	state := "test-openai-plugin-state"

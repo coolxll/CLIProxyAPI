@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -25,6 +26,30 @@ import (
 type fakeHostModelExecutor struct {
 	executeModel       func(context.Context, handlers.ModelExecutionRequest) (handlers.ModelExecutionResponse, *interfaces.ErrorMessage)
 	executeModelStream func(context.Context, handlers.ModelExecutionRequest) (handlers.ModelExecutionStream, *interfaces.ErrorMessage)
+}
+
+func TestRPCPluginCallbackContextCarriesHTTPClientIdentity(t *testing.T) {
+	host := New()
+	auth := &coreauth.Auth{
+		ID:       "auth-1",
+		Provider: "trae-plugin",
+		Label:    "Trae account",
+	}
+	adapter := &rpcPluginAdapter{id: "trae-plugin", host: host}
+	callbackID, closeCallback := adapter.openHostCallbackContext(
+		context.Background(),
+		host.newHTTPClient(auth, "trae-plugin"),
+		"",
+	)
+	defer closeCallback()
+
+	provider, gotAuth := host.callbackContextProviderAndAuth(callbackID)
+	if provider != "trae-plugin" {
+		t.Fatalf("provider = %q, want trae-plugin", provider)
+	}
+	if gotAuth != auth {
+		t.Fatalf("auth = %#v, want original auth pointer", gotAuth)
+	}
 }
 
 func (e *fakeHostModelExecutor) ExecuteModel(ctx context.Context, req handlers.ModelExecutionRequest) (handlers.ModelExecutionResponse, *interfaces.ErrorMessage) {
@@ -355,7 +380,7 @@ func TestHostModelExecuteCallbackCarriesCallerPluginSkipID(t *testing.T) {
 			return handlers.ModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"ok":true}`)}, nil
 		},
 	})
-	callbackID, closeCallback := host.openCallbackContextForPlugin(context.Background(), "origin-plugin")
+	callbackID, closeCallback := host.openCallbackContextForPlugin(context.Background(), "origin-plugin", nil)
 	defer closeCallback()
 
 	rawReq, errMarshal := json.Marshal(rpcHostModelExecutionRequest{

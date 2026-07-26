@@ -147,7 +147,8 @@ func (h *Host) callHostHTTPDo(ctx context.Context, request []byte) ([]byte, erro
 		return nil, errDecode
 	}
 	ctx = h.resolveCallbackContext(callbackID, ctx)
-	resp, errDo := h.newHTTPClient(nil).Do(ctx, httpReq)
+	provider, auth := h.callbackContextProviderAndAuth(callbackID)
+	resp, errDo := h.newHTTPClient(auth, provider).Do(ctx, httpReq)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -163,8 +164,9 @@ func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	provider, auth := h.callbackContextProviderAndAuth(callbackID)
 	streamCtx, cancel := context.WithCancel(ctx)
-	resp, errDo := h.newHTTPClient(nil).DoStream(streamCtx, httpReq)
+	resp, errDo := h.newHTTPClient(auth, provider).DoStream(streamCtx, httpReq)
 	if errDo != nil {
 		cancel()
 		return nil, errDo

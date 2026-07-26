@@ -6,52 +6,52 @@ import (
 
 func TestResolveTraeProtocol(t *testing.T) {
 	tests := []struct {
-		name             string
-		model            string
-		metadata         map[string]any
-		wantProtocol     string
+		name              string
+		model             string
+		metadata          map[string]any
+		wantProtocol      string
 		wantUpstreamModel string
 	}{
 		{
-			name:             "V1 model with prefix",
-			model:            "trae-v1/seed_m8",
-			metadata:         nil,
-			wantProtocol:     traeProtocolV1,
+			name:              "V1 model with prefix",
+			model:             "trae-v1/seed_m8",
+			metadata:          nil,
+			wantProtocol:      traeProtocolV1,
 			wantUpstreamModel: "seed_m8",
 		},
 		{
-			name:             "V1 known model",
-			model:            "seed_m8",
-			metadata:         nil,
-			wantProtocol:     traeProtocolV1,
+			name:              "V1 known model",
+			model:             "seed_m8",
+			metadata:          nil,
+			wantProtocol:      traeProtocolV1,
 			wantUpstreamModel: "seed_m8",
 		},
 		{
-			name:             "V2 model with prefix",
-			model:            "trae-v2/no_thinking_model",
-			metadata:         nil,
-			wantProtocol:     traeProtocolV2,
+			name:              "V2 model with prefix",
+			model:             "trae-v2/no_thinking_model",
+			metadata:          nil,
+			wantProtocol:      traeProtocolV2,
 			wantUpstreamModel: "no_thinking_model",
 		},
 		{
-			name:             "V2 known model",
-			model:            "no_thinking_model",
-			metadata:         nil,
-			wantProtocol:     traeProtocolV2,
+			name:              "V2 known model",
+			model:             "no_thinking_model",
+			metadata:          nil,
+			wantProtocol:      traeProtocolV2,
 			wantUpstreamModel: "no_thinking_model",
 		},
 		{
-			name:             "V3 model with prefix",
-			model:            "trae-v3/glm-5",
-			metadata:         nil,
-			wantProtocol:     traeProtocolV3,
+			name:              "V3 model with prefix",
+			model:             "trae-v3/glm-5",
+			metadata:          nil,
+			wantProtocol:      traeProtocolV3,
 			wantUpstreamModel: "glm-5",
 		},
 		{
-			name:             "V3 default model",
-			model:            "glm-5",
-			metadata:         nil,
-			wantProtocol:     traeProtocolV3,
+			name:              "V3 default model",
+			model:             "glm-5",
+			metadata:          nil,
+			wantProtocol:      traeProtocolV3,
 			wantUpstreamModel: "glm-5",
 		},
 		{
@@ -60,7 +60,7 @@ func TestResolveTraeProtocol(t *testing.T) {
 			metadata: map[string]any{
 				traeProtocolMeta: "v2",
 			},
-			wantProtocol:     traeProtocolV2,
+			wantProtocol:      traeProtocolV2,
 			wantUpstreamModel: "some-model",
 		},
 		{
@@ -69,7 +69,7 @@ func TestResolveTraeProtocol(t *testing.T) {
 			metadata: map[string]any{
 				traeModelNameMeta: "override-model",
 			},
-			wantProtocol:     traeProtocolV3,
+			wantProtocol:      traeProtocolV3,
 			wantUpstreamModel: "some-model",
 		},
 	}

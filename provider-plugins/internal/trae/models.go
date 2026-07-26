@@ -16,19 +16,20 @@ const (
 )
 
 // fetchModels attempts detail param first, falls back to model list.
-func fetchModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, error) {
+func fetchModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, map[string]traeDetailModelConfig, error) {
 	now := time.Now().Unix()
 
-	models, err := fetchModelsFromDetailParam(host, creds, now)
+	models, configs, err := fetchModelsFromDetailParam(host, creds, now)
 	if err != nil {
 		models, err = fetchModelsFromModelList(host, creds, now)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		configs = nil
 	}
 
 	models = appendTraeNoThinkingModel(models, now)
-	return models, nil
+	return models, configs, nil
 }
 
 func setTraeCommonHeaders(header http.Header, creds credentials) {
@@ -49,7 +50,7 @@ func setTraeCommonHeaders(header http.Header, creds credentials) {
 	header.Set("get-svc", "1")
 }
 
-func fetchModelsFromDetailParam(host hostRPC, creds credentials, now int64) ([]pluginapi.ModelInfo, error) {
+func fetchModelsFromDetailParam(host hostRPC, creds credentials, now int64) ([]pluginapi.ModelInfo, map[string]traeDetailModelConfig, error) {
 	body := `{"function":"chat_v3","config_names":null,"need_prompt":false,"current_config_info":null,"poly_prompt":true,"mode_type":null,"agent_type":"builder_v3","ab_force_vids":null,"ab_autotest_advanced_mode":null,"access_type":0}`
 	headers := http.Header{"Content-Type": []string{"application/json"}}
 	setTraeCommonHeaders(headers, creds)
@@ -61,16 +62,19 @@ func fetchModelsFromDetailParam(host hostRPC, creds credentials, now int64) ([]p
 		Body:    []byte(body),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Trae detail param request: %w", err)
+		return nil, nil, fmt.Errorf("Trae detail param request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Trae detail param HTTP %d: %s", resp.StatusCode, safeUpstreamMessage(resp.Body))
+		return nil, nil, fmt.Errorf("Trae detail param HTTP %d: %s", resp.StatusCode, safeUpstreamMessage(resp.Body))
 	}
 
-	models := parseTraeDetailParamWithConfigs(resp.Body, now)
+	models, configs := parseTraeDetailParamWithConfigs(resp.Body, now)
+	if len(models) == 0 {
+		return nil, nil, fmt.Errorf("Trae detail param returned no usable chat_completion configs")
+	}
 	models = appendTraeV1RawChatModels(models, now)
 	models = appendTraeV3AgentModels(models, now)
-	return models, nil
+	return models, configs, nil
 }
 
 func fetchModelsFromModelList(host hostRPC, creds credentials, now int64) ([]pluginapi.ModelInfo, error) {
@@ -95,17 +99,18 @@ func fetchModelsFromModelList(host hostRPC, creds credentials, now int64) ([]plu
 }
 
 // parseTraeDetailParamWithConfigs parses the get_detail_param response.
-func parseTraeDetailParamWithConfigs(data []byte, now int64) []pluginapi.ModelInfo {
+func parseTraeDetailParamWithConfigs(data []byte, now int64) ([]pluginapi.ModelInfo, map[string]traeDetailModelConfig) {
 	root := gjson.ParseBytes(data)
 	configList := root.Get("config_info_list")
 	if !configList.Exists() {
 		configList = root.Get("data.config_info_list")
 	}
 	if !configList.Exists() || !configList.IsArray() {
-		return nil
+		return nil, nil
 	}
 
 	models := make([]pluginapi.ModelInfo, 0)
+	detailConfigs := make(map[string]traeDetailModelConfig)
 	seen := make(map[string]struct{})
 
 	configList.ForEach(func(_, item gjson.Result) bool {
@@ -132,25 +137,25 @@ func parseTraeDetailParamWithConfigs(data []byte, now int64) []pluginapi.ModelIn
 		if strings.HasSuffix(lower, "-auto") || strings.HasSuffix(lower, "_auto") {
 			return true
 		}
-
-		dedupeKey := strings.ToLower(configName)
-		if _, exists := seen[dedupeKey]; exists {
+		detail := item.Get("model_detail_list.0")
+		modelName := strings.TrimSpace(detail.Get("model_name").String())
+		if modelName == "" {
 			return true
 		}
-		seen[dedupeKey] = struct{}{}
+
+		if _, exists := seen[lower]; exists {
+			return true
+		}
+		seen[lower] = struct{}{}
 
 		displayName := strings.TrimSpace(item.Get("display_config.display_name").String())
 		if displayName == "" {
 			displayName = configName
 		}
 
-		// Read context/max tokens from model_detail_list.0 (native behavior)
-		contextLength := item.Get("model_detail_list.0.prompt_max_tokens").Int()
-		if contextLength == 0 {
-			contextLength = 100000
-		}
-		maxTokens := item.Get("model_detail_list.0.max_tokens").Int()
-		if maxTokens == 0 {
+		contextLength := detail.Get("prompt_max_tokens").Int()
+		maxTokens := detail.Get("max_tokens").Int()
+		if maxTokens <= 0 {
 			maxTokens = 16000
 		}
 
@@ -171,10 +176,14 @@ func parseTraeDetailParamWithConfigs(data []byte, now int64) []pluginapi.ModelIn
 		}
 
 		models = append(models, info)
+		detailConfigs[lower] = traeDetailModelConfig{
+			ModelName:  modelName,
+			ConfigName: configName,
+		}
 		return true
 	})
 
-	return models
+	return models, detailConfigs
 }
 
 // parseTraeModels parses the model_list response.
@@ -196,9 +205,6 @@ func parseTraeModels(data []byte, now int64) []pluginapi.ModelInfo {
 			return true
 		}
 		id := strings.TrimSpace(item.Get("name").String())
-		if id == "" {
-			id = strings.TrimSpace(item.Get("id").String())
-		}
 		if id == "" {
 			return true
 		}
@@ -225,10 +231,6 @@ func parseTraeModels(data []byte, now int64) []pluginapi.ModelInfo {
 		if contextLength == 0 {
 			contextLength = item.Get("context_length").Int()
 		}
-		if contextLength == 0 {
-			contextLength = 40000
-		}
-
 		models = append(models, pluginapi.ModelInfo{
 			ID:                  id,
 			Object:              "model",
@@ -244,6 +246,54 @@ func parseTraeModels(data []byte, now int64) []pluginapi.ModelInfo {
 	})
 
 	return models
+}
+
+func (p *Plugin) replaceTraeDetailModelConfigs(authID string, configs map[string]traeDetailModelConfig) {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return
+	}
+	p.detailConfigMu.Lock()
+	defer p.detailConfigMu.Unlock()
+	if len(configs) == 0 {
+		delete(p.detailConfigs, authID)
+		return
+	}
+	if p.detailConfigs == nil {
+		p.detailConfigs = make(map[string]map[string]traeDetailModelConfig)
+	}
+	copied := make(map[string]traeDetailModelConfig, len(configs))
+	for key, config := range configs {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" || strings.TrimSpace(config.ModelName) == "" || strings.TrimSpace(config.ConfigName) == "" {
+			continue
+		}
+		copied[key] = traeDetailModelConfig{
+			ModelName:  strings.TrimSpace(config.ModelName),
+			ConfigName: strings.TrimSpace(config.ConfigName),
+		}
+	}
+	if len(copied) == 0 {
+		delete(p.detailConfigs, authID)
+		return
+	}
+	p.detailConfigs[authID] = copied
+}
+
+func (p *Plugin) traeDetailModelConfig(authID, configName string) (traeDetailModelConfig, bool) {
+	authID = strings.TrimSpace(authID)
+	configName = strings.ToLower(strings.TrimSpace(configName))
+	if authID == "" || configName == "" {
+		return traeDetailModelConfig{}, false
+	}
+	p.detailConfigMu.RLock()
+	defer p.detailConfigMu.RUnlock()
+	configs := p.detailConfigs[authID]
+	if len(configs) == 0 {
+		return traeDetailModelConfig{}, false
+	}
+	config, ok := configs[configName]
+	return config, ok
 }
 
 // appendTraeNoThinkingModel ensures no_thinking_model is present.

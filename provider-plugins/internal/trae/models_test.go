@@ -10,6 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/tidwall/gjson"
 )
 
 func TestFetchModelsFromDetailParam(t *testing.T) {
@@ -35,7 +36,7 @@ func TestFetchModelsFromDetailParam(t *testing.T) {
 	}
 
 	rpc := hostRPC{call: host}
-	models, err := fetchModels(rpc, creds)
+	models, configs, err := fetchModels(rpc, creds)
 	if err != nil {
 		t.Fatalf("fetch models: %v", err)
 	}
@@ -43,6 +44,9 @@ func TestFetchModelsFromDetailParam(t *testing.T) {
 	// Should have 2 valid models from detail param + V1 models + V3 models + no_thinking_model
 	if len(models) < 5 {
 		t.Errorf("expected at least 5 models, got %d", len(models))
+	}
+	if got := configs["deepseek-v4-pro"]; got.ModelName != "deepseek-v4-pro-20250101" || got.ConfigName != "DeepSeek-V4-Pro" {
+		t.Errorf("unexpected dynamic model config: %+v", got)
 	}
 
 	// Check that DeepSeek-V4-Pro is present
@@ -115,7 +119,7 @@ func TestFetchModelsFromModelList(t *testing.T) {
 	}
 
 	rpc := hostRPC{call: host}
-	models, err := fetchModels(rpc, creds)
+	models, configs, err := fetchModels(rpc, creds)
 	if err != nil {
 		t.Fatalf("fetch models: %v", err)
 	}
@@ -123,6 +127,9 @@ func TestFetchModelsFromModelList(t *testing.T) {
 	// Should have 2 valid models from model list + V3 models + no_thinking_model
 	if len(models) < 3 {
 		t.Errorf("expected at least 3 models, got %d", len(models))
+	}
+	if len(configs) != 0 {
+		t.Errorf("fallback model list should not return detail configs: %+v", configs)
 	}
 
 	// Check that DeepSeek-V4-Pro is present
@@ -154,7 +161,7 @@ func TestParseTraeDetailParamWithConfigs(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	models := parseTraeDetailParamWithConfigs(data, 1234567890)
+	models, configs := parseTraeDetailParamWithConfigs(data, 1234567890)
 
 	// Should have 2 valid models (DeepSeek-V4-Pro and Doubao-Seed-2.0-Code)
 	if len(models) != 2 {
@@ -180,6 +187,9 @@ func TestParseTraeDetailParamWithConfigs(t *testing.T) {
 	}
 	if deepseek.MaxCompletionTokens != 16000 {
 		t.Errorf("expected max completion tokens 16000, got %d", deepseek.MaxCompletionTokens)
+	}
+	if got := configs["deepseek-v4-pro"]; got.ModelName != "deepseek-v4-pro-20250101" || got.ConfigName != "DeepSeek-V4-Pro" {
+		t.Errorf("unexpected DeepSeek detail config: %+v", got)
 	}
 	if len(deepseek.SupportedInputModalities) != 0 {
 		t.Errorf("expected no input modalities, got %v", deepseek.SupportedInputModalities)
@@ -430,5 +440,59 @@ func TestSetTraeCommonHeaders(t *testing.T) {
 	}
 	if got := headers.Get("x-machine-id"); got != "test-machine" {
 		t.Errorf("x-machine-id = %q", got)
+	}
+}
+
+func TestPrepareRequestUsesPerAuthDetailModelConfig(t *testing.T) {
+	plugin := New(nil)
+	plugin.replaceTraeDetailModelConfigs("auth-a", map[string]traeDetailModelConfig{
+		"dynamic-config": {
+			ModelName:  "dynamic-upstream-model",
+			ConfigName: "Dynamic-Config",
+		},
+	})
+	storage, errMarshal := json.Marshal(credentials{
+		Type:      ProviderID,
+		JWTToken:  "synthetic.jwt.token",
+		MachineID: "machine",
+		DeviceID:  "device",
+		UserID:    "user",
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal credentials: %v", errMarshal)
+	}
+	req := executorRPCRequest{ExecutorRequest: pluginapi.ExecutorRequest{
+		AuthID:       "auth-a",
+		AuthProvider: ProviderID,
+		Model:        "Dynamic-Config",
+		SourceFormat: "openai",
+		Payload:      []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+		StorageJSON:  storage,
+	}}
+
+	_, build, _, errPrepare := plugin.prepareRequest(hostRPC{}, req)
+	if errPrepare != nil {
+		t.Fatalf("prepare request: %v", errPrepare)
+	}
+	if got := gjson.GetBytes(build.LogBody, "model_name").String(); got != "dynamic-upstream-model" {
+		t.Fatalf("model_name = %q", got)
+	}
+	if got := gjson.GetBytes(build.LogBody, "config_name").String(); got != "Dynamic-Config" {
+		t.Fatalf("config_name = %q", got)
+	}
+
+	req.Metadata = map[string]any{
+		traeModelNameMeta: "explicit-model",
+		traeConfigMeta:    "explicit-config",
+	}
+	_, overridden, _, errOverride := plugin.prepareRequest(hostRPC{}, req)
+	if errOverride != nil {
+		t.Fatalf("prepare request with override: %v", errOverride)
+	}
+	if got := gjson.GetBytes(overridden.LogBody, "model_name").String(); got != "explicit-model" {
+		t.Fatalf("overridden model_name = %q", got)
+	}
+	if got := gjson.GetBytes(overridden.LogBody, "config_name").String(); got != "explicit-config" {
+		t.Fatalf("overridden config_name = %q", got)
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	claudetranslator "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/claude"
-	lingmahelpers "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/helpers"
 	chattranslator "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/openai/request"
 	openaitranslator "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/openai/response"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -124,10 +123,6 @@ func preserveClaudeCodeThinking(body, source []byte, sourceFormat string) []byte
 	result, errSet := sjson.SetBytes(body, "model_config.is_reasoning", enabled)
 	if errSet != nil {
 		return body
-	}
-	if !enabled {
-		result, _ = sjson.SetBytes(result, "agent_id", lingmahelpers.AgentCommon)
-		result, _ = sjson.SetBytes(result, "model_config.source", "")
 	}
 	return result
 }

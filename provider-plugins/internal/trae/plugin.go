@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
@@ -30,7 +31,14 @@ type HostCall func(method string, request []byte) ([]byte, error)
 
 // Plugin owns Trae provider state.
 type Plugin struct {
-	hostCall HostCall
+	hostCall       HostCall
+	detailConfigMu sync.RWMutex
+	detailConfigs  map[string]map[string]traeDetailModelConfig
+	streamMu       sync.Mutex
+	streamWG       sync.WaitGroup
+	activeStreams  map[string]activePluginStream
+	shuttingDown   bool
+	shutdownOnce   sync.Once
 }
 
 type lifecycleRequest struct {
@@ -69,7 +77,11 @@ type credentials struct {
 
 // New constructs a Trae shadow plugin.
 func New(hostCall HostCall) *Plugin {
-	return &Plugin{hostCall: hostCall}
+	return &Plugin{
+		hostCall:      hostCall,
+		detailConfigs: make(map[string]map[string]traeDetailModelConfig),
+		activeStreams: make(map[string]activePluginStream),
+	}
 }
 
 // SetHostCall updates the host callback after the C ABI host is initialized.
@@ -91,14 +103,17 @@ func (p *Plugin) Handle(method string, request []byte) ([]byte, error) {
 			}
 		}
 		return pluginruntime.OK(pluginRegistration())
+	case pluginabi.MethodPluginShutdown:
+		p.Shutdown()
+		return pluginruntime.OK(struct{}{})
 	case pluginabi.MethodAuthIdentifier:
 		return pluginruntime.OK(identifierResponse{Identifier: ProviderID})
 	case pluginabi.MethodAuthParse:
 		return p.parseAuth(request)
 	case pluginabi.MethodAuthLoginStart:
-		return nil, fmt.Errorf("interactive Trae login is not implemented in the shadow plugin")
+		return p.startLogin(request)
 	case pluginabi.MethodAuthLoginPoll:
-		return nil, fmt.Errorf("interactive Trae login is not implemented in the shadow plugin")
+		return p.pollLogin(request)
 	case pluginabi.MethodAuthRefresh:
 		return p.refreshAuth(request)
 	case pluginabi.MethodModelStatic:
@@ -124,7 +139,7 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:             "Trae Provider (shadow M5)",
+			Name:             "Trae Provider (shadow release candidate)",
 			Version:          Version,
 			Author:           "CLIProxyAPI contributors",
 			GitHubRepository: "https://github.com/coolxll/CLIProxyAPI",
@@ -240,10 +255,12 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 		return nil, errCredentials
 	}
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
-	models, errModels := fetchModels(host, creds)
+	p.replaceTraeDetailModelConfigs(req.AuthID, nil)
+	models, configs, errModels := fetchModels(host, creds)
 	if errModels != nil {
 		return nil, errModels
 	}
+	p.replaceTraeDetailModelConfigs(req.AuthID, configs)
 	return pluginOK(pluginapi.ModelResponse{
 		Provider: ProviderID,
 		Models:   models,

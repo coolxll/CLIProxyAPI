@@ -7,101 +7,84 @@ import (
 
 // TestPreserveClaudeCodeThinkingParity verifies plugin and native produce identical
 // results when preserving Claude Code thinking configuration.
-//
-// KNOWN DIVERGENCE: The plugin implementation additionally sets agent_id and
-// model_config.source when thinking is disabled, while the native only sets
-// model_config.is_reasoning. This test documents the divergence.
 func TestPreserveClaudeCodeThinkingParity(t *testing.T) {
 	tests := []struct {
-		name          string
-		body          string
-		source        string
-		sourceFormat  string
-		expectDiverge bool // true if plugin and native are expected to differ
+		name         string
+		body         string
+		source       string
+		sourceFormat string
 	}{
 		{
-			name:          "effort_none",
-			body:          `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
-			source:        `{"output_config":{"effort":"none"}}`,
-			sourceFormat:  "claude",
-			expectDiverge: true, // plugin sets agent_id/source, native doesn't
+			name:         "effort_none",
+			body:         `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
+			source:       `{"output_config":{"effort":"none"}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "effort_off",
-			body:          `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
-			source:        `{"output_config":{"effort":"off"}}`,
-			sourceFormat:  "claude",
-			expectDiverge: true,
+			name:         "effort_off",
+			body:         `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
+			source:       `{"output_config":{"effort":"off"}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "effort_disabled",
-			body:          `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
-			source:        `{"output_config":{"effort":"disabled"}}`,
-			sourceFormat:  "claude",
-			expectDiverge: true,
+			name:         "effort_disabled",
+			body:         `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
+			source:       `{"output_config":{"effort":"disabled"}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "effort_active",
-			body:          `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
-			source:        `{"output_config":{"effort":"active"}}`,
-			sourceFormat:  "claude",
-			expectDiverge: false, // both only set is_reasoning=true
+			name:         "effort_active",
+			body:         `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
+			source:       `{"output_config":{"effort":"active"}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "thinking_type_disabled",
-			body:          `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
-			source:        `{"thinking":{"type":"disabled"}}`,
-			sourceFormat:  "claude",
-			expectDiverge: true,
+			name:         "thinking_type_disabled",
+			body:         `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
+			source:       `{"thinking":{"type":"disabled"}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "thinking_type_enabled",
-			body:          `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
-			source:        `{"thinking":{"type":"enabled","budget_tokens":1000}}`,
-			sourceFormat:  "claude",
-			expectDiverge: false,
+			name:         "thinking_type_enabled",
+			body:         `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
+			source:       `{"thinking":{"type":"enabled","budget_tokens":1000}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "thinking_type_enabled_zero_budget",
-			body:          `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
-			source:        `{"thinking":{"type":"enabled","budget_tokens":0}}`,
-			sourceFormat:  "claude",
-			expectDiverge: true, // disabled path
+			name:         "thinking_type_enabled_zero_budget",
+			body:         `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
+			source:       `{"thinking":{"type":"enabled","budget_tokens":0}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "thinking_type_adaptive",
-			body:          `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
-			source:        `{"thinking":{"type":"adaptive"}}`,
-			sourceFormat:  "claude",
-			expectDiverge: false,
+			name:         "thinking_type_adaptive",
+			body:         `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
+			source:       `{"thinking":{"type":"adaptive"}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "thinking_type_auto",
-			body:          `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
-			source:        `{"thinking":{"type":"auto"}}`,
-			sourceFormat:  "claude",
-			expectDiverge: false,
+			name:         "thinking_type_auto",
+			body:         `{"model_config":{"is_reasoning":false,"source":""},"agent_id":"agent_common"}`,
+			source:       `{"thinking":{"type":"auto"}}`,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "non_claude_format",
-			body:          `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
-			source:        `{"output_config":{"effort":"none"}}`,
-			sourceFormat:  "openai",
-			expectDiverge: false, // both return body unchanged
+			name:         "non_claude_format",
+			body:         `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
+			source:       `{"output_config":{"effort":"none"}}`,
+			sourceFormat: "openai",
 		},
 		{
-			name:          "empty_source",
-			body:          `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
-			source:        ``,
-			sourceFormat:  "claude",
-			expectDiverge: false, // both return body unchanged
+			name:         "empty_source",
+			body:         `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
+			source:       ``,
+			sourceFormat: "claude",
 		},
 		{
-			name:          "invalid_source_json",
-			body:          `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
-			source:        `not json`,
-			sourceFormat:  "claude",
-			expectDiverge: false, // both return body unchanged
+			name:         "invalid_source_json",
+			body:         `{"model_config":{"is_reasoning":true,"source":"system"},"agent_id":"agent_chat"}`,
+			source:       `not json`,
+			sourceFormat: "claude",
 		},
 	}
 
@@ -118,18 +101,7 @@ func TestPreserveClaudeCodeThinkingParity(t *testing.T) {
 				t.Fatalf("parse native result: %v\nraw: %s", err, nativeResult)
 			}
 
-			if tt.expectDiverge {
-				// Document the divergence: plugin sets agent_id/source, native doesn't
-				t.Logf("Expected divergence: plugin sets agent_id and model_config.source when thinking disabled")
-				// Verify is_reasoning matches
-				pluginReasoning := pluginJSON["model_config"].(map[string]any)["is_reasoning"]
-				nativeReasoning := nativeJSON["model_config"].(map[string]any)["is_reasoning"]
-				if pluginReasoning != nativeReasoning {
-					t.Errorf("is_reasoning mismatch: plugin=%v, native=%v", pluginReasoning, nativeReasoning)
-				}
-			} else {
-				compareJSON(t, pluginJSON, nativeJSON, nil, "result")
-			}
+			compareJSON(t, pluginJSON, nativeJSON, nil, "result")
 		})
 	}
 }

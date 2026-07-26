@@ -46,6 +46,7 @@ func main() {
 	var doRefresh bool
 	var loginHost string
 	var doLogin bool
+	var pluginOutput bool
 
 	flag.StringVar(&outPath, "out", defaultOutPath, "Output JSON file path (default: <auth-dir>/<name>.json)")
 	flag.StringVar(&authsDir, "auths-dir", "", "Directory for auth JSON files (overrides config auth-dir)")
@@ -59,6 +60,7 @@ func main() {
 	flag.BoolVar(&doRefresh, "refresh", false, "Refresh access token using -refresh-token or TRAE_REFRESH_TOKEN env")
 	flag.StringVar(&loginHost, "login-host", "", "Trae API host for token exchange (default: "+TRAE_CN_API_HOST+")")
 	flag.BoolVar(&doLogin, "login", false, "Interactive OAuth login via browser")
+	flag.BoolVar(&pluginOutput, "plugin", false, "Export for the trae-plugin shadow provider")
 	flag.Parse()
 
 	// Resolve the auth directory from config (or -auths-dir override), so the
@@ -167,8 +169,12 @@ func main() {
 		finalName = defaultName(creds.UserID, creds.MachineID)
 	}
 
+	providerType := "trae"
+	if pluginOutput {
+		providerType = "trae-plugin"
+	}
 	exportData := map[string]any{
-		"type":       "trae",
+		"type":       providerType,
 		"jwt_token":  creds.JWTToken,
 		"machine_id": creds.MachineID,
 		"device_id":  creds.DeviceID,
@@ -177,6 +183,9 @@ func main() {
 	}
 	if workspacePath != "" {
 		exportData["workspace_path"] = workspacePath
+	}
+	if refreshToken != "" {
+		exportData["refresh_token"] = refreshToken
 	}
 	if expiresAt, ok := jwtExpiresAt(creds.JWTToken); ok {
 		exportData["expires_at"] = expiresAt

@@ -114,7 +114,9 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 }
 
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() {}
+func cliproxyPluginShutdown() {
+	provider.Shutdown()
+}
 
 func callHost(method string, request []byte) ([]byte, error) {
 	cMethod := C.CString(method)

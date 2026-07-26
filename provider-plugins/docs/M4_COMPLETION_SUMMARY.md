@@ -1,5 +1,8 @@
 # Trae M4 Completion Summary
 
+> Historical milestone record. See the top-level README and release checklist
+> for the current shadow release-candidate status.
+
 ## Status: ✅ COMPLETE
 
 All M4 (Authentication and Model Discovery) implementation tasks have been completed and verified.
@@ -123,8 +126,9 @@ The Trae plugin follows the same pattern as Lingma:
 
 1. **Provider ID**: Plugin uses `trae-plugin`, native uses `trae`
 2. **Model Type**: Plugin models have `Type: "trae-plugin"`, native has `Type: "trae"`
-3. **Browser login**: Not implemented (auth.login.start and auth.login.poll return errors)
-4. **No SDK authenticator**: Plugin handles auth directly, no `sdk/auth/trae.go` file
+3. **Browser login**: Implemented through plugin auth start/poll and the
+   management callback fragment bridge
+4. **No SDK authenticator**: Plugin handles auth directly
 
 ## Verification
 
@@ -138,17 +142,8 @@ Main server builds successfully:
 cd /Users/lynn/Workspace/cpa/CLIProxyAPI && go build -o test-output ./cmd/server && rm test-output
 ```
 
-## Next Steps
+## Later status
 
-M4 is complete. The next milestone is **M5: Trae Protocol and Executor Migration**, which involves:
-1. Port V1/V2/V3 request builders
-2. Port encryption and frame decoding
-3. Port raw chat, agent tasks, stream reconstruction, and terminal handling
-4. Port tool-call shims and supported tool behavior
-5. Port usage extraction and compatibility response conversion
-6. Run native-versus-plugin golden and opt-in live parity tests
-
-M5 should only be started after:
-- All M4 tests pass in CI
-- Manual testing confirms plugin authentication and model discovery work correctly
-- Documentation is updated
+M5 is complete, including V1/V2/V3 execution, encrypted frames, tools,
+streaming terminal behavior, usage conversion, offline parity, and real dynamic
+library host integration. Cutover remains intentionally deferred.

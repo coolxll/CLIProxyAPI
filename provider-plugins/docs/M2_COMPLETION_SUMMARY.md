@@ -1,5 +1,8 @@
 # Lingma M2 Completion Summary
 
+> Historical milestone record. See the top-level README and release checklist
+> for the current shadow release-candidate status.
+
 ## Status: ✅ COMPLETE
 
 All M2 (Translation and Execution) golden parity tests have been implemented and verified.
@@ -36,10 +39,9 @@ All M2 (Translation and Execution) golden parity tests have been implemented and
 - `internal/lingma/thinking_parity_test.go`
 - `internal/lingma/native_thinking_parity_test.go` (helper with native function copies)
 
-**Known divergence documented:**
-- Plugin sets `agent_id` and `model_config.source` when thinking is disabled
-- Native only sets `model_config.is_reasoning`
-- This is intentional and documented in test comments
+The previously documented disabled-thinking divergence was removed during
+release hardening. The plugin and native implementation now both preserve the
+request fields and update only `model_config.is_reasoning`.
 
 ### Phase 5: Usage Normalization Parity (16 subtests)
 - ✅ normalizeLingmaUsage (15 test cases covering all token field variations)
@@ -86,16 +88,8 @@ Main server builds successfully:
 go build -o test-output ./cmd/server && rm test-output
 ```
 
-## Next Steps
+## Cutover status
 
-M2 is complete. The next milestone is **M3: Lingma Cutover**, which involves:
-1. Changing provider identifier from `lingma-plugin` to `lingma`
-2. Removing native Lingma implementation
-3. Updating all references and configurations
-4. End-to-end integration testing
-
-M3 should only be started after:
-- All M2 tests pass in CI
-- Manual testing confirms plugin behavior matches native
-- Documentation is updated
-- Rollback plan is documented
+Dynamic-library integration and opt-in live tests now exist. The provider
+identifier remains `lingma-plugin`, and the native implementation remains
+available until operator-run live validation and a separate cutover decision.

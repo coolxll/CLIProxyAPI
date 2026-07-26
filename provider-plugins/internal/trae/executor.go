@@ -67,36 +67,44 @@ func (p *Plugin) execute(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// Aggregate all synthesized OpenAI SSE chunks
+	defer host.closeHTTPStream(upstream.StreamID)
+
+	// Aggregate canonical OpenAI SSE chunks before building the non-streaming response.
 	var aggregate bytes.Buffer
-	var translateParam any
-	from := sdktranslator.Format(req.SourceFormat)
 	openaiFormat := sdktranslator.FormatOpenAI
-
-	// Emit initial assistant role chunk into aggregate
-	initChunk := p.buildInitChunk(req.Model)
-	initBytes := []byte("data: " + string(initChunk))
-	firstTranslated := sdktranslator.TranslateStream(context.Background(), openaiFormat, from, req.Model, req.OriginalRequest, nil, initBytes, &translateParam)
-	for _, ft := range firstTranslated {
-		aggregate.Write(ft)
-		aggregate.WriteByte('\n')
-	}
-
-	// Process upstream stream and collect synthesized chunks
-	_, _, err = p.consumeUpstreamStream(host, upstream.StreamID, func(line []byte) error {
-		chunks := p.processSSELine(line, req, build, openaiReq, from, openaiFormat, &translateParam)
-		for _, chunk := range chunks {
-			aggregate.Write(chunk)
-			aggregate.WriteByte('\n')
-		}
-		return nil
-	})
-	host.closeHTTPStream(upstream.StreamID)
-	if err != nil {
+	processor := newTraeStreamProcessor(
+		context.Background(),
+		host,
+		req,
+		build,
+		openaiReq,
+		openaiFormat,
+		false,
+		func(payload []byte, _ *pluginapi.UsageDetail) error {
+			if len(payload) > 0 {
+				aggregate.Write(payload)
+				aggregate.WriteByte('\n')
+			}
+			return nil
+		},
+	)
+	defer processor.closeQueueHeartbeat()
+	if err = processor.start(); err != nil {
 		return nil, err
 	}
 
-	// Parse aggregated OpenAI SSE and build non-streaming response
+	_, _, err = p.consumeUpstreamStream(host, upstream.StreamID, func(line []byte) error {
+		return processor.processLine(line)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err = processor.finish(); err != nil {
+		return nil, err
+	}
+
+	// Parse aggregated OpenAI SSE and build a response in the caller's format.
+	from := sdktranslator.Format(normalizeFormat(req.ExecutorRequest))
 	return p.aggregateToResponse(aggregate.Bytes(), req, upstream.Headers, from, openaiFormat)
 }
 
@@ -120,51 +128,46 @@ func (p *Plugin) executeStream(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	go p.runStream(req, build, openaiReq, upstream)
+	host = hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
+	if !p.beginStream(req.StreamID, host, upstream.StreamID) {
+		host.closeHTTPStream(upstream.StreamID)
+		return nil, fmt.Errorf("Trae plugin is shutting down")
+	}
+	go func() {
+		defer p.endStream(req.StreamID)
+		p.runStream(req, build, openaiReq, upstream)
+	}()
 	return pluginOK(executorStreamResponse{Headers: upstream.Headers})
 }
 
 // runStream processes the upstream stream and emits synthesized chunks to the output stream.
 func (p *Plugin) runStream(req executorRPCRequest, build *traeRequestBuildResult, openaiReq []byte, upstream hostHTTPStreamResponse) {
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
-	from := sdktranslator.Format(req.SourceFormat)
-	openaiFormat := sdktranslator.FormatOpenAI
-	var translateParam any
 
-	// Emit initial assistant role chunk
-	initChunk := p.buildInitChunk(req.Model)
-	initBytes := []byte("data: " + string(initChunk))
-	firstTranslated := sdktranslator.TranslateStream(context.Background(), openaiFormat, from, req.Model, req.OriginalRequest, nil, initBytes, &translateParam)
-	for _, ft := range firstTranslated {
-		if err := host.emit(req.StreamID, ft, nil); err != nil {
-			host.closeOutputStream(req.StreamID, err)
-			return
-		}
-	}
-
-	// Process upstream stream
-	sawData, sawDone, streamErr := p.consumeUpstreamStream(host, upstream.StreamID, func(line []byte) error {
-		chunks := p.processSSELine(line, req, build, openaiReq, from, openaiFormat, &translateParam)
-		for _, chunk := range chunks {
-			if err := host.emit(req.StreamID, chunk, nil); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	host.closeHTTPStream(upstream.StreamID)
-
-	if streamErr == nil && sawDone {
-		host.closeOutputStream(req.StreamID, nil)
+	processor := newTraeStreamProcessor(
+		context.Background(),
+		host,
+		req,
+		build,
+		openaiReq,
+		sdktranslator.Format(normalizeFormat(req.ExecutorRequest)),
+		true,
+		func(payload []byte, usage *pluginapi.UsageDetail) error {
+			return host.emit(req.StreamID, payload, usage)
+		},
+	)
+	defer processor.closeQueueHeartbeat()
+	if err := processor.start(); err != nil {
+		host.closeHTTPStream(upstream.StreamID)
+		host.closeOutputStream(req.StreamID, err)
 		return
 	}
+
+	_, _, streamErr := p.consumeUpstreamStream(host, upstream.StreamID, processor.processLine)
 	if streamErr == nil {
-		if !sawData {
-			streamErr = newStatusError(http.StatusBadGateway, "Trae upstream connection closed before response data")
-		} else {
-			streamErr = newStatusError(http.StatusBadGateway, "Trae upstream stream ended before completion")
-		}
+		streamErr = processor.finish()
 	}
+	host.closeHTTPStream(upstream.StreamID)
 	host.closeOutputStream(req.StreamID, streamErr)
 }
 
@@ -178,7 +181,7 @@ func (p *Plugin) prepareRequest(host hostRPC, req executorRPCRequest) (credentia
 	baseModel := req.Model
 	protocol, upstreamModel := resolveTraeProtocol(baseModel, req.Metadata)
 
-	from := sdktranslator.Format(req.SourceFormat)
+	from := sdktranslator.Format(normalizeFormat(req.ExecutorRequest))
 	openaiFormat := sdktranslator.FormatOpenAI
 	openaiReq := sdktranslator.TranslateRequest(from, openaiFormat, upstreamModel, req.Payload, true)
 	messages := gjson.GetBytes(openaiReq, "messages").Array()
@@ -204,12 +207,29 @@ func (p *Plugin) prepareRequest(host hostRPC, req executorRPCRequest) (credentia
 	} else if protocol == traeProtocolV1 || protocol == traeProtocolV2 {
 		build, err = buildTraeRawChatRequest(protocol, upstreamModel, openaiReq, req.Metadata)
 	} else {
-		build, err = buildTraeV3CreateTaskRequest(creds, upstreamModel, openaiReq, messages, req.Metadata)
+		metadata := cloneMetadata(req.Metadata)
+		if detailConfig, ok := p.traeDetailModelConfig(req.AuthID, upstreamModel); ok {
+			if metadataString(metadata, traeModelNameMeta) == "" {
+				metadata[traeModelNameMeta] = detailConfig.ModelName
+			}
+			if metadataString(metadata, traeConfigMeta) == "" {
+				metadata[traeConfigMeta] = detailConfig.ConfigName
+			}
+		}
+		build, err = buildTraeV3CreateTaskRequest(creds, upstreamModel, openaiReq, messages, metadata)
 	}
 	if err != nil {
 		return credentials{}, nil, nil, err
 	}
 	return creds, build, openaiReq, nil
+}
+
+func cloneMetadata(source map[string]any) map[string]any {
+	result := make(map[string]any, len(source)+2)
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
 }
 
 // openUpstreamStream opens the upstream HTTP stream for the given build result.
@@ -237,44 +257,15 @@ func (p *Plugin) openUpstreamStream(host hostRPC, creds credentials, build *trae
 	if err != nil {
 		return hostHTTPStreamResponse{}, fmt.Errorf("open upstream stream: %w", err)
 	}
+	if upstream.StatusCode < http.StatusOK || upstream.StatusCode >= http.StatusMultipleChoices {
+		defer host.closeHTTPStream(upstream.StreamID)
+		body, errRead := p.readUpstreamStreamBody(host, upstream.StreamID)
+		if errRead != nil {
+			return hostHTTPStreamResponse{}, fmt.Errorf("read Trae upstream error response: %w", errRead)
+		}
+		return hostHTTPStreamResponse{}, traeStatusErr{code: upstream.StatusCode, msg: string(body)}
+	}
 	return upstream, nil
-}
-
-// buildInitChunk creates the initial assistant role chunk.
-func (p *Plugin) buildInitChunk(model string) []byte {
-	initChunk := openaiChunk{
-		ID:      fmt.Sprintf("chatcmpl-%s", strings.ReplaceAll(uuid.New().String(), "-", "")),
-		Object:  "chat.completion.chunk",
-		Created: time.Now().Unix(),
-		Model:   model,
-		Choices: []openaiChoice{
-			{Index: 0, Delta: openaiDelta{Role: "assistant"}},
-		},
-	}
-	data, _ := json.Marshal(initChunk)
-	return data
-}
-
-// processSSELine processes a single SSE line and returns synthesized OpenAI chunks.
-func (p *Plugin) processSSELine(line []byte, req executorRPCRequest, build *traeRequestBuildResult, openaiReq []byte, from, openaiFormat sdktranslator.Format, translateParam *any) [][]byte {
-	// This is a simplified version - full implementation would handle all SSE event types
-	// For now, just pass through valid data lines
-	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		data := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
-		if string(data) == "[DONE]" {
-			return [][]byte{line}
-		}
-		if gjson.ValidBytes(data) {
-			// Translate the chunk
-			translated := sdktranslator.TranslateStream(context.Background(), openaiFormat, from, req.Model, req.OriginalRequest, nil, line, translateParam)
-			return translated
-		}
-	}
-	return nil
 }
 
 // consumeUpstreamStream reads the upstream stream line by line.
@@ -321,6 +312,23 @@ func (p *Plugin) consumeUpstreamStream(host hostRPC, streamID string, onLine fun
 				}
 			}
 			return sawData, sawDone, nil
+		}
+	}
+}
+
+func (p *Plugin) readUpstreamStreamBody(host hostRPC, streamID string) ([]byte, error) {
+	var body bytes.Buffer
+	for {
+		chunk, err := host.readHTTPStream(streamID)
+		if err != nil {
+			return nil, err
+		}
+		body.Write(chunk.Payload)
+		if chunk.Error != "" {
+			return nil, errors.New(chunk.Error)
+		}
+		if chunk.Done {
+			return body.Bytes(), nil
 		}
 	}
 }
@@ -451,6 +459,9 @@ func (p *Plugin) aggregateToResponse(aggregate []byte, req executorRPCRequest, h
 	resp := pluginapi.ExecutorResponse{
 		Payload: translatedNonStream,
 		Headers: headers,
+	}
+	if hasUsage {
+		resp.Usage = usageDetailFromOpenAIUsage(finalUsage)
 	}
 	return pluginruntime.OK(resp)
 }

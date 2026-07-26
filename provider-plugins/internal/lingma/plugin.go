@@ -37,6 +37,12 @@ type Plugin struct {
 	mu       sync.RWMutex
 	config   pluginConfig
 	fallback *oneShotFallback
+
+	streamMu      sync.Mutex
+	streamWG      sync.WaitGroup
+	activeStreams map[string]activePluginStream
+	shuttingDown  bool
+	shutdownOnce  sync.Once
 }
 
 type lifecycleRequest struct {
@@ -80,9 +86,10 @@ type credentials struct {
 // New constructs a Lingma shadow plugin.
 func New(hostCall HostCall) *Plugin {
 	return &Plugin{
-		hostCall: hostCall,
-		config:   defaultPluginConfig(),
-		fallback: newOneShotFallback(),
+		hostCall:      hostCall,
+		config:        defaultPluginConfig(),
+		fallback:      newOneShotFallback(),
+		activeStreams: make(map[string]activePluginStream),
 	}
 }
 
@@ -113,6 +120,7 @@ func (p *Plugin) Handle(method string, request []byte) ([]byte, error) {
 		p.mu.Unlock()
 		return pluginruntime.OK(pluginRegistration())
 	case pluginabi.MethodPluginShutdown:
+		p.Shutdown()
 		return pluginruntime.OK(struct{}{})
 	case pluginabi.MethodAuthIdentifier:
 		return pluginruntime.OK(identifierResponse{Identifier: ProviderID})
@@ -151,7 +159,7 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:             "Lingma Provider (shadow M2)",
+			Name:             "Lingma Provider (shadow release candidate)",
 			Version:          Version,
 			Author:           "CLIProxyAPI contributors",
 			GitHubRepository: "https://github.com/coolxll/CLIProxyAPI",

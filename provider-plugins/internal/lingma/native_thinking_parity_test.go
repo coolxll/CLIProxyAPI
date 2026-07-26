@@ -64,12 +64,6 @@ func nativeNormalizeLingmaUsageForTest(usage gjson.Result) json.RawMessage {
 
 // nativePreserveLingmaClaudeCodeThinkingForTest is a copy of the native
 // preserveLingmaClaudeCodeThinking function from lingma_executor.go:663-680.
-//
-// DIVERGENCE: The native implementation only sets model_config.is_reasoning.
-// The plugin implementation (preserveClaudeCodeThinking in translation.go)
-// additionally sets agent_id to "agent_common" and model_config.source to ""
-// when thinking is disabled. This is a behavioral difference that will cause
-// parity tests to fail for disabled thinking cases.
 func nativePreserveLingmaClaudeCodeThinkingForTest(body, source []byte, sourceFormat string) []byte {
 	if !strings.EqualFold(strings.TrimSpace(sourceFormat), "claude") {
 		return body

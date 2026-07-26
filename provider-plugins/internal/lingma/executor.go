@@ -160,8 +160,15 @@ func (p *Plugin) executeStream(raw []byte) ([]byte, error) {
 		p.rememberThinkingFallback(errOpen, fallback, profile)
 		return nil, normalizeUpstreamError(errOpen, profile)
 	}
+	if !p.beginStream(req.StreamID, host, upstream.StreamID) {
+		host.closeHTTPStream(upstream.StreamID)
+		return nil, fmt.Errorf("Lingma plugin is shutting down")
+	}
 	responseHeaders := responseHeadersWithFallback(upstream.Headers, plan.fallbackApplied)
-	go p.runStream(req, format, baseModel, attemptBody, profile, fallback, plan, upstream)
+	go func() {
+		defer p.endStream(req.StreamID)
+		p.runStream(req, format, baseModel, attemptBody, profile, fallback, plan, upstream)
+	}()
 	return pluginOK(executorStreamResponse{Headers: responseHeaders})
 }
 
@@ -203,15 +210,21 @@ func (p *Plugin) runStream(req executorRPCRequest, format, baseModel string, att
 				streamErr = newStatusError(http.StatusBadGateway, "Lingma upstream stream ended before completion")
 			}
 		}
-		if !emittedOutput && plan.hasNext() {
+		if !emittedOutput && plan.hasNext() && !p.isShuttingDown() {
 			plan.logRetry(streamErr, 0)
 			next, nextBody, errNext := plan.openStream()
 			if errNext == nil {
 				upstream, attemptBody = next, nextBody
-				translateState = nil
-				continue
+				if p.updateStreamUpstream(req.StreamID, upstream.StreamID) {
+					translateState = nil
+					continue
+				}
+				host.closeHTTPStream(upstream.StreamID)
+				streamErr = fmt.Errorf("Lingma plugin is shutting down")
 			}
-			streamErr = errNext
+			if errNext != nil {
+				streamErr = errNext
+			}
 		}
 		if !emittedOutput {
 			p.rememberThinkingFallback(streamErr, fallback, profile)

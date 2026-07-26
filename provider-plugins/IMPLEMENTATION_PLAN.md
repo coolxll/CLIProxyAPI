@@ -183,33 +183,33 @@ equivalent for the supported protocol matrix. ✓
 
 ### M3: Lingma cutover
 
-- Add opt-in live E2E tests guarded by explicit environment variables.
+- [x] Add opt-in live E2E tests guarded by explicit environment variables.
 - Change the plugin provider identifier from `lingma-plugin` to `lingma`.
 - Remove native Lingma executor, auth, translator, config, and service cases.
-- Keep a compatibility import path for existing auth JSON.
-- Document rollback to the last native-provider release.
+- [x] Keep an explicit compatibility export path for existing auth material.
+- [x] Document rollback to the native provider.
 
 Exit criterion: the main server contains no Lingma provider implementation and
 the plugin passes the full compatibility suite.
 
 ### M4: Trae authentication and model discovery
 
-- Add the Trae shadow plugin and sanitized credential parser.
-- Port token exchange, refresh, browser login, and import commands.
-- Port dynamic model discovery and static fallback definitions.
-- Verify multi-account selection and auth persistence.
+- [x] Add the Trae shadow plugin and sanitized credential parser.
+- [x] Port token exchange, refresh, browser login, and import commands.
+- [x] Port dynamic model discovery and static fallback definitions.
+- [x] Verify per-account dynamic model selection and auth persistence data.
 
 Exit criterion: `trae-plugin` can authenticate and publish the same model set as
 the native provider.
 
 ### M5: Trae protocol and executor migration
 
-- Port V1/V2/V3 request builders.
-- Port encryption and frame decoding.
-- Port raw chat, agent tasks, stream reconstruction, and terminal handling.
-- Port tool-call shims and supported tool behavior.
-- Port usage extraction and compatibility response conversion.
-- Run native-versus-plugin golden and opt-in live parity tests.
+- [x] Port V1/V2/V3 request builders.
+- [x] Port encryption and frame decoding.
+- [x] Port raw chat, agent tasks, stream reconstruction, and terminal handling.
+- [x] Port tool-call shims and supported tool behavior.
+- [x] Port usage extraction and compatibility response conversion.
+- [x] Run native-versus-plugin offline parity and add opt-in live smoke tests.
 
 Exit criterion: all existing Trae unit fixtures pass through the plugin without
 semantic differences.
@@ -218,9 +218,15 @@ semantic differences.
 
 - Change the provider identifier from `trae-plugin` to `trae`.
 - Remove native Trae code and hard-coded service cases.
-- Produce versioned artifacts for Darwin, Linux, and Windows.
-- Add checksums, plugin-store manifests, upgrade notes, and rollback notes.
-- Verify plugin hot reload and version selection.
+- [x] Add versioned artifact automation for Darwin, Linux, and Windows.
+- [x] Add checksums, fixed-version install manifests, upgrade notes, and rollback notes.
+- [x] Verify dynamic loading, cancellation, backpressure, and host version selection.
+
+The official store registry pull request is a promotion action, not part of the
+shadow implementation. It remains deferred until the plugins have a dedicated
+release repository, public assets, and successful opt-in live validation. The
+CLIProxyAPI monorepo cannot be used as the registry repository because the
+store resolves its latest release.
 
 Exit criterion: both providers are independently installable and the core can
 track upstream CLIProxyAPI without provider-specific merge conflicts.
@@ -265,8 +271,10 @@ Native code is removed only after all of the following are true for a provider:
 5. Plugin disablement cleanly removes models and executors.
 6. A documented rollback path exists.
 
-## Immediate next work
+## Current branch gate
 
-1. Finish the Trae M0 skeleton.
-2. Move Lingma credential signing into the plugin module.
-3. Implement host-callback-backed Lingma model discovery.
+This branch remains parallel to `main`. Lingma and Trae keep their shadow
+identifiers and the native implementations remain intact. The remaining
+cutover items require successful operator-run live tests for both providers and
+a separate decision to merge or remove native code; neither happens
+automatically on this branch.

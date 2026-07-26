@@ -1,6 +1,8 @@
 # Binaries
 cli-proxy-api
 *.exe
+/cmd/lingma-export/lingma-export
+/cmd/trae-export/trae-export
 
 # Configuration
 config.yaml
@@ -15,6 +17,7 @@ refs/*
 plugins/*
 examples/plugin/bin/*
 /provider-plugins/bin/*
+/provider-plugins/dist/*
 
 # Storage backends
 pgstore/*

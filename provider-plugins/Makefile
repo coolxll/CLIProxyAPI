@@ -1,6 +1,9 @@
 UNAME_S := $(shell uname -s)
-VERSION ?= 0.1.0
+VERSION ?= 0.2.0
 BIN_DIR := $(CURDIR)/bin
+DIST_DIR := $(CURDIR)/dist
+GOOS_NAME := $(shell go env GOOS)
+GOARCH_NAME := $(shell go env GOARCH)
 
 ifeq ($(OS),Windows_NT)
 PLUGIN_EXT := dll
@@ -13,7 +16,7 @@ endif
 LINGMA_ARTIFACT := $(BIN_DIR)/lingma-plugin-v$(VERSION).$(PLUGIN_EXT)
 TRAE_ARTIFACT := $(BIN_DIR)/trae-plugin-v$(VERSION).$(PLUGIN_EXT)
 
-.PHONY: build test fmt clean force
+.PHONY: build test fmt package checksums package-check release-check clean force
 
 build: $(LINGMA_ARTIFACT) $(TRAE_ARTIFACT)
 
@@ -23,8 +26,30 @@ test:
 fmt:
 	gofmt -w .
 
+package: build
+	rm -rf $(DIST_DIR)
+	mkdir -p $(DIST_DIR)
+	cp $(LINGMA_ARTIFACT) $(DIST_DIR)/lingma-plugin.$(PLUGIN_EXT)
+	cp $(TRAE_ARTIFACT) $(DIST_DIR)/trae-plugin.$(PLUGIN_EXT)
+	cd $(DIST_DIR) && zip -q lingma-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip lingma-plugin.$(PLUGIN_EXT)
+	cd $(DIST_DIR) && zip -q trae-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip trae-plugin.$(PLUGIN_EXT)
+	rm -f $(DIST_DIR)/lingma-plugin.$(PLUGIN_EXT) $(DIST_DIR)/trae-plugin.$(PLUGIN_EXT)
+	$(MAKE) checksums
+	$(MAKE) package-check
+
+checksums:
+	cd $(DIST_DIR) && if command -v sha256sum >/dev/null 2>&1; then sha256sum *.zip > checksums.txt; else shasum -a 256 *.zip > checksums.txt; fi
+
+package-check:
+	test "$$(unzip -Z1 $(DIST_DIR)/lingma-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip)" = "lingma-plugin.$(PLUGIN_EXT)"
+	test "$$(unzip -Z1 $(DIST_DIR)/trae-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip)" = "trae-plugin.$(PLUGIN_EXT)"
+	cd $(DIST_DIR) && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c checksums.txt; else shasum -a 256 -c checksums.txt; fi
+
+release-check: fmt test package
+
 clean:
 	rm -rf $(BIN_DIR)
+	rm -rf $(DIST_DIR)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

@@ -1,0 +1,133 @@
+name: Provider plugin release
+
+on:
+  push:
+    tags:
+      - "v0.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Provider plugin version without the v prefix"
+        required: true
+        default: "0.2.0"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Test host and provider modules
+        run: |
+          go test ./internal/pluginhost ./internal/api/handlers/management
+          cd provider-plugins
+          go test ./...
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            extension: so
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            extension: dylib
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            extension: dll
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Resolve version
+        id: version
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}"
+          } else {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          }
+          if ($version -notmatch '^[0-9][0-9A-Za-z.+-]*$') {
+            throw "Invalid provider plugin version: $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Configure Windows C compiler
+        if: runner.os == 'Windows'
+        run: |
+          $env:Path = "C:\msys64\mingw64\bin;$env:Path"
+          "PATH=$env:Path" >> $env:GITHUB_ENV
+          "CC=C:\msys64\mingw64\bin\gcc.exe" >> $env:GITHUB_ENV
+      - name: Build and package
+        working-directory: provider-plugins
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($plugin in @("lingma", "trae")) {
+            $id = "$plugin-plugin"
+            $library = "$id.${{ matrix.extension }}"
+            go build -buildmode=c-shared -o "dist/$library" "./cmd/$plugin"
+            Remove-Item "dist/$id.h" -ErrorAction SilentlyContinue
+            $archive = "$id" + "_$version" + "_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+            Compress-Archive -Path "dist/$library" -DestinationPath "dist/$archive"
+            $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path "dist/$archive"))
+            try {
+              $entries = @($zip.Entries | Where-Object { -not $_.FullName.EndsWith("/") })
+              if ($entries.Count -ne 1 -or $entries[0].FullName -ne $library) {
+                throw "Invalid archive layout for $archive"
+              }
+            } finally {
+              $zip.Dispose()
+            }
+            Remove-Item "dist/$library"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: provider-plugins-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: provider-plugins/dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: provider-plugins-*
+          path: dist
+          merge-multiple: true
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum *.zip > checksums.txt
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ steps.tag.outputs.tag }}" dist/*.zip dist/checksums.txt --generate-notes --verify-tag

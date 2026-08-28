@@ -192,6 +192,24 @@ func applyAuthDisabledState(auth *coreauth.Auth, disabled bool) {
 	} else {
 		auth.Status = coreauth.StatusActive
 		auth.StatusMessage = ""
+		auth.Unavailable = false
+		auth.NextRetryAfter = time.Time{}
+		auth.LastError = nil
+		auth.Quota = coreauth.QuotaState{}
+		// Also clear all model states
+		for _, state := range auth.ModelStates {
+			if state != nil {
+				state.Unavailable = false
+				if state.Status == coreauth.StatusDisabled || state.Status == coreauth.StatusError {
+					state.Status = coreauth.StatusActive
+				}
+				state.StatusMessage = ""
+				state.NextRetryAfter = time.Time{}
+				state.LastError = nil
+				state.Quota = coreauth.QuotaState{}
+				state.UpdatedAt = time.Now()
+			}
+		}
 	}
 	auth.UpdatedAt = time.Now()
 	if auth.Metadata == nil {

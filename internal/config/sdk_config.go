@@ -9,6 +9,21 @@ type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// DisableHTTP11 opts out of HTTP/1.1 forcing for upstream channels that use
+	// it by default (currently Lingma). By default (false) those channels use
+	// HTTP/1.1 to avoid mid-stream HTTP/2 RST_STREAM errors from the upstream
+	// surfacing as raw "stream error: stream ID N; INTERNAL_ERROR" messages to
+	// clients. Set true to negotiate HTTP/2 via ALPN as before.
+	DisableHTTP11 bool `yaml:"disable-http11" json:"disable-http11"`
+
+	// LingmaThinkingFallback configures a one-shot no-thinking fallback for
+	// large gm51model requests canceled before the upstream produces data.
+	LingmaThinkingFallback LingmaThinkingFallbackConfig `yaml:"lingma-thinking-fallback" json:"lingma-thinking-fallback"`
+
+	// LingmaUpstreamRecovery configures same-request recovery for transient
+	// Lingma upstream failures before any response is exposed downstream.
+	LingmaUpstreamRecovery LingmaUpstreamRecoveryConfig `yaml:"lingma-upstream-recovery" json:"lingma-upstream-recovery"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:
@@ -61,6 +76,31 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+}
+
+// LingmaThinkingFallbackConfig controls Lingma's one-shot retry downgrade.
+type LingmaThinkingFallbackConfig struct {
+	// Enabled allows the next identical large gm51model thinking request to
+	// retry once with reasoning disabled after a pre-response cancellation.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// TTL controls how long a canceled request fingerprint remains eligible.
+	// Empty or invalid values use the default of 2m.
+	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+}
+
+// LingmaUpstreamRecoveryConfig controls same-request Lingma recovery.
+type LingmaUpstreamRecoveryConfig struct {
+	// Disabled turns off same-request recovery. Recovery is enabled by default.
+	Disabled bool `yaml:"disabled" json:"disabled"`
+
+	// MaxAttempts includes the initial request. Values outside 1-5 are clamped;
+	// zero uses the default of 3.
+	MaxAttempts int `yaml:"max-attempts,omitempty" json:"max-attempts,omitempty"`
+
+	// BaseDelay is the initial context-aware retry backoff. Empty, invalid, or
+	// non-positive values use the default of 200ms.
+	BaseDelay string `yaml:"base-delay,omitempty" json:"base-delay,omitempty"`
 }
 
 // ClaudeCodeConfig configures Claude Code compatibility behavior.

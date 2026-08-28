@@ -70,6 +70,9 @@ type APIKeyClientResult struct {
 
 	// OpenAICompatCount is the number of OpenAI compatibility API keys loaded
 	OpenAICompatCount int
+
+	// LingmaKeyCount is the number of Lingma API keys loaded
+	LingmaKeyCount int
 }
 
 // WatcherFactory creates a watcher for configuration and token changes.

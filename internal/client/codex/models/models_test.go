@@ -390,7 +390,7 @@ func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) 
 
 	resp := BuildResponse([]map[string]any{
 		{"id": "deepseek-v4-flash", "max_context_length": wantOverride},
-		{"id": "deepseek-v4-pro"},
+		{"id": "custom-pro-model"},
 		{"id": "gpt-5.5", "max_context_length": wantOverride},
 	}, nil, false)
 	models, ok := resp["models"].([]map[string]any)
@@ -408,7 +408,7 @@ func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) 
 		want int
 	}{
 		{slug: "deepseek-v4-flash", want: wantOverride},
-		{slug: "deepseek-v4-pro", want: wantDefault},
+		{slug: "custom-pro-model", want: wantDefault},
 		{slug: "gpt-5.5", want: wantOverride},
 	} {
 		entry := bySlug[testCase.slug]

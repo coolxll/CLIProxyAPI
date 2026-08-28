@@ -644,6 +644,48 @@ func (m GeminiModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m GeminiModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
+// LingmaKey represents the configuration for a Lingma API credential.
+type LingmaKey struct {
+	// APIKey is the explicit CosyKey for accessing Lingma API services.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// MachineID is the Lingma client machine identifier used for signed requests.
+	MachineID string `yaml:"machine-id,omitempty" json:"machine-id,omitempty"`
+
+	// UID is the Lingma user ID required by signed requests.
+	UID string `yaml:"uid,omitempty" json:"uid,omitempty"`
+
+	// OrganizationID is the Lingma organization ID used by signed requests.
+	OrganizationID string `yaml:"organization-id,omitempty" json:"organization-id,omitempty"`
+
+	// EncryptUserInfo is the encrypted Lingma user info payload used in request signatures.
+	EncryptUserInfo string `yaml:"encrypt-user-info,omitempty" json:"encrypt-user-info,omitempty"`
+
+	// UserType is the Lingma user type returned by credential import.
+	UserType string `yaml:"user-type,omitempty" json:"user-type,omitempty"`
+
+	// SecurityOAuthToken is the Lingma security OAuth token used during refresh.
+	SecurityOAuthToken string `yaml:"security-oauth-token,omitempty" json:"security-oauth-token,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential (e.g., "teamA/dashscope_qmodel").
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// ProxyURL optionally overrides the global proxy for this API key.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+}
+
+func (k LingmaKey) GetAPIKey() string { return k.APIKey }
+
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
 type OpenAICompatibility struct {

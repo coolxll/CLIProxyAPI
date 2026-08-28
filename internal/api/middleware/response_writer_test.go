@@ -159,8 +159,55 @@ func TestFinalizeStreamingWritesAPIWebsocketTimeline(t *testing.T) {
 	}
 }
 
+func TestFinalizeStreamingForcesErrorLogWhenLoggerDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	logger := &testRequestLogger{enabled: false}
+	wrapper := &ResponseWriterWrapper{
+		ResponseWriter: c.Writer,
+		logger:         logger,
+		requestInfo: &RequestInfo{
+			URL:       "/v1/chat/completions",
+			Method:    http.MethodPost,
+			Headers:   map[string][]string{"Content-Type": {"application/json"}},
+			Body:      []byte(`{"stream":true}`),
+			RequestID: "req-stream-error",
+			Timestamp: time.Date(2026, time.June, 30, 10, 0, 0, 0, time.UTC),
+		},
+		isStreaming:    true,
+		logOnErrorOnly: true,
+		statusCode:     http.StatusOK,
+		headers:        map[string][]string{"Content-Type": {"text/event-stream"}},
+	}
+	c.Set("API_RESPONSE_ERROR", []*interfaces.ErrorMessage{{
+		StatusCode: http.StatusInternalServerError,
+		Error:      errors.New("stream error: stream ID 17; INTERNAL_ERROR; received from peer"),
+	}})
+
+	if err := wrapper.Finalize(c); err != nil {
+		t.Fatalf("Finalize error: %v", err)
+	}
+	if !logger.logRequestCalled {
+		t.Fatal("expected forced non-stream request log to be written")
+	}
+	if !logger.lastForceLog {
+		t.Fatal("expected forced error log flag to be set")
+	}
+	if len(logger.lastAPIResponseErrors) != 1 {
+		t.Fatalf("api response errors = %d, want 1", len(logger.lastAPIResponseErrors))
+	}
+	if got := logger.lastAPIResponseErrors[0].Error.Error(); got != "stream error: stream ID 17; INTERNAL_ERROR; received from peer" {
+		t.Fatalf("api response error = %q", got)
+	}
+}
+
 type testRequestLogger struct {
-	enabled bool
+	enabled               bool
+	logRequestCalled      bool
+	lastForceLog          bool
+	lastAPIResponseErrors []*interfaces.ErrorMessage
 }
 
 func (l *testRequestLogger) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
@@ -173,6 +220,21 @@ func (l *testRequestLogger) LogStreamingRequest(string, string, map[string][]str
 
 func (l *testRequestLogger) IsEnabled() bool {
 	return l.enabled
+}
+
+func (l *testRequestLogger) LogRequestWithOptions(_ string, _ string, _ map[string][]string, _ []byte, _ int, _ map[string][]string, _ []byte, _ []byte, _ []byte, _ []byte, _ []byte, _ []*interfaces.ErrorMessage, _ bool, _ string, _ time.Time, _ time.Time) error {
+	return nil
+}
+
+func (l *testRequestLogger) LogRequestWithOptionsAndSources(_ string, _ string, _ map[string][]string, _ []byte, _ int, _ map[string][]string, _ []byte, _ []byte, _ *logging.FileBodySource, _ []byte, _ []byte, _ []byte, _ *logging.FileBodySource, _ []*interfaces.ErrorMessage, _ bool, _ string, _ time.Time, _ time.Time) error {
+	return nil
+}
+
+func (l *testRequestLogger) LogRequestWithOptionsAndAllSources(_ string, _ string, _ map[string][]string, _ []byte, _ int, _ map[string][]string, _ []byte, _ []byte, _ *logging.FileBodySource, _ []byte, _ *logging.FileBodySource, _ []byte, _ *logging.FileBodySource, _ []byte, _ *logging.FileBodySource, apiResponseErrors []*interfaces.ErrorMessage, force bool, _ string, _ time.Time, _ time.Time) error {
+	l.logRequestCalled = true
+	l.lastForceLog = force
+	l.lastAPIResponseErrors = append([]*interfaces.ErrorMessage(nil), apiResponseErrors...)
+	return nil
 }
 
 type testStreamingLogWriter struct {

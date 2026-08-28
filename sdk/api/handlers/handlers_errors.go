@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -11,7 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"golang.org/x/net/context"
 )
 
 func statusFromError(err error) int {
@@ -167,4 +169,71 @@ func (h *BaseAPIHandler) LoggingAPIResponseError(ctx context.Context, err *inter
 			}
 		}
 	}
+}
+
+const statusClientClosedRequest = 499
+
+// transportStatusError is a clean, client-facing translation of a transport
+// lifecycle failure such as client cancellation, upstream timeout, unexpected
+// EOF, or HTTP/2 stream reset.
+type transportStatusError struct {
+	code int
+	msg  string
+}
+
+func (e transportStatusError) Error() string   { return e.msg }
+func (e transportStatusError) StatusCode() int { return e.code }
+
+// translateTransportError converts recognizable transport errors into clean
+// client-facing messages. Errors that already carry an HTTP status and
+// unrecognized failures are returned unchanged.
+//
+// Note: detection is by string match, not errors.As against
+// golang.org/x/net/http2.StreamError. The stdlib net/http HTTP/2 client (used
+// by http.DefaultTransport, the transport non-fingerprint upstreams go through)
+// bundles its own unexported http2StreamError type, which is a distinct
+// concrete type from x/net's exported StreamError — errors.As cannot match
+// across them. The string format is Go's internal StreamError.Error():
+// "stream error: stream ID N; <code>; received from peer" (peer-initiated
+// resets carry the "received from peer" cause). If Go changes this wording,
+// the translation silently no-ops and the raw error reaches the client again.
+func translateTransportError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return transportStatusError{
+			code: statusClientClosedRequest,
+			msg:  "client closed request while waiting for upstream response",
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return transportStatusError{
+			code: http.StatusGatewayTimeout,
+			msg:  "upstream timeout while waiting for response data",
+		}
+	}
+	var timeoutErr net.Error
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return transportStatusError{
+			code: http.StatusGatewayTimeout,
+			msg:  "upstream timeout while waiting for response data",
+		}
+	}
+	if statusFromError(err) > 0 {
+		return err
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || strings.TrimSpace(err.Error()) == "unexpected EOF" {
+		return transportStatusError{
+			code: http.StatusBadGateway,
+			msg:  "upstream connection closed unexpectedly",
+		}
+	}
+	if s := err.Error(); strings.Contains(s, "stream error: stream ID") && strings.Contains(s, "received from peer") {
+		return transportStatusError{
+			code: http.StatusBadGateway,
+			msg:  "upstream stream interrupted (HTTP/2 stream reset by peer)",
+		}
+	}
+	return err
 }

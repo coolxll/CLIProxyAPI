@@ -134,6 +134,29 @@ redis-usage-queue-retention-seconds: 60
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
 
+# Opt out of HTTP/1.1 forcing for upstream channels that use it by default (currently Lingma).
+# By default (false) those channels use HTTP/1.1 to avoid mid-stream HTTP/2 RST_STREAM errors from
+# the upstream surfacing as raw "stream error: stream ID N; INTERNAL_ERROR" messages to clients.
+# Set true to negotiate HTTP/2 via ALPN as before.
+disable-http11: false
+
+# One-shot fallback for large Lingma gm51model thinking requests.
+# When enabled, a request canceled before any upstream response data is remembered
+# by request fingerprint. The next identical request within the TTL runs once with
+# reasoning disabled (agent_common), then the fallback marker is consumed.
+lingma-thinking-fallback:
+  enabled: false
+  ttl: "2m"
+
+# Same-request recovery for transient Lingma upstream failures. Recovery is
+# attempted only before a complete non-stream response or any translated stream
+# chunk is exposed downstream. Retries use capped exponential backoff with full
+# jitter and honor Retry-After. No network/read deadline is added after connect.
+lingma-upstream-recovery:
+  disabled: false
+  max-attempts: 3
+  base-delay: "200ms"
+
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
 
@@ -353,6 +376,21 @@ nonstream-keepalive-interval: 0
 #       - "*-preview"          # wildcard matching suffix (e.g. gemini-3-pro-preview)
 #       - "*flash*"            # wildcard matching substring (e.g. gemini-2.5-flash-lite)
 #   - api-key: "AIzaSy...02"
+
+# Lingma API keys (Aliyun)
+# lingma-api-key:
+#   - api-key: "CosyKey..." # explicit CosyKey from an imported Lingma credential
+#     uid: "user-id" # required for config-defined credentials
+#     machine-id: "machine-id" # required for signed requests
+#     organization-id: "org-id" # optional, but usually present in imported credentials
+#     encrypt-user-info: "..." # optional, but usually present in imported credentials
+#     security-oauth-token: "..." # optional; used for refresh when available
+#     prefix: "test" # optional: require calls like "test/dashscope_qmodel" to target this credential
+#     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
+#     proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
+#     # proxy-url: "direct" # optional: explicit direct connect for this credential
+#     excluded-models:
+#       - "mmodel"         # exclude specific models from this provider (exact match)
 
 # Native Interactions API keys
 # These keys are used only for direct /v1beta/interactions execution. Regular gemini-api-key entries still

@@ -29,6 +29,7 @@ type staticModelsJSON struct {
 	CodexPro    []*ModelInfo `json:"codex-pro"`
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
+	Lingma      []*ModelInfo `json:"lingma"`
 	XAI         []*ModelInfo `json:"xai"`
 }
 
@@ -77,9 +78,19 @@ func GetKimiModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Kimi)
 }
 
+// GetTraeModels returns the standard Trae model definitions.
+func GetTraeModels() []*ModelInfo {
+	return cloneModelInfos(traeModelInfos())
+}
+
 // GetAntigravityModels returns the standard Antigravity model definitions.
 func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
+}
+
+// GetLingmaModels returns the standard Lingma model definitions.
+func GetLingmaModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Lingma)
 }
 
 // AntigravityWebSearchModelFor returns the Antigravity model that should run a
@@ -209,6 +220,64 @@ func xaiBuiltinVideoModelInfo() *ModelInfo {
 	}
 }
 
+func traeModelInfos() []*ModelInfo {
+	models := []struct {
+		id          string
+		displayName string
+		context     int
+		maxTokens   int
+		multimodal  bool
+	}{
+		// V1 raw chat models
+		{"seed_m8", "Doubao 1.5 Pro", 28000, 65536, false},
+		{"deepseek-R1", "DeepSeek Reasoner R1", 40000, 65536, false},
+		{"deepseek-V3", "DeepSeek V3", 40000, 65536, false},
+		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000, 65536, false},
+		// V2 synthetic
+		{"no_thinking_model", "Trae No Thinking Model", 40000, 65536, false},
+		// V3 core models
+		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 100000, 16000, false},
+		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash", 100000, 16000, false},
+		{"Doubao-Seed-2.0-Code", "Doubao-Seed-2.0-Code", 100000, 16000, true},
+		{"glm-5.1", "GLM-5.1", 100000, 16000, false},
+		{"glm-5v-turbo", "GLM-5v-Turbo", 100000, 16000, true},
+		{"kimi-k2.6", "Kimi K2.6", 100000, 16000, true},
+		{"qwen-3.6-plus", "Qwen 3.6 Plus", 100000, 16000, true},
+		{"qwen3-coder", "Qwen3 Coder", 100000, 16000, false},
+		{"minimax-m2.7", "MiniMax M2.7", 100000, 16000, false},
+		// V3 optional models
+		{"glm-5", "GLM-5", 100000, 16000, false},
+		{"glm-4.7", "GLM-4.7", 100000, 16000, false},
+		{"kimi-k2.5", "Kimi K2.5", 100000, 16000, true},
+		{"kimi-k2", "Kimi K2", 100000, 16000, false},
+		{"qwen-3.5", "Qwen 3.5", 100000, 16000, true},
+		{"doubao_1_8", "Doubao 1.8", 100000, 16000, true},
+		{"Doubao_1_6", "Doubao 1.6", 100000, 16000, true},
+		{"minimax-m2.5", "MiniMax M2.5", 100000, 16000, false},
+	}
+
+	out := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		info := &ModelInfo{
+			ID:                  model.id,
+			Object:              "model",
+			Created:             1704067200,
+			OwnedBy:             "trae",
+			Type:                "trae",
+			DisplayName:         model.displayName,
+			Name:                model.id,
+			ContextLength:       model.context,
+			MaxCompletionTokens: model.maxTokens,
+			SupportedParameters: []string{"tools"},
+		}
+		if model.multimodal {
+			info.SupportedInputModalities = []string{"text", "image"}
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 func xaiBuiltinVideo15ModelInfo() *ModelInfo {
 	return &ModelInfo{
 		ID:          xaiBuiltinVideo15ModelID,
@@ -304,7 +373,9 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - aistudio
 //   - codex
 //   - kimi
+//   - trae
 //   - antigravity
+//   - lingma
 //   - xai
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -323,8 +394,12 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetCodexProModels()
 	case "kimi":
 		return GetKimiModels()
+	case "trae":
+		return GetTraeModels()
 	case "antigravity":
 		return GetAntigravityModels()
+	case "lingma":
+		return GetLingmaModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
 	default:
@@ -347,12 +422,14 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.AIStudio,
 		data.CodexPro,
 		data.Kimi,
+		traeModelInfos(),
 		data.Antigravity,
+		data.Lingma,
 		data.XAI,
 	}
 	for _, models := range allModels {
 		for _, m := range models {
-			if m != nil && m.ID == modelID {
+			if m != nil && strings.EqualFold(m.ID, modelID) {
 				return cloneModelInfo(m)
 			}
 		}

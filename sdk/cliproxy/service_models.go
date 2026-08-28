@@ -155,6 +155,17 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "trae":
+		models = registry.GetTraeModels()
+		models = applyExcludedModels(models, excluded)
+	case "lingma":
+		models = registry.GetLingmaModels()
+		if entry := s.resolveConfigLingmaKey(a); entry != nil {
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
@@ -492,6 +503,27 @@ func (s *Service) resolveConfigXAIKey(auth *coreauth.Auth) *config.XAIKey {
 		return nil
 	}
 	return resolveConfigCodexStyleKey(auth, s.cfg.XAIKey, false)
+}
+
+func (s *Service) resolveConfigLingmaKey(auth *coreauth.Auth) *config.LingmaKey {
+	if auth == nil || s == nil || s.cfg == nil {
+		return nil
+	}
+	if entry := configEntryForAuthIndex(auth, s.cfg.LingmaKey); entry != nil {
+		return entry
+	}
+	var attrKey string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+	}
+	for i := range s.cfg.LingmaKey {
+		entry := &s.cfg.LingmaKey[i]
+		cfgKey := strings.TrimSpace(entry.APIKey)
+		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
+			return entry
+		}
+	}
+	return nil
 }
 
 func resolveConfigCodexStyleKey(auth *coreauth.Auth, entries []config.CodexKey, validateIndexCredentials bool) *config.CodexKey {

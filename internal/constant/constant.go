@@ -25,6 +25,9 @@ const (
 	// Antigravity represents the Antigravity response format identifier.
 	Antigravity = "antigravity"
 
+	// Lingma represents the Lingma provider identifier.
+	Lingma = "lingma"
+
 	// Interactions represents the Google Interactions API format identifier.
 	Interactions = "interactions"
 )

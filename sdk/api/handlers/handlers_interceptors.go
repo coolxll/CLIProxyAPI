@@ -267,9 +267,22 @@ func finalInterceptorHeaders(current, intercepted http.Header) http.Header {
 
 func downstreamHeadersFromExecutor(headers http.Header, passthrough bool) http.Header {
 	if !passthrough {
-		return nil
+		return proxyOwnedResponseHeaders(headers)
 	}
 	return FilterUpstreamHeaders(headers)
+}
+
+func proxyOwnedResponseHeaders(headers http.Header) http.Header {
+	if headers == nil {
+		return nil
+	}
+	value := headers.Values(coreexecutor.FallbackHeaderName)
+	if len(value) == 0 {
+		return nil
+	}
+	result := make(http.Header)
+	result[http.CanonicalHeaderKey(coreexecutor.FallbackHeaderName)] = append([]string(nil), value...)
+	return result
 }
 
 func downstreamHeadersAfterInterceptors(baseRaw, finalRaw http.Header, passthrough bool) http.Header {

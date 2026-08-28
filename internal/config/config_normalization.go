@@ -390,3 +390,29 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 	}
 	return out
 }
+
+// SanitizeLingmaKeys trims and validates Lingma API key entries.
+func (cfg *Config) SanitizeLingmaKeys() {
+	if cfg == nil || len(cfg.LingmaKey) == 0 {
+		return
+	}
+	out := make([]LingmaKey, 0, len(cfg.LingmaKey))
+	for i := range cfg.LingmaKey {
+		entry := cfg.LingmaKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		entry.MachineID = strings.TrimSpace(entry.MachineID)
+		entry.UID = strings.TrimSpace(entry.UID)
+		entry.OrganizationID = strings.TrimSpace(entry.OrganizationID)
+		entry.EncryptUserInfo = strings.TrimSpace(entry.EncryptUserInfo)
+		entry.UserType = strings.TrimSpace(entry.UserType)
+		entry.SecurityOAuthToken = strings.TrimSpace(entry.SecurityOAuthToken)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		if entry.APIKey == "" && entry.SecurityOAuthToken == "" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	cfg.LingmaKey = out
+}

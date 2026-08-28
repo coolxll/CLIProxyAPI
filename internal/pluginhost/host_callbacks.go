@@ -15,22 +15,24 @@ import (
 )
 
 type rpcHostHTTPRequest struct {
-	HTTPClientID   string       `json:"http_client_id,omitempty"`
-	HostCallbackID string       `json:"host_callback_id,omitempty"`
-	Method         string       `json:"method,omitempty"`
-	URL            string       `json:"url,omitempty"`
-	Headers        httpHeader   `json:"headers,omitempty"`
-	Body           []byte       `json:"body,omitempty"`
-	Request        *httpRequest `json:"request,omitempty"`
+	HTTPClientID   string                         `json:"http_client_id,omitempty"`
+	HostCallbackID string                         `json:"host_callback_id,omitempty"`
+	Method         string                         `json:"method,omitempty"`
+	URL            string                         `json:"url,omitempty"`
+	Headers        httpHeader                     `json:"headers,omitempty"`
+	Body           []byte                         `json:"body,omitempty"`
+	Transport      pluginapi.HTTPTransportOptions `json:"transport,omitempty"`
+	Request        *httpRequest                   `json:"request,omitempty"`
 }
 
 type httpHeader map[string][]string
 
 type httpRequest struct {
-	Method  string     `json:"method,omitempty"`
-	URL     string     `json:"url,omitempty"`
-	Headers httpHeader `json:"headers,omitempty"`
-	Body    []byte     `json:"body,omitempty"`
+	Method    string                         `json:"method,omitempty"`
+	URL       string                         `json:"url,omitempty"`
+	Headers   httpHeader                     `json:"headers,omitempty"`
+	Body      []byte                         `json:"body,omitempty"`
+	Transport pluginapi.HTTPTransportOptions `json:"transport,omitempty"`
 }
 
 type rpcHostHTTPStreamResponse struct {
@@ -145,7 +147,8 @@ func (h *Host) callHostHTTPDo(ctx context.Context, request []byte) ([]byte, erro
 		return nil, errDecode
 	}
 	ctx = h.resolveCallbackContext(callbackID, ctx)
-	resp, errDo := h.newHTTPClient(nil).Do(ctx, httpReq)
+	provider, auth := h.callbackContextProviderAndAuth(callbackID)
+	resp, errDo := h.newHTTPClient(auth, provider).Do(ctx, httpReq)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -162,7 +165,8 @@ func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte
 		ctx = context.Background()
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
-	resp, errDo := h.newHTTPClient(nil).DoStream(streamCtx, httpReq)
+	provider, auth := h.callbackContextProviderAndAuth(callbackID)
+	resp, errDo := h.newHTTPClient(auth, provider).DoStream(streamCtx, httpReq)
 	if errDo != nil {
 		cancel()
 		return nil, errDo
@@ -228,17 +232,19 @@ func decodeHostHTTPRequestWithCallbackID(raw []byte) (pluginapi.HTTPRequest, str
 	}
 	if req.Request != nil {
 		return pluginapi.HTTPRequest{
-			Method:  req.Request.Method,
-			URL:     req.Request.URL,
-			Headers: map[string][]string(req.Request.Headers),
-			Body:    append([]byte(nil), req.Request.Body...),
+			Method:    req.Request.Method,
+			URL:       req.Request.URL,
+			Headers:   map[string][]string(req.Request.Headers),
+			Body:      append([]byte(nil), req.Request.Body...),
+			Transport: req.Request.Transport,
 		}, req.HostCallbackID, nil
 	}
 	return pluginapi.HTTPRequest{
-		Method:  req.Method,
-		URL:     req.URL,
-		Headers: map[string][]string(req.Headers),
-		Body:    append([]byte(nil), req.Body...),
+		Method:    req.Method,
+		URL:       req.URL,
+		Headers:   map[string][]string(req.Headers),
+		Body:      append([]byte(nil), req.Body...),
+		Transport: req.Transport,
 	}, req.HostCallbackID, nil
 }
 
@@ -247,7 +253,7 @@ func (h *Host) callHostStreamEmit(ctx context.Context, request []byte) ([]byte, 
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode stream emit request: %w", errUnmarshal)
 	}
-	chunk := pluginapi.ExecutorStreamChunk{Payload: append([]byte(nil), req.Payload...)}
+	chunk := pluginapi.ExecutorStreamChunk{Payload: append([]byte(nil), req.Payload...), Usage: clonePluginUsageDetail(req.Usage)}
 	if req.Error != "" {
 		chunk.Err = fmt.Errorf("%s", req.Error)
 	}

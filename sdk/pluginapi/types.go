@@ -774,6 +774,14 @@ type HostAuthSaveResponse struct {
 	Path string `json:"path"`
 }
 
+// HTTPTransportOptions controls provider-specific transport behavior while the
+// host retains proxy policy, request logging, and connection lifecycle.
+type HTTPTransportOptions struct {
+	// ForceHTTP11 disables HTTP/2 negotiation for upstreams that are unstable
+	// when streaming over HTTP/2.
+	ForceHTTP11 bool `json:"force_http_1_1,omitempty"`
+}
+
 // HTTPRequest describes an upstream HTTP request issued through the host.
 type HTTPRequest struct {
 	// Method is the HTTP method.
@@ -784,6 +792,8 @@ type HTTPRequest struct {
 	Headers http.Header
 	// Body contains the raw request body.
 	Body []byte
+	// Transport contains optional provider-specific transport behavior.
+	Transport HTTPTransportOptions `json:"transport,omitempty"`
 }
 
 // HTTPResponse describes a non-streaming host HTTP response.
@@ -892,6 +902,8 @@ type ExecutorResponse struct {
 	Headers http.Header
 	// Metadata is an extension bag for executor-specific response data.
 	Metadata map[string]any
+	// Usage carries provider-native token accounting for host usage sinks.
+	Usage *UsageDetail `json:"usage,omitempty"`
 }
 
 // ExecutorStreamResponse returns a streaming executor result.
@@ -908,6 +920,9 @@ type ExecutorStreamChunk struct {
 	Payload []byte
 	// Err reports a stream error associated with this chunk.
 	Err error
+	// Usage carries the latest complete provider token accounting. A usage-only
+	// chunk may omit Payload; the host consumes it without forwarding an empty frame.
+	Usage *UsageDetail `json:"usage,omitempty"`
 }
 
 // RequestTranslator converts canonical request payloads to another format.

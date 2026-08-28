@@ -1,0 +1,14 @@
+schema-version: 1
+id: lingma-plugin
+name: Lingma Provider
+description: Lingma authentication, model discovery, OpenAI and Claude compatibility, streaming, and usage support.
+author: CLIProxyAPI contributors
+version: 0.2.0
+release-tag: v0.2.0
+repository: https://github.com/coolxll/CLIProxyAPI
+homepage: https://github.com/coolxll/CLIProxyAPI/tree/codex/lingma-trae-provider-plugins/provider-plugins
+tags:
+  - provider
+  - lingma
+install:
+  type: github-release

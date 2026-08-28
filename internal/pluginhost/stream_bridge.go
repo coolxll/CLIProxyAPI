@@ -44,9 +44,10 @@ type streamBridgeClose struct {
 }
 
 type rpcStreamEmitRequest struct {
-	StreamID string `json:"stream_id"`
-	Payload  []byte `json:"payload,omitempty"`
-	Error    string `json:"error,omitempty"`
+	StreamID string                 `json:"stream_id"`
+	Payload  []byte                 `json:"payload,omitempty"`
+	Error    string                 `json:"error,omitempty"`
+	Usage    *pluginapi.UsageDetail `json:"usage,omitempty"`
 }
 
 type rpcStreamCloseRequest struct {

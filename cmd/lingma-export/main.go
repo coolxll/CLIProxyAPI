@@ -24,11 +24,13 @@ func main() {
 	var authsDir string
 	var configPath string
 	var manualName string
+	var pluginOutput bool
 
 	flag.StringVar(&outPath, "out", defaultOutPath, "Output JSON file path (default: <auth-dir>/<name>.json)")
 	flag.StringVar(&authsDir, "auths-dir", "", "Directory for auth JSON files (overrides config auth-dir)")
 	flag.StringVar(&configPath, "config", "", "Config file path (default: config.yaml in working dir)")
 	flag.StringVar(&manualName, "name", "", "Manual name label (auto-generated if empty)")
+	flag.BoolVar(&pluginOutput, "plugin", false, "Export for the lingma-plugin shadow provider")
 	flag.Parse()
 
 	// Resolve the auth directory from config (or -auths-dir override), so the
@@ -159,8 +161,12 @@ func main() {
 		expiresAt = time.Now().Add(24 * time.Hour)
 	}
 
+	providerType := "lingma"
+	if pluginOutput {
+		providerType = "lingma-plugin"
+	}
 	exportData := map[string]interface{}{
-		"type":                 "lingma",
+		"type":                 providerType,
 		"machine_id":           machineID,
 		"uid":                  user.UID,
 		"organization_id":      user.OrganizationID,

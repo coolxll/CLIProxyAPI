@@ -18,10 +18,6 @@ var (
 )
 
 func init() {
-	for i := 0; i < 256; i++ {
-		s2c[i] = 0
-		c2s[i] = 0
-	}
 	for i := 0; i < 64; i++ {
 		s2c[StdAlphabet[i]] = CustomAlphabet[i]
 		c2s[CustomAlphabet[i]] = StdAlphabet[i]

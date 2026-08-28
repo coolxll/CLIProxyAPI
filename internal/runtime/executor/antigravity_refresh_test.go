@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"golang.org/x/sync/singleflight"
 )
@@ -34,7 +33,13 @@ func useAntigravityRefreshTestTransport(t *testing.T, targetHost string) {
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 		ForceAttemptHTTP2: false,
 	}
-	helps.SetHTTP11TransportForTest(t, transport)
+	originalBase := antigravityBaseTransport
+	antigravityBaseTransport = transport
+	antigravityTransports.Purge()
+	t.Cleanup(func() {
+		antigravityBaseTransport = originalBase
+		antigravityTransports.Purge()
+	})
 }
 
 func TestAntigravityRefresh_DeduplicatesConcurrentRefresh(t *testing.T) {

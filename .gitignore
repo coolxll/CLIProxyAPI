@@ -8,7 +8,7 @@ config.yaml
 
 # Generated content
 bin/*
-logs/*
+/logs
 conv/*
 temp/*
 refs/*
@@ -33,6 +33,7 @@ docs/*
 AGENTS.md
 CLAUDE.md
 GEMINI.md
+AGENTS.override.md
 
 # Tooling metadata
 .vscode/*
@@ -45,6 +46,7 @@ GEMINI.md
 .serena/*
 .agent/*
 .agents
+.pi
 .agents/*
 .opencode/*
 .idea/*
@@ -52,12 +54,12 @@ GEMINI.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+.gocache/
+.gitnexus/
 
 # macOS
 .DS_Store
 ._*
-.gocache/
-
 lingma_api_manual_test.go
 
 # --- Local/dev files (remove this block to commit these) ---
@@ -70,3 +72,9 @@ tasks/
 .tmp-gocache/
 start-server.sh
 checkpoint.md
+
+# docker
+docker-compose.override.yml
+
+# Local LLM Wiki vault
+.llm-wiki

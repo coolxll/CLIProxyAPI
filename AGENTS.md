@@ -24,10 +24,11 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 
 ## Architecture
 - `cmd/server/` — Server entrypoint
-- `internal/api/` — Gin HTTP API (routes, middleware, modules)
-- `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
+- `cmd/trae-export/`, `cmd/lingma-export/` — Export Trae/Lingma auth material from a config
+- `cmd/fetch_antigravity_models/`, `cmd/fetch_codex_models/` — Fetch and refresh provider model lists
+- `internal/api/` — Gin HTTP API (server, routes, middleware, handlers; protocol multiplexer for HTTP/Redis-queue)
 - `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
-- `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
+- `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket). Helpers live under `internal/runtime/executor/helps/` (e.g. `http11.go` per-proxy HTTP/1.1 transport cache, `utls_client.go`, session/token/user caches).
 - `internal/translator/` — Provider protocol translators (and shared `common`)
 - `internal/registry/` — Model registry + remote updater (`StartModelsUpdater`); `--local-model` disables remote updates
 - `internal/store/` — Storage implementations and secret resolution
@@ -35,9 +36,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `internal/cache/` — Request signature caching
 - `internal/watcher/` — Config hot-reload and watchers
 - `internal/wsrelay/` — WebSocket relay sessions
-- `internal/usage/` — Usage and token accounting
-- `internal/tui/` — Bubbletea terminal UI (`--tui`, `--standalone`)
-- `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline)
+- `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline/auth/executor/usage)
+- `sdk/api/handlers/` — Provider-facing request handlers and stream forwarding (records streaming terminal errors to gin context for error logging)
 - `test/` — Cross-module integration tests
 
 ## Code Conventions

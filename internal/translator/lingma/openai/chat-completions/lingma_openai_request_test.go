@@ -225,6 +225,23 @@ func TestConvertOpenAIRequestToLingmaAgentCommonModel(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIRequestToLingmaNormalizesDeveloperRole(t *testing.T) {
+	raw := []byte(`{"model":"qmodel_latest","messages":[{"role":"developer","content":"You are a helpful assistant."},{"role":"user","content":"Hi"}],"stream":true}`)
+	payload := decodeLingmaRequestPayload(t, ConvertOpenAIRequestToLingma("qmodel_latest", raw, true))
+
+	messages, ok := payload["messages"].([]any)
+	if !ok || len(messages) < 2 {
+		t.Fatalf("messages = %T (%v), want array of length >= 2", payload["messages"], payload["messages"])
+	}
+	firstMsg, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first message = %T, want object", messages[0])
+	}
+	if got := firstMsg["role"]; got != "system" {
+		t.Fatalf("messages[0].role = %v, want system", got)
+	}
+}
+
 func decodeLingmaRequestPayload(t *testing.T, raw []byte) map[string]any {
 	t.Helper()
 	var payload map[string]any

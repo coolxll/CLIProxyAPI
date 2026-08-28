@@ -47,6 +47,9 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 	var lingmaMessages []any
 	res.Get("messages").ForEach(func(key, value gjson.Result) bool {
 		role := value.Get("role").String()
+		if strings.EqualFold(strings.TrimSpace(role), "developer") {
+			role = "system"
+		}
 		msg := map[string]any{
 			"role": role,
 		}

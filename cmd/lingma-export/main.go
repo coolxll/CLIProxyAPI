@@ -12,17 +12,74 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
+
+const defaultOutPath = "lingma_import.json"
 
 func main() {
 	var outPath string
+	var authsDir string
+	var configPath string
 	var manualName string
 	var pluginOutput bool
 
-	flag.StringVar(&outPath, "out", "lingma_import.json", "Output JSON file path")
+	flag.StringVar(&outPath, "out", defaultOutPath, "Output JSON file path (default: <auth-dir>/<name>.json)")
+	flag.StringVar(&authsDir, "auths-dir", "", "Directory for auth JSON files (overrides config auth-dir)")
+	flag.StringVar(&configPath, "config", "", "Config file path (default: config.yaml in working dir)")
 	flag.StringVar(&manualName, "name", "", "Manual name label (auto-generated if empty)")
 	flag.BoolVar(&pluginOutput, "plugin", false, "Export for the lingma-plugin shadow provider")
 	flag.Parse()
+
+	// Resolve the auth directory from config (or -auths-dir override), so the
+	// generated importable JSON lands directly where the proxy reads auth files.
+	authsDirOverridden := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "auths-dir" {
+			authsDirOverridden = true
+		}
+	})
+
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot get working directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(configPath) == "" {
+		configPath = filepath.Join(wd, "config.yaml")
+	}
+	// Load the config read-only: we only need cfg.AuthDir, so parse the bytes
+	// directly via ParseConfigBytes (which never persists to disk) instead of
+	// LoadConfigOptional (which hashes and writes back a plaintext
+	// remote-management secret-key). A missing config file is tolerated — the
+	// tool falls back to the default auth dir — so it stays self-contained.
+	cfg := &config.Config{}
+	if data, errRead := os.ReadFile(configPath); errRead == nil {
+		if parsed, errParse := config.ParseConfigBytes(data); errParse == nil {
+			cfg = parsed
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: failed to parse config file %s: %v (using default auth dir)\n", configPath, errParse)
+		}
+	} else if !os.IsNotExist(errRead) {
+		fmt.Fprintf(os.Stderr, "Warning: failed to read config file %s: %v (using default auth dir)\n", configPath, errRead)
+	}
+
+	if !authsDirOverridden {
+		authsDir = cfg.AuthDir
+	} else if strings.TrimSpace(authsDir) != "" && !strings.HasPrefix(strings.TrimSpace(authsDir), "~") && !filepath.IsAbs(authsDir) {
+		authsDir = filepath.Join(wd, authsDir)
+	}
+	if authsDir, err = util.ResolveAuthDir(authsDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve auth directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(authsDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to create auth directory %s: %v\n", authsDir, err)
+		os.Exit(1)
+	}
 
 	dir, err := findAuthDir()
 	if err != nil {
@@ -130,9 +187,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	if outPath == "lingma_import.json" {
-		// If user didn't change the default, use the automatic name
-		outPath = sanitizeLingmaFileComponent(finalName) + ".json"
+	if outPath == defaultOutPath {
+		// Default: write directly into the resolved auth directory using the
+		// sanitized name, so the file is immediately usable by the proxy.
+		outPath = filepath.Join(authsDir, sanitizeLingmaFileComponent(finalName)+".json")
+	} else if strings.HasPrefix(outPath, "~") {
+		// A -out path beginning with ~ is expanded to the user's home directory,
+		// matching how authsDir is resolved, so os.WriteFile does not receive a
+		// literal "~/..." path.
+		if expanded, errExpand := util.ResolveAuthDir(outPath); errExpand == nil {
+			outPath = expanded
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: failed to resolve output path %s: %v\n", outPath, errExpand)
+			os.Exit(1)
+		}
+	} else if !filepath.IsAbs(outPath) {
+		// Relative -out paths are resolved against the auth directory so they
+		// still land inside the auth tree by default.
+		outPath = filepath.Join(authsDir, outPath)
 	}
 
 	if err := os.WriteFile(outPath, outBytes, 0600); err != nil {
@@ -254,6 +326,9 @@ func sanitizeLingmaFileComponent(value string) string {
 	value = strings.Trim(value, "-_.")
 	for strings.Contains(value, "--") {
 		value = strings.ReplaceAll(value, "--", "-")
+	}
+	if value == "" {
+		return "lingma"
 	}
 	return value
 }

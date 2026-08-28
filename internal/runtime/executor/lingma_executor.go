@@ -57,7 +57,7 @@ type lingmaThinkingFallbackDecision struct {
 
 func inspectLingmaRequest(body []byte, modelName string) lingmaRequestProfile {
 	profile := lingmaRequestProfile{BodyBytes: len(body)}
-	if !strings.EqualFold(strings.TrimSpace(modelName), "gm51model") || len(body) == 0 || !gjson.ValidBytes(body) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return profile
 	}
 

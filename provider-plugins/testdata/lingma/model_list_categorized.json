@@ -1,0 +1,11 @@
+{
+  "chat": [
+    {"key": "synthetic_chat_model", "display_name": "Synthetic Chat Model"}
+  ],
+  "developer": {
+    "dev": {"modelId": "synthetic_dev_model", "displayName": "Synthetic Developer Model"}
+  },
+  "assistant": [
+    {"key": "synthetic_assistant", "display_name": "Synthetic Assistant"}
+  ]
+}

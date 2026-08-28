@@ -85,12 +85,29 @@ func (c *hostHTTPClient) DoStream(ctx context.Context, req pluginapi.HTTPRequest
 	chunks := make(chan pluginapi.HTTPStreamChunk)
 	go func() {
 		defer close(chunks)
+		var closeOnce sync.Once
+		var errClose error
+		closeBody := func() {
+			closeOnce.Do(func() {
+				errClose = resp.Body.Close()
+			})
+		}
+		readDone := make(chan struct{})
+		defer close(readDone)
 		defer func() {
-			if errClose := resp.Body.Close(); errClose != nil {
+			closeBody()
+			if errClose != nil {
 				log.Warnf("pluginhost: stream response body close error: %v", errClose)
 			}
 			if cleanup != nil {
 				cleanup()
+			}
+		}()
+		go func() {
+			select {
+			case <-ctx.Done():
+				closeBody()
+			case <-readDone:
 			}
 		}()
 		buf := make([]byte, 32*1024)
@@ -198,7 +215,15 @@ func (h *Host) currentRuntimeConfig() *config.Config {
 }
 
 func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *config.Config, req pluginapi.HTTPRequest, httpReq *http.Request) (*http.Client, func(), error) {
+	if req.Transport.ForceHTTP11 && (req.WireProfile == nil || (!req.WireProfile.DisableAutoCompression && len(req.WireProfile.HeaderProfile) == 0)) {
+		return helps.NewHTTP11Client(ctx, cfg, c.auth, 0, true), nil, nil
+	}
 	profile := req.WireProfile
+	if req.Transport.ForceHTTP11 && profile != nil {
+		profileCopy := *profile
+		profileCopy.HTTP1Only = true
+		profile = &profileCopy
+	}
 	if profile == nil || (!profile.HTTP1Only && !profile.DisableAutoCompression && len(profile.HeaderProfile) == 0) {
 		client := helps.NewProxyAwareHTTPClient(ctx, cfg, c.auth, 0)
 		if client == nil {

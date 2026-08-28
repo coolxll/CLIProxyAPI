@@ -1,0 +1,12 @@
+{
+  "data": {
+    "chat": [
+      {"key": "wrapped_chat_model", "display_name": "Wrapped Chat"}
+    ]
+  },
+  "result": {
+    "developer": {
+      "dev1": {"modelId": "wrapped_dev_model", "displayName": "Wrapped Dev"}
+    }
+  }
+}

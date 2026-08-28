@@ -15,24 +15,26 @@ import (
 )
 
 type rpcHostHTTPRequest struct {
-	HTTPClientID   string                     `json:"http_client_id,omitempty"`
-	HostCallbackID string                     `json:"host_callback_id,omitempty"`
-	Method         string                     `json:"method,omitempty"`
-	URL            string                     `json:"url,omitempty"`
-	Headers        httpHeader                 `json:"headers,omitempty"`
-	Body           []byte                     `json:"body,omitempty"`
-	WireProfile    *pluginapi.HTTPWireProfile `json:"wire_profile,omitempty"`
-	Request        *httpRequest               `json:"request,omitempty"`
+	HTTPClientID   string                         `json:"http_client_id,omitempty"`
+	HostCallbackID string                         `json:"host_callback_id,omitempty"`
+	Method         string                         `json:"method,omitempty"`
+	URL            string                         `json:"url,omitempty"`
+	Headers        httpHeader                     `json:"headers,omitempty"`
+	Body           []byte                         `json:"body,omitempty"`
+	WireProfile    *pluginapi.HTTPWireProfile     `json:"wire_profile,omitempty"`
+	Transport      pluginapi.HTTPTransportOptions `json:"transport,omitempty"`
+	Request        *httpRequest                   `json:"request,omitempty"`
 }
 
 type httpHeader map[string][]string
 
 type httpRequest struct {
-	Method      string                     `json:"method,omitempty"`
-	URL         string                     `json:"url,omitempty"`
-	Headers     httpHeader                 `json:"headers,omitempty"`
-	Body        []byte                     `json:"body,omitempty"`
-	WireProfile *pluginapi.HTTPWireProfile `json:"wire_profile,omitempty"`
+	Method      string                         `json:"method,omitempty"`
+	URL         string                         `json:"url,omitempty"`
+	Headers     httpHeader                     `json:"headers,omitempty"`
+	Body        []byte                         `json:"body,omitempty"`
+	WireProfile *pluginapi.HTTPWireProfile     `json:"wire_profile,omitempty"`
+	Transport   pluginapi.HTTPTransportOptions `json:"transport,omitempty"`
 }
 
 type rpcHostHTTPStreamResponse struct {
@@ -149,7 +151,8 @@ func (h *Host) callHostHTTPDo(ctx context.Context, request []byte) ([]byte, erro
 		return nil, errDecode
 	}
 	ctx = h.resolveCallbackContext(callbackID, ctx)
-	resp, errDo := h.newHTTPClient(nil).Do(ctx, httpReq)
+	provider, auth := h.callbackContextProviderAndAuth(callbackID)
+	resp, errDo := h.newHTTPClient(auth, provider).Do(ctx, httpReq)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -170,7 +173,8 @@ func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte
 		ctx = context.Background()
 	}
 	streamCtx, cancel := newStreamContext(ctx)
-	resp, errDo := h.newHTTPClient(nil).DoStream(streamCtx, httpReq)
+	provider, auth := h.callbackContextProviderAndAuth(callbackID)
+	resp, errDo := h.newHTTPClient(auth, provider).DoStream(streamCtx, httpReq)
 	if errDo != nil {
 		cancel()
 		return nil, errDo
@@ -245,6 +249,7 @@ func decodeHostHTTPRequestWithCallbackID(raw []byte) (pluginapi.HTTPRequest, str
 			Headers:     map[string][]string(req.Request.Headers),
 			Body:        append([]byte(nil), req.Request.Body...),
 			WireProfile: cloneWireProfile(wireProfile),
+			Transport:   req.Request.Transport,
 		}, req.HostCallbackID, nil
 	}
 	return pluginapi.HTTPRequest{
@@ -253,6 +258,7 @@ func decodeHostHTTPRequestWithCallbackID(raw []byte) (pluginapi.HTTPRequest, str
 		Headers:     map[string][]string(req.Headers),
 		Body:        append([]byte(nil), req.Body...),
 		WireProfile: cloneWireProfile(req.WireProfile),
+		Transport:   req.Transport,
 	}, req.HostCallbackID, nil
 }
 
@@ -270,7 +276,7 @@ func (h *Host) callHostStreamEmit(ctx context.Context, request []byte) ([]byte, 
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode stream emit request: %w", errUnmarshal)
 	}
-	chunk := pluginapi.ExecutorStreamChunk{Payload: append([]byte(nil), req.Payload...)}
+	chunk := pluginapi.ExecutorStreamChunk{Payload: append([]byte(nil), req.Payload...), Usage: clonePluginUsageDetail(req.Usage)}
 	if req.Error != "" {
 		chunk.Err = fmt.Errorf("%s", req.Error)
 	}

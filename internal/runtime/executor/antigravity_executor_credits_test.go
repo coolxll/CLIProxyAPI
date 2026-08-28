@@ -624,6 +624,7 @@ func TestEnsureAccessToken_WarmTokenLoadsCreditsHint(t *testing.T) {
 		Metadata: map[string]any{
 			"access_token": "token",
 			"expired":      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+			"base_url":     "https://cloudcode-pa.googleapis.com",
 		},
 	}
 	refreshDone := make(chan struct{})

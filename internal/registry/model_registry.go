@@ -765,7 +765,7 @@ func (r *ModelRegistry) SetModelQuotaExceeded(clientID, modelID string) {
 	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
 
-	if registration, exists := r.models[modelID]; exists {
+	if registration, exists := r.findModelRegistrationLocked(modelID); exists {
 		now := time.Now()
 		registration.QuotaExceededClients[clientID] = &now
 		r.invalidateAvailableModelsCacheLocked()
@@ -782,7 +782,7 @@ func (r *ModelRegistry) ClearModelQuotaExceeded(clientID, modelID string) {
 	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
 
-	if registration, exists := r.models[modelID]; exists {
+	if registration, exists := r.findModelRegistrationLocked(modelID); exists {
 		delete(registration.QuotaExceededClients, clientID)
 		r.invalidateAvailableModelsCacheLocked()
 		// log.Debugf("Cleared quota exceeded status for model %s and client %s", modelID, clientID)
@@ -992,7 +992,7 @@ func (r *ModelRegistry) SuspendClientModel(clientID, modelID, reason string) {
 	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
 
-	registration, exists := r.models[modelID]
+	registration, exists := r.findModelRegistrationLocked(modelID)
 	if !exists || registration == nil {
 		return
 	}
@@ -1024,7 +1024,7 @@ func (r *ModelRegistry) ResumeClientModel(clientID, modelID string) {
 	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
 
-	registration, exists := r.models[modelID]
+	registration, exists := r.findModelRegistrationLocked(modelID)
 	if !exists || registration == nil || registration.SuspendedClients == nil {
 		return
 	}
@@ -1389,7 +1389,7 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	if registration, exists := r.models[modelID]; exists {
+	if registration, exists := r.findModelRegistrationLocked(modelID); exists {
 		now := time.Now()
 
 		// Count clients that have exceeded quota but haven't recovered yet
@@ -1422,7 +1422,7 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	registration, exists := r.models[modelID]
+	registration, exists := r.findModelRegistrationLocked(modelID)
 	if !exists || registration == nil || len(registration.Providers) == 0 {
 		return nil
 	}
@@ -1473,7 +1473,7 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 func (r *ModelRegistry) GetModelInfo(modelID, provider string) *ModelInfo {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
-	if reg, ok := r.models[modelID]; ok && reg != nil {
+	if reg, ok := r.findModelRegistrationLocked(modelID); ok && reg != nil {
 		// Try provider specific definition first
 		if provider != "" && reg.InfoByProvider != nil {
 			if reg.Providers != nil {
@@ -1734,4 +1734,23 @@ func (r *ModelRegistry) ClientRegistrationEpoch(clientID string) uint64 {
 func (r *ModelRegistry) GetModelsForClient(clientID string) []*ModelInfo {
 	models, _ := r.GetModelsAndEpochForClient(clientID)
 	return models
+}
+
+// findModelRegistrationLocked returns the ModelRegistration for the given modelID.
+// It first attempts an exact match. If that fails, it performs a case-insensitive lookup.
+// The caller must hold the read or write lock.
+func (r *ModelRegistry) findModelRegistrationLocked(modelID string) (*ModelRegistration, bool) {
+	if modelID == "" {
+		return nil, false
+	}
+	if reg, exists := r.models[modelID]; exists {
+		return reg, true
+	}
+	lower := strings.ToLower(modelID)
+	for actualID, reg := range r.models {
+		if strings.ToLower(actualID) == lower {
+			return reg, true
+		}
+	}
+	return nil, false
 }

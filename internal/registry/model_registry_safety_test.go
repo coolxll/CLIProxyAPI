@@ -169,6 +169,57 @@ func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
 	}
 }
 
+func TestModelRegistryCaseInsensitiveOperations(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("client-1", "trae", []*ModelInfo{{
+		ID:          "deepseek-R1",
+		DisplayName: "DeepSeek Reasoner R1",
+	}})
+
+	// GetModelCount
+	if count := r.GetModelCount("deepseek-r1"); count != 1 {
+		t.Fatalf("expected GetModelCount to find \"deepseek-R1\" using \"deepseek-r1\", got %d", count)
+	}
+
+	// GetModelProviders
+	providers := r.GetModelProviders("deepseek-r1")
+	if len(providers) != 1 || providers[0] != "trae" {
+		t.Fatalf("expected GetModelProviders to return trae, got %v", providers)
+	}
+
+	// GetModelInfo
+	info := r.GetModelInfo("deepseek-r1", "trae")
+	if info == nil || info.ID != "deepseek-R1" {
+		t.Fatalf("expected GetModelInfo to return correct ModelInfo, got %+v", info)
+	}
+
+	// SetModelQuotaExceeded
+	r.SetModelQuotaExceeded("client-1", "Deepseek-r1")
+	// Verify that it correctly resolved the quota exceeded client
+	reg, exists := r.findModelRegistrationLocked("deepseek-R1")
+	if !exists || reg.QuotaExceededClients["client-1"] == nil {
+		t.Fatal("expected quota exceeded state to be set case-insensitively")
+	}
+
+	// ClearModelQuotaExceeded
+	r.ClearModelQuotaExceeded("client-1", "DEEPSEEK-R1")
+	if reg.QuotaExceededClients["client-1"] != nil {
+		t.Fatal("expected quota exceeded state to be cleared case-insensitively")
+	}
+
+	// SuspendClientModel
+	r.SuspendClientModel("client-1", "deepseek-r1", "test")
+	if reg.SuspendedClients["client-1"] != "test" {
+		t.Fatal("expected client suspension to be set case-insensitively")
+	}
+
+	// ResumeClientModel
+	r.ResumeClientModel("client-1", "deepseek-r1")
+	if _, ok := reg.SuspendedClients["client-1"]; ok {
+		t.Fatal("expected client suspension to be cleared case-insensitively")
+	}
+}
+
 func TestLookupModelInfoIncludesClaudeSonnet5(t *testing.T) {
 	model := LookupModelInfo("claude-sonnet-5")
 	if model == nil {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -274,6 +275,119 @@ func TestPatchAuthFileFields_ArbitraryFieldsPersistToFile(t *testing.T) {
 	}
 	if got := fgh["ijk"]; got != true {
 		t.Fatalf("fgh.ijk = %#v, want true", got)
+	}
+}
+
+func TestPatchAuthFileStatus_ResetFailureStates(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+
+	futureTime := time.Now().Add(30 * time.Minute)
+	record := &coreauth.Auth{
+		ID:             "mimo.json",
+		FileName:       "mimo.json",
+		Provider:       "mimo",
+		Status:         coreauth.StatusError,
+		StatusMessage:  "temporary 503 error",
+		Unavailable:    true,
+		NextRetryAfter: futureTime,
+		LastError:      &coreauth.Error{Code: "temporary_error", Message: "temporary 503 error"},
+		Quota: coreauth.QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: futureTime,
+			BackoffLevel:  2,
+		},
+		ModelStates: map[string]*coreauth.ModelState{
+			"mimo-v2.5-pro": {
+				Status:         coreauth.StatusError,
+				StatusMessage:  "model 503 error",
+				Unavailable:    true,
+				NextRetryAfter: futureTime,
+				LastError:      &coreauth.Error{Code: "model_error", Message: "model 503 error"},
+				Quota: coreauth.QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: futureTime,
+					BackoffLevel:  2,
+				},
+				UpdatedAt: time.Now(),
+			},
+		},
+		Attributes: map[string]string{
+			"path": "/tmp/mimo.json",
+		},
+		Metadata: map[string]any{
+			"type": "mimo",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+
+	body := `{"name":"mimo.json","disabled":false}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/status", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PatchAuthFileStatus(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("mimo.json")
+	if !ok || updated == nil {
+		t.Fatalf("expected auth record to exist after status patch")
+	}
+
+	if updated.Status != coreauth.StatusActive {
+		t.Errorf("status = %q, want %q", updated.Status, coreauth.StatusActive)
+	}
+	if updated.StatusMessage != "" {
+		t.Errorf("status_message = %q, want empty", updated.StatusMessage)
+	}
+	if updated.Unavailable {
+		t.Errorf("unavailable = true, want false")
+	}
+	if !updated.NextRetryAfter.IsZero() {
+		t.Errorf("next_retry_after = %v, want zero time", updated.NextRetryAfter)
+	}
+	if updated.LastError != nil {
+		t.Errorf("last_error = %v, want nil", updated.LastError)
+	}
+	if updated.Quota.Exceeded {
+		t.Errorf("quota.exceeded = true, want false")
+	}
+
+	// Verify model states are also cleared!
+	modelState, ok := updated.ModelStates["mimo-v2.5-pro"]
+	if !ok || modelState == nil {
+		t.Fatalf("expected model state mimo-v2.5-pro to exist")
+	}
+	if modelState.Status != coreauth.StatusActive {
+		t.Errorf("model state status = %q, want %q", modelState.Status, coreauth.StatusActive)
+	}
+	if modelState.StatusMessage != "" {
+		t.Errorf("model state status_message = %q, want empty", modelState.StatusMessage)
+	}
+	if modelState.Unavailable {
+		t.Errorf("model state unavailable = true, want false")
+	}
+	if !modelState.NextRetryAfter.IsZero() {
+		t.Errorf("model state next_retry_after = %v, want zero time", modelState.NextRetryAfter)
+	}
+	if modelState.LastError != nil {
+		t.Errorf("model state last_error = %v, want nil", modelState.LastError)
+	}
+	if modelState.Quota.Exceeded {
+		t.Errorf("model state quota.exceeded = true, want false")
 	}
 }
 

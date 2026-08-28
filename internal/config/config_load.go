@@ -153,6 +153,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize native Interactions API key configuration.
 	cfg.SanitizeInteractionsKeys()
 
+	// Sanitize Lingma API keys.
+	cfg.SanitizeLingmaKeys()
+
 	// Sanitize Vertex-compatible API keys.
 	cfg.SanitizeVertexCompatKeys()
 

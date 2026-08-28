@@ -359,6 +359,19 @@ func TestRedisProtocol_SUBSCRIBE_UsageSendsSupportRefresh(t *testing.T) {
 	}
 }
 
+func TestRedisProtocol_QueueAliasDoesNotSubscribeUsage(t *testing.T) {
+	messages, unsubscribe, ok := subscribeRedisChannel("queue")
+	if unsubscribe != nil {
+		unsubscribe()
+	}
+	if ok {
+		t.Fatalf("subscribeRedisChannel(queue) ok = true, want false")
+	}
+	if messages != nil {
+		t.Fatalf("subscribeRedisChannel(queue) messages = %v, want nil", messages)
+	}
+}
+
 func TestRedisProtocol_SUBSCRIBE_ErrorsReceivesErrorEvents(t *testing.T) {
 	const managementPassword = "test-management-password"
 
@@ -503,6 +516,16 @@ func TestRedisProtocol_AUTH_And_PopContracts(t *testing.T) {
 	}
 	if len(emptyItems) != 0 {
 		t.Fatalf("expected empty array for empty queue with count, got %#v", emptyItems)
+	}
+
+	redisqueue.Enqueue([]byte("queue-alias"))
+	if errWrite := writeTestRESPCommand(conn, "RPOP", "queue"); errWrite != nil {
+		t.Fatalf("failed to write RPOP queue alias command: %v", errWrite)
+	}
+	if item, errRead := readTestRESPBulkString(reader); errRead != nil {
+		t.Fatalf("failed to read RPOP queue alias response: %v", errRead)
+	} else if string(item) != "queue-alias" {
+		t.Fatalf("unexpected RPOP queue alias item: %q", string(item))
 	}
 
 	if errWrite := writeTestRESPCommand(conn, "RPOP", "errors", "2"); errWrite != nil {

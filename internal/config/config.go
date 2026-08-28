@@ -111,6 +111,9 @@ type Config struct {
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
 
+	// LingmaKey defines Lingma API key (CosyKey/securityOauthToken) configurations.
+	LingmaKey []LingmaKey `yaml:"lingma-api-key" json:"lingma-api-key"`
+
 	// InteractionsKey defines native Google Interactions API key configurations.
 	InteractionsKey []GeminiKey `yaml:"interactions-api-key" json:"interactions-api-key"`
 

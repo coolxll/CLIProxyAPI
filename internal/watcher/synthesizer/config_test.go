@@ -906,6 +906,73 @@ func TestConfigSynthesizer_VertexCompat_WithModels(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_LingmaKeys(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			LingmaKey: []config.LingmaKey{
+				{
+					APIKey:             "cosy-key",
+					MachineID:          "machine-1",
+					UID:                "user-1",
+					OrganizationID:     "org-1",
+					EncryptUserInfo:    "encrypted-user-info",
+					UserType:           "personal",
+					SecurityOAuthToken: "security-token",
+					Prefix:             "team-a",
+					ProxyURL:           "http://proxy.local:8080",
+					Priority:           7,
+					DisableCooling:     true,
+					ExcludedModels:     []string{"dashscope_qmodel"},
+				},
+				{APIKey: "  "},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+
+	auth := auths[0]
+	if auth.Provider != "lingma" {
+		t.Fatalf("expected provider lingma, got %s", auth.Provider)
+	}
+	if auth.Prefix != "team-a" {
+		t.Fatalf("expected prefix team-a, got %s", auth.Prefix)
+	}
+	if auth.ProxyURL != "http://proxy.local:8080" {
+		t.Fatalf("expected proxy URL, got %s", auth.ProxyURL)
+	}
+	if auth.Attributes["priority"] != "7" {
+		t.Fatalf("expected priority 7, got %s", auth.Attributes["priority"])
+	}
+	if auth.Metadata["key"] != "cosy-key" {
+		t.Fatalf("expected metadata key, got %v", auth.Metadata["key"])
+	}
+	if auth.Metadata["uid"] != "user-1" {
+		t.Fatalf("expected uid metadata, got %v", auth.Metadata["uid"])
+	}
+	if auth.Metadata["machine_id"] != "machine-1" {
+		t.Fatalf("expected machine_id metadata, got %v", auth.Metadata["machine_id"])
+	}
+	if auth.Metadata["security_oauth_token"] != "security-token" {
+		t.Fatalf("expected security_oauth_token metadata, got %v", auth.Metadata["security_oauth_token"])
+	}
+	if v, ok := auth.Metadata["disable_cooling"].(bool); !ok || !v {
+		t.Fatalf("expected disable_cooling=true, got %v", auth.Metadata["disable_cooling"])
+	}
+	if auth.Attributes["excluded_models_hash"] == "" {
+		t.Fatal("expected excluded models hash")
+	}
+}
+
 func TestConfigSynthesizer_IDStability(t *testing.T) {
 	cfg := &config.Config{
 		GeminiKey: []config.GeminiKey{
@@ -1097,6 +1164,9 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 			VertexCompatAPIKey: []config.VertexCompatKey{
 				{APIKey: "vertex-key", BaseURL: "https://vertex.api"},
 			},
+			LingmaKey: []config.LingmaKey{
+				{APIKey: "lingma-key", UID: "lingma-user"},
+			},
 		},
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
@@ -1106,8 +1176,8 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 6 {
-		t.Fatalf("expected 6 auths, got %d", len(auths))
+	if len(auths) != 7 {
+		t.Fatalf("expected 7 auths, got %d", len(auths))
 	}
 
 	providers := make(map[string]bool)
@@ -1115,7 +1185,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		providers[a.Provider] = true
 	}
 
-	expected := []string{"gemini", "claude", "codex", "xai", "openai-compatible-compat", "vertex"}
+	expected := []string{"gemini", "claude", "codex", "xai", "openai-compatible-compat", "vertex", "lingma"}
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)

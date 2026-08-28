@@ -3,6 +3,8 @@ package handlers
 import (
 	"net/http"
 	"testing"
+
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func TestFilterUpstreamHeaders_RemovesConnectionScopedHeaders(t *testing.T) {
@@ -55,5 +57,19 @@ func TestFilterUpstreamHeaders_ReturnsNilWhenAllHeadersBlocked(t *testing.T) {
 	filtered := FilterUpstreamHeaders(src)
 	if filtered != nil {
 		t.Fatalf("expected nil when all headers are filtered, got %#v", filtered)
+	}
+}
+
+func TestDownstreamHeadersPreserveProxyFallbackWhenPassthroughDisabled(t *testing.T) {
+	headers := make(http.Header)
+	headers.Set(coreexecutor.FallbackHeaderName, "lingma-thinking-disabled")
+	headers.Set("X-Upstream-Request-Id", "hidden")
+
+	got := downstreamHeadersFromExecutor(headers, false)
+	if value := got.Get(coreexecutor.FallbackHeaderName); value != "lingma-thinking-disabled" {
+		t.Fatalf("fallback header = %q", value)
+	}
+	if value := got.Get("X-Upstream-Request-Id"); value != "" {
+		t.Fatalf("upstream header leaked with passthrough disabled: %q", value)
 	}
 }

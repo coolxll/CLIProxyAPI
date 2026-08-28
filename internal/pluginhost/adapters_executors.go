@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
@@ -579,6 +580,11 @@ func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, pre
 						return
 					}
 				}
+				if chunk.Usage != nil {
+					if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Usage: chunk.Usage}) {
+						return
+					}
+				}
 			}
 		}
 	}()
@@ -646,7 +652,7 @@ func executorStreamDonePayload(format sdktranslator.Format) []byte {
 
 func sendExecutorPluginStreamChunk(ctx context.Context, out chan<- pluginapi.ExecutorStreamChunk, chunk pluginapi.ExecutorStreamChunk) bool {
 	select {
-	case out <- pluginapi.ExecutorStreamChunk{Payload: bytes.Clone(chunk.Payload), Err: chunk.Err}:
+	case out <- pluginapi.ExecutorStreamChunk{Payload: bytes.Clone(chunk.Payload), Err: chunk.Err, Usage: clonePluginUsageDetail(chunk.Usage)}:
 		return true
 	case <-ctx.Done():
 		return false
@@ -669,10 +675,18 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	if errPrepare != nil {
 		return coreexecutor.Response{}, errPrepare
 	}
+	reporter := helps.NewExecutorUsageReporter(ctx, a, req.Model, auth)
+	reporter.StartResponseTTFT()
+	defer reporter.TrackFailure(ctx, &err)
 	pluginResp, errExecute := a.executor.Execute(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
 	if errExecute != nil {
 		return coreexecutor.Response{}, errExecute
 	}
+	reporter.MarkFirstResponseByte()
+	if pluginResp.Usage != nil {
+		reporter.PublishNonZero(ctx, pluginUsageDetailToCore(pluginResp.Usage))
+	}
+	reporter.EnsurePublished(ctx)
 	return coreexecutor.Response{
 		Payload:  a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil),
 		Metadata: cloneAnyMap(pluginResp.Metadata),
@@ -696,13 +710,17 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
+	reporter := helps.NewExecutorUsageReporter(ctx, a, req.Model, auth)
+	reporter.StartResponseTTFT()
+	defer reporter.TrackFailure(ctx, &err)
 	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
 	if errExecuteStream != nil {
 		return nil, errExecuteStream
 	}
+	translatedChunks := a.translateExecutorStreamChunks(ctx, prepared, pluginResp.Chunks)
 	return &coreexecutor.StreamResult{
 		Headers: cloneHeader(pluginResp.Headers),
-		Chunks:  mapExecutorStreamChunks(ctx, a.translateExecutorStreamChunks(ctx, prepared, pluginResp.Chunks)),
+		Chunks:  mapExecutorStreamChunksWithUsage(ctx, translatedChunks, reporter),
 	}, nil
 }
 
@@ -913,6 +931,10 @@ func mergeExecutorMetadata(reqMetadata, optsMetadata map[string]any) map[string]
 }
 
 func mapExecutorStreamChunks(ctx context.Context, in <-chan pluginapi.ExecutorStreamChunk) <-chan coreexecutor.StreamChunk {
+	return mapExecutorStreamChunksWithUsage(ctx, in, nil)
+}
+
+func mapExecutorStreamChunksWithUsage(ctx context.Context, in <-chan pluginapi.ExecutorStreamChunk, reporter *helps.UsageReporter) <-chan coreexecutor.StreamChunk {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -932,6 +954,15 @@ func mapExecutorStreamChunks(ctx context.Context, in <-chan pluginapi.ExecutorSt
 				if !ok {
 					return
 				}
+				if reporter != nil && chunk.Usage != nil {
+					reporter.PublishNonZero(ctx, pluginUsageDetailToCore(chunk.Usage))
+				}
+				if chunk.Err != nil && reporter != nil {
+					reporter.PublishFailure(ctx, chunk.Err)
+				}
+				if len(chunk.Payload) == 0 && chunk.Err == nil {
+					continue
+				}
 				mapped = coreexecutor.StreamChunk{
 					Payload: bytes.Clone(chunk.Payload),
 					Err:     chunk.Err,
@@ -945,4 +976,27 @@ func mapExecutorStreamChunks(ctx context.Context, in <-chan pluginapi.ExecutorSt
 		}
 	}()
 	return out
+}
+
+func clonePluginUsageDetail(in *pluginapi.UsageDetail) *pluginapi.UsageDetail {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func pluginUsageDetailToCore(in *pluginapi.UsageDetail) coreusage.Detail {
+	if in == nil {
+		return coreusage.Detail{}
+	}
+	return coreusage.Detail{
+		InputTokens:         in.InputTokens,
+		OutputTokens:        in.OutputTokens,
+		ReasoningTokens:     in.ReasoningTokens,
+		CachedTokens:        in.CachedTokens,
+		CacheReadTokens:     in.CacheReadTokens,
+		CacheCreationTokens: in.CacheCreationTokens,
+		TotalTokens:         in.TotalTokens,
+	}
 }

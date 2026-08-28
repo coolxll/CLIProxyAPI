@@ -1,2 +1,2 @@
-c70804e9229d0f9eee7b5ab66de5b3e4318c00d50c016dc15365f9c14b129bf1  lingma-plugin_0.2.0_darwin_arm64.zip
+8cbab9752b14aaa71c108767240e187e4e0e93d26dbe67c2677fd180c7083258  lingma-plugin_0.2.0_darwin_arm64.zip
 413a4286188d18fbc68a850cf47e5f9413a9d56de661e8380777aebd231db050  trae-plugin_0.2.0_darwin_arm64.zip

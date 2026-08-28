@@ -17,9 +17,11 @@ import (
 func main() {
 	var outPath string
 	var manualName string
+	var pluginOutput bool
 
 	flag.StringVar(&outPath, "out", "lingma_import.json", "Output JSON file path")
 	flag.StringVar(&manualName, "name", "", "Manual name label (auto-generated if empty)")
+	flag.BoolVar(&pluginOutput, "plugin", false, "Export for the lingma-plugin shadow provider")
 	flag.Parse()
 
 	dir, err := findAuthDir()
@@ -102,8 +104,12 @@ func main() {
 		expiresAt = time.Now().Add(24 * time.Hour)
 	}
 
+	providerType := "lingma"
+	if pluginOutput {
+		providerType = "lingma-plugin"
+	}
 	exportData := map[string]interface{}{
-		"type":                 "lingma",
+		"type":                 providerType,
 		"machine_id":           machineID,
 		"uid":                  user.UID,
 		"organization_id":      user.OrganizationID,
@@ -114,6 +120,9 @@ func main() {
 		"expire_time":          user.ExpireTime,
 		"name":                 finalName,
 		"expires_at":           expiresAt,
+	}
+	if user.RefreshToken != "" {
+		exportData["refresh_token"] = user.RefreshToken
 	}
 	outBytes, err := json.MarshalIndent(exportData, "", "  ")
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,5 +145,77 @@ func TestWriteOAuthCallbackFileForPendingSessionCreatesMissingAuthDirForCallback
 				t.Fatalf("unexpected callback payload: %+v", payload)
 			}
 		})
+	}
+}
+
+func TestPostOAuthCallbackPluginWithHttpPort(t *testing.T) {
+	receivedCallback := make(chan string, 1)
+	receivedFollow := make(chan string, 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/callback":
+			receivedCallback <- r.URL.RawQuery
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><script>window.is_select_account = true; window.select_account_info = '{"orgId":"org-test-123"}';</script></html>`))
+		case "/auth/loginWithOrganization":
+			receivedFollow <- r.URL.RawQuery
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html>OK</html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	// Extract port from srv.URL (http://127.0.0.1:port)
+	u, _ := url.Parse(srv.URL)
+	portStr := u.Port()
+	var port int
+	for _, ch := range portStr {
+		port = port*10 + int(ch-'0')
+	}
+
+	state := "test-plugin-flow-state"
+	metadata := map[string]any{
+		"http_port": port,
+	}
+	if errRegister := RegisterPluginOAuthSession(state, "lingma-plugin", metadata); errRegister != nil {
+		t.Fatalf("register plugin oauth session: %v", errRegister)
+	}
+	defer CompleteOAuthSession(state)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
+	router := gin.New()
+	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
+
+	redirectURL := "http://127.0.0.1:1455/auth/callback?state=" + state + "&auth=test-auth-val&token=test-token-val"
+	body := `{"provider":"lingma-plugin","redirect_url":"` + redirectURL + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	select {
+	case q := <-receivedCallback:
+		if !strings.Contains(q, "auth=test-auth-val") || !strings.Contains(q, "token=test-token-val") {
+			t.Fatalf("unexpected callback query: %s", q)
+		}
+	default:
+		t.Fatal("expected callback request to be forwarded to plugin")
+	}
+
+	select {
+	case q := <-receivedFollow:
+		if !strings.Contains(q, "organizationId=org-test-123") {
+			t.Fatalf("unexpected follow query: %s", q)
+		}
+	default:
+		t.Fatal("expected follow-up loginWithOrganization request to be sent")
 	}
 }

@@ -219,3 +219,43 @@ func TestPostOAuthCallbackPluginWithHttpPort(t *testing.T) {
 		t.Fatal("expected follow-up loginWithOrganization request to be sent")
 	}
 }
+
+func TestPostOAuthCallbackTraeFragment(t *testing.T) {
+	authDir := t.TempDir()
+	state := "test-trae-state-123"
+	if errRegister := RegisterPluginOAuthSession(state, "trae-plugin", nil); errRegister != nil {
+		t.Fatalf("register plugin oauth session: %v", errRegister)
+	}
+	defer CompleteOAuthSession(state)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	router := gin.New()
+	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
+
+	redirectURL := "http://127.0.0.1:8317/v0/management/oauth-callback?provider=trae-plugin&state=" + state + "#refreshToken=refresh-token-xyz&loginHost=https%3A%2F%2Fapi.trae.com.cn"
+	body := `{"provider":"trae-plugin","redirect_url":"` + redirectURL + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	callbackPath := filepath.Join(authDir, ".oauth-trae-plugin-"+state+".oauth")
+	data, errRead := os.ReadFile(callbackPath)
+	if errRead != nil {
+		t.Fatalf("expected callback file to be written: %v", errRead)
+	}
+
+	var payload oauthCallbackFilePayload
+	if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
+		t.Fatalf("failed to decode callback payload: %v", errUnmarshal)
+	}
+	if payload.State != state || !strings.Contains(payload.Code, "refreshToken=refresh-token-xyz") {
+		t.Fatalf("unexpected callback payload: %+v", payload)
+	}
+}
+

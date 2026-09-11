@@ -77,6 +77,27 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 				errMsg = strings.TrimSpace(q.Get("error_description"))
 			}
 		}
+		if u.Fragment != "" {
+			if fragQuery, errFrag := url.ParseQuery(u.Fragment); errFrag == nil {
+				if state == "" {
+					state = strings.TrimSpace(fragQuery.Get("state"))
+				}
+				if code == "" {
+					code = strings.TrimSpace(fragQuery.Get("code"))
+				}
+				if errMsg == "" {
+					errMsg = firstNonEmpty(fragQuery.Get("error"), fragQuery.Get("error_description"))
+				}
+			}
+			if code == "" {
+				code = strings.TrimSpace(u.Fragment)
+			}
+		}
+		if code == "" {
+			if q.Get("refreshToken") != "" || q.Get("refresh_token") != "" || q.Get("token") != "" || q.Get("auth") != "" {
+				code = u.RawQuery
+			}
+		}
 	}
 
 	if state == "" {

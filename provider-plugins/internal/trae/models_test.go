@@ -41,9 +41,9 @@ func TestFetchModelsFromDetailParam(t *testing.T) {
 		t.Fatalf("fetch models: %v", err)
 	}
 
-	// Should have 2 valid models from detail param + V1 models + V3 models + no_thinking_model
-	if len(models) < 5 {
-		t.Errorf("expected at least 5 models, got %d", len(models))
+	// Should have valid models from detail param + modern aliases
+	if len(models) < 2 {
+		t.Errorf("expected at least 2 models, got %d", len(models))
 	}
 	if got := configs["deepseek-v4-pro"]; got.ModelName != "deepseek-v4-pro-20250101" || got.ConfigName != "DeepSeek-V4-Pro" {
 		t.Errorf("unexpected dynamic model config: %+v", got)
@@ -124,9 +124,9 @@ func TestFetchModelsFromModelList(t *testing.T) {
 		t.Fatalf("fetch models: %v", err)
 	}
 
-	// Should have 2 valid models from model list + V3 models + no_thinking_model
-	if len(models) < 3 {
-		t.Errorf("expected at least 3 models, got %d", len(models))
+	// Should have 2 valid models from model list
+	if len(models) < 2 {
+		t.Errorf("expected at least 2 models, got %d", len(models))
 	}
 	if len(configs) != 0 {
 		t.Errorf("fallback model list should not return detail configs: %+v", configs)
@@ -232,121 +232,45 @@ func TestParseTraeModels(t *testing.T) {
 	}
 }
 
-func TestAppendTraeNoThinkingModel(t *testing.T) {
+func TestAppendTraeModernAliases(t *testing.T) {
 	models := []pluginapi.ModelInfo{
-		{ID: "model1", DisplayName: "Model 1"},
+		{ID: "DeepSeek-V4-Pro-Official", DisplayName: "DeepSeek V4 Pro 正式版"},
+	}
+	configs := map[string]traeDetailModelConfig{
+		"deepseek-v4-pro-official": {ModelName: "upstream-ds-pro", ConfigName: "DeepSeek-V4-Pro-Official"},
 	}
 
-	result := appendTraeNoThinkingModel(models, 1234567890)
+	result := appendTraeModernAliases(models, configs, 1234567890)
 
 	if len(result) != 2 {
 		t.Errorf("expected 2 models, got %d", len(result))
 	}
 
-	// Check that no_thinking_model was added
+	// Check that DeepSeek-V4-Pro was added as clean alias
 	found := false
 	for _, m := range result {
-		if m.ID == "no_thinking_model" {
+		if m.ID == "DeepSeek-V4-Pro" {
 			found = true
-			if m.DisplayName != "Trae No Thinking Model" {
-				t.Errorf("expected display name 'Trae No Thinking Model', got %s", m.DisplayName)
-			}
-			if m.ContextLength != 40000 {
-				t.Errorf("expected context length 40000, got %d", m.ContextLength)
+			if m.DisplayName != "DeepSeek V4 Pro" {
+				t.Errorf("expected display name 'DeepSeek V4 Pro', got %s", m.DisplayName)
 			}
 			break
 		}
 	}
 	if !found {
-		t.Error("no_thinking_model not found")
-	}
-}
-
-func TestAppendTraeNoThinkingModelAlreadyExists(t *testing.T) {
-	models := []pluginapi.ModelInfo{
-		{ID: "no_thinking_model", DisplayName: "Existing", SupportedParameters: []string{"tools"}},
+		t.Error("DeepSeek-V4-Pro alias not found")
 	}
 
-	result := appendTraeNoThinkingModel(models, 1234567890)
-
-	if len(result) != 1 {
-		t.Errorf("expected 1 model, got %d", len(result))
-	}
-
-	// Check that tools parameter was removed
-	if len(result[0].SupportedParameters) != 0 {
-		t.Errorf("expected no supported parameters, got %v", result[0].SupportedParameters)
-	}
-}
-
-func TestAppendTraeV1RawChatModels(t *testing.T) {
-	models := []pluginapi.ModelInfo{
-		{ID: "existing-model", DisplayName: "Existing"},
-	}
-
-	result := appendTraeV1RawChatModels(models, 1234567890)
-
-	// Should add 4 V1 models
-	if len(result) != 5 {
-		t.Errorf("expected 5 models, got %d", len(result))
-	}
-
-	// Check that seed_m8 was added
-	found := false
-	for _, m := range result {
-		if m.ID == "seed_m8" {
-			found = true
-			if m.DisplayName != "Doubao 1.5 Pro" {
-				t.Errorf("expected display name 'Doubao 1.5 Pro', got %s", m.DisplayName)
-			}
-			if m.ContextLength != 28000 {
-				t.Errorf("expected context length 28000, got %d", m.ContextLength)
-			}
-			break
-		}
-	}
-	if !found {
-		t.Error("seed_m8 not found")
-	}
-}
-
-func TestAppendTraeV3AgentModels(t *testing.T) {
-	models := []pluginapi.ModelInfo{
-		{ID: "existing-model", DisplayName: "Existing"},
-	}
-
-	result := appendTraeV3AgentModels(models, 1234567890)
-
-	// Should add 7 V3 models
-	if len(result) != 8 {
-		t.Errorf("expected 8 models, got %d", len(result))
-	}
-
-	// Check that glm-4.7 was added
-	found := false
-	for _, m := range result {
-		if m.ID == "glm-4.7" {
-			found = true
-			if m.DisplayName != "GLM-4.7" {
-				t.Errorf("expected display name 'GLM-4.7', got %s", m.DisplayName)
-			}
-			if m.ContextLength != 16000 {
-				t.Errorf("expected context length 16000, got %d", m.ContextLength)
-			}
-			break
-		}
-	}
-	if !found {
-		t.Error("glm-4.7 not found")
+	if cfg, ok := configs["deepseek-v4-pro"]; !ok || cfg.ModelName != "upstream-ds-pro" {
+		t.Errorf("expected mapped config for deepseek-v4-pro alias, got %+v", cfg)
 	}
 }
 
 func TestStaticModels(t *testing.T) {
 	models := staticModels()
 
-	// Should have all static models (4 V1 + 1 V2 + 9 V3 core + 8 V3 optional = 22)
-	if len(models) < 20 {
-		t.Errorf("expected at least 20 static models, got %d", len(models))
+	if len(models) < 10 {
+		t.Errorf("expected at least 10 modern static models, got %d", len(models))
 	}
 
 	// Check that all models have Type = ProviderID
@@ -356,45 +280,28 @@ func TestStaticModels(t *testing.T) {
 		}
 	}
 
-	// Check that V1 models are present
-	v1Models := []string{"seed_m8", "deepseek-R1", "deepseek-V3", "deepseek-V3-0324"}
-	for _, id := range v1Models {
+	// Verify legacy models are NOT present
+	legacyModels := []string{"seed_m8", "deepseek-R1", "deepseek-V3", "deepseek-V3-0324", "no_thinking_model", "glm-4.7", "glm-5", "glm-5.1", "kimi-k2.6"}
+	for _, id := range legacyModels {
+		for _, m := range models {
+			if strings.EqualFold(m.ID, id) {
+				t.Errorf("legacy model %s should not be in static models", id)
+			}
+		}
+	}
+
+	// Verify modern models ARE present
+	modernModels := []string{"DeepSeek-V4-Pro", "glm-5.2", "minimax-m3", "qwen-3.7-plus", "kimi-k3"}
+	for _, id := range modernModels {
 		found := false
 		for _, m := range models {
-			if m.ID == id {
+			if strings.EqualFold(m.ID, id) {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("V1 model %s not found", id)
-		}
-	}
-
-	// Check that V2 no_thinking_model is present
-	found := false
-	for _, m := range models {
-		if m.ID == "no_thinking_model" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("V2 no_thinking_model not found")
-	}
-
-	// Check that V3 models are present
-	v3Models := []string{"DeepSeek-V4-Pro", "glm-5.1", "kimi-k2.6"}
-	for _, id := range v3Models {
-		found := false
-		for _, m := range models {
-			if m.ID == id {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("V3 model %s not found", id)
+			t.Errorf("modern model %s not found in static models", id)
 		}
 	}
 }

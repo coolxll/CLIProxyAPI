@@ -28,7 +28,6 @@ func fetchModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, map[st
 		configs = nil
 	}
 
-	models = appendTraeNoThinkingModel(models, now)
 	return models, configs, nil
 }
 
@@ -72,8 +71,7 @@ func fetchModelsFromDetailParam(host hostRPC, creds credentials, now int64) ([]p
 	if len(models) == 0 {
 		return nil, nil, fmt.Errorf("Trae detail param returned no usable chat_completion configs")
 	}
-	models = appendTraeV1RawChatModels(models, now)
-	models = appendTraeV3AgentModels(models, now)
+	models = appendTraeModernAliases(models, configs, now)
 	return models, configs, nil
 }
 
@@ -94,7 +92,6 @@ func fetchModelsFromModelList(host hostRPC, creds credentials, now int64) ([]plu
 	}
 
 	models := parseTraeModels(resp.Body, now)
-	models = appendTraeV3AgentModels(models, now)
 	return models, nil
 }
 
@@ -296,89 +293,40 @@ func (p *Plugin) traeDetailModelConfig(authID, configName string) (traeDetailMod
 	return config, ok
 }
 
-// appendTraeNoThinkingModel ensures no_thinking_model is present.
-func appendTraeNoThinkingModel(models []pluginapi.ModelInfo, now int64) []pluginapi.ModelInfo {
-	for i, m := range models {
-		if strings.EqualFold(m.ID, "no_thinking_model") {
-			// Remove tools from supported parameters for existing entry
-			models[i].SupportedParameters = nil
-			return models
-		}
-	}
-	return append(models, pluginapi.ModelInfo{
-		ID:                  "no_thinking_model",
-		Object:              "model",
-		Created:             now,
-		OwnedBy:             "trae",
-		Type:                ProviderID,
-		DisplayName:         "Trae No Thinking Model",
-		ContextLength:       40000,
-		MaxCompletionTokens: 65536,
-	})
-}
-
-// appendTraeV1RawChatModels adds V1 raw chat models if not already present.
-func appendTraeV1RawChatModels(models []pluginapi.ModelInfo, now int64) []pluginapi.ModelInfo {
-	v1Models := []struct {
+// appendTraeModernAliases adds clean aliases for modern models (e.g. DeepSeek-V4-Pro / Flash)
+// when the official upstream variant is present.
+func appendTraeModernAliases(models []pluginapi.ModelInfo, configs map[string]traeDetailModelConfig, now int64) []pluginapi.ModelInfo {
+	aliases := []struct {
 		id          string
-		displayName string
-		context     int64
-	}{
-		{"seed_m8", "Doubao 1.5 Pro", 28000},
-		{"deepseek-R1", "DeepSeek Reasoner R1", 40000},
-		{"deepseek-V3", "DeepSeek V3", 40000},
-		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000},
-	}
-
-	for _, v1 := range v1Models {
-		if modelExists(models, v1.id) {
-			continue
-		}
-		models = append(models, pluginapi.ModelInfo{
-			ID:                  v1.id,
-			Object:              "model",
-			Created:             now,
-			OwnedBy:             "trae",
-			Type:                ProviderID,
-			DisplayName:         v1.displayName,
-			ContextLength:       v1.context,
-			MaxCompletionTokens: 65536,
-			SupportedParameters: []string{"tools"},
-		})
-	}
-	return models
-}
-
-// appendTraeV3AgentModels adds V3 agent models if not already present.
-func appendTraeV3AgentModels(models []pluginapi.ModelInfo, now int64) []pluginapi.ModelInfo {
-	v3Models := []struct {
-		id          string
+		officialID  string
 		displayName string
 	}{
-		{"glm-4.7", "GLM-4.7"},
-		{"glm-5", "GLM-5"},
-		{"glm-5.1", "GLM-5.1"},
-		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro"},
-		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash"},
-		{"kimi-k2.6", "Kimi K2.6"},
-		{"qwen-3.6-plus", "Qwen 3.6 Plus"},
+		{"DeepSeek-V4-Pro", "DeepSeek-V4-Pro-Official", "DeepSeek V4 Pro"},
+		{"DeepSeek-V4-Flash", "DeepSeek-V4-Flash-Official", "DeepSeek V4 Flash"},
 	}
 
-	for _, v3 := range v3Models {
-		if modelExists(models, v3.id) {
+	for _, a := range aliases {
+		if modelExists(models, a.id) {
 			continue
 		}
-		models = append(models, pluginapi.ModelInfo{
-			ID:                  v3.id,
-			Object:              "model",
-			Created:             now,
-			OwnedBy:             "trae",
-			Type:                ProviderID,
-			DisplayName:         v3.displayName,
-			ContextLength:       16000,
-			MaxCompletionTokens: 65536,
-			SupportedParameters: []string{"tools"},
-		})
+		if modelExists(models, a.officialID) {
+			models = append(models, pluginapi.ModelInfo{
+				ID:                  a.id,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             "trae",
+				Type:                ProviderID,
+				DisplayName:         a.displayName,
+				ContextLength:       128000,
+				MaxCompletionTokens: 65536,
+				SupportedParameters: []string{"tools"},
+			})
+			if configs != nil {
+				if offCfg, ok := configs[strings.ToLower(a.officialID)]; ok {
+					configs[strings.ToLower(a.id)] = offCfg
+				}
+			}
+		}
 	}
 	return models
 }

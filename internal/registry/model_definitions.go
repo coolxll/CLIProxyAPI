@@ -273,32 +273,37 @@ func traeModelInfos() []*ModelInfo {
 		maxTokens   int
 		multimodal  bool
 	}{
-		// V1 raw chat models
-		{"seed_m8", "Doubao 1.5 Pro", 28000, 65536, false},
-		{"deepseek-R1", "DeepSeek Reasoner R1", 40000, 65536, false},
-		{"deepseek-V3", "DeepSeek V3", 40000, 65536, false},
-		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000, 65536, false},
-		// V2 synthetic
-		{"no_thinking_model", "Trae No Thinking Model", 40000, 65536, false},
-		// V3 core models
-		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 100000, 16000, false},
-		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash", 100000, 16000, false},
-		{"Doubao-Seed-2.0-Code", "Doubao-Seed-2.0-Code", 100000, 16000, true},
-		{"glm-5.1", "GLM-5.1", 100000, 16000, false},
-		{"glm-5v-turbo", "GLM-5v-Turbo", 100000, 16000, true},
-		{"kimi-k2.6", "Kimi K2.6", 100000, 16000, true},
-		{"qwen-3.6-plus", "Qwen 3.6 Plus", 100000, 16000, true},
-		{"qwen3-coder", "Qwen3 Coder", 100000, 16000, false},
-		{"minimax-m2.7", "MiniMax M2.7", 100000, 16000, false},
-		// V3 optional models
-		{"glm-5", "GLM-5", 100000, 16000, false},
-		{"glm-4.7", "GLM-4.7", 100000, 16000, false},
-		{"kimi-k2.5", "Kimi K2.5", 100000, 16000, true},
-		{"kimi-k2", "Kimi K2", 100000, 16000, false},
-		{"qwen-3.5", "Qwen 3.5", 100000, 16000, true},
-		{"doubao_1_8", "Doubao 1.8", 100000, 16000, true},
-		{"Doubao_1_6", "Doubao 1.6", 100000, 16000, true},
-		{"minimax-m2.5", "MiniMax M2.5", 100000, 16000, false},
+		// Modern Active Models
+		{"auto", "Auto (GLM-5.2)", 128000, 65536, true},
+		{"claude-3-5-sonnet", "Claude 3.5 Sonnet (GLM-5.2)", 128000, 65536, true},
+		{"gpt-4o", "GPT-4o (GLM-5.2)", 128000, 65536, true},
+
+		// GLM
+		{"glm-5.3", "GLM-5.3", 128000, 65536, true},
+		{"glm-5.2", "GLM-5.2", 128000, 65536, true},
+		{"glm-5v-turbo", "GLM-5v-Turbo", 128000, 65536, true},
+
+		// DeepSeek
+		{"DeepSeek-V4-Pro-Official", "DeepSeek V4 Pro 正式版", 128000, 65536, false},
+		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 128000, 65536, false},
+		{"DeepSeek-V4-Flash-Official", "DeepSeek V4 Flash 正式版", 128000, 65536, false},
+		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash", 128000, 65536, false},
+
+		// Doubao Seed
+		{"Doubao-Seed-2.1-Pro", "Seed-2.1-Pro", 128000, 65536, true},
+		{"Doubao-Seed-2.1-Turbo", "Seed-2.1-Turbo", 128000, 65536, true},
+		{"Doubao-Seed-Code", "Seed-Code", 128000, 65536, false},
+		{"Doubao-Seed-Evolving", "Seed-Evolving", 128000, 65536, false},
+
+		// Kimi
+		{"kimi-k3", "Kimi K3", 128000, 65536, true},
+		{"kimi-k2.7-code", "Kimi K2.7 Code", 128000, 65536, false},
+
+		// Frontier
+		{"minimax-m3", "MiniMax M3", 128000, 65536, false},
+		{"qwen3.8-max", "Qwen 3.8 Max", 128000, 65536, true},
+		{"qwen-3.7-plus", "Qwen 3.7 Plus", 128000, 65536, true},
+		{"qwen3-coder", "Qwen3 Coder", 128000, 65536, false},
 	}
 
 	out := make([]*ModelInfo, 0, len(models))

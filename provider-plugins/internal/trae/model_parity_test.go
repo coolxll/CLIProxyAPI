@@ -554,106 +554,75 @@ func TestParseTraeDetailParamWithConfigsParity(t *testing.T) {
 	}
 }
 
-// TestAppendTraeNoThinkingModelParity verifies plugin and native produce identical
-// results when appending the no_thinking_model.
-func TestAppendTraeNoThinkingModelParity(t *testing.T) {
+// TestAppendTraeModernAliasesParity verifies plugin and native produce identical
+// results when appending modern aliases like DeepSeek-V4-Pro.
+func TestAppendTraeModernAliasesParity(t *testing.T) {
 	now := int64(1705000000)
 
-	tests := []struct {
-		name   string
-		models []pluginapi.ModelInfo
-	}{
-		{
-			name:   "empty list",
-			models: []pluginapi.ModelInfo{},
-		},
-		{
-			name: "without no_thinking_model",
-			models: []pluginapi.ModelInfo{
-				{ID: "deepseek-r1", DisplayName: "DeepSeek R1"},
-				{ID: "glm-5", DisplayName: "GLM-5"},
-			},
-		},
-		{
-			name: "with no_thinking_model",
-			models: []pluginapi.ModelInfo{
-				{ID: "deepseek-r1", DisplayName: "DeepSeek R1"},
-				{ID: "no_thinking_model", DisplayName: "No Thinking", SupportedParameters: []string{"tools"}},
-				{ID: "glm-5", DisplayName: "GLM-5"},
-			},
-		},
-		{
-			name: "with NO_THINKING_MODEL (case insensitive)",
-			models: []pluginapi.ModelInfo{
-				{ID: "deepseek-r1", DisplayName: "DeepSeek R1"},
-				{ID: "NO_THINKING_MODEL", DisplayName: "No Thinking", SupportedParameters: []string{"tools"}},
-			},
-		},
+	models := []pluginapi.ModelInfo{
+		{ID: "DeepSeek-V4-Pro-Official", DisplayName: "DeepSeek V4 Pro 正式版"},
+	}
+	pluginConfigs := map[string]traeDetailModelConfig{
+		"deepseek-v4-pro-official": {ModelName: "upstream-ds-pro", ConfigName: "DeepSeek-V4-Pro-Official"},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pluginResult := appendTraeNoThinkingModel(tt.models, now)
+	pluginResult := appendTraeModernAliases(models, pluginConfigs, now)
 
-			// Convert to native format for comparison
-			nativeModels := make([]nativeModelInfo, len(tt.models))
-			for i, m := range tt.models {
-				nativeModels[i] = nativeModelInfo{
-					ID:                  m.ID,
-					DisplayName:         m.DisplayName,
-					SupportedParameters: m.SupportedParameters,
-				}
-			}
-			nativeResult := nativeAppendTraeNoThinkingModel(nativeModels, now)
-
-			if len(pluginResult) != len(nativeResult) {
-				t.Errorf("result count mismatch: plugin=%d, native=%d", len(pluginResult), len(nativeResult))
-				return
-			}
-
-			for i := range pluginResult {
-				plugin := pluginResult[i]
-				native := nativeResult[i]
-
-				if plugin.ID != native.ID {
-					t.Errorf("model[%d].ID mismatch: plugin=%q, native=%q", i, plugin.ID, native.ID)
-				}
-				if len(plugin.SupportedParameters) != len(native.SupportedParameters) {
-					t.Errorf("model[%d].SupportedParameters length mismatch: plugin=%d, native=%d", i, len(plugin.SupportedParameters), len(native.SupportedParameters))
-				}
-			}
-		})
+	nativeModels := []nativeModelInfo{
+		{ID: "DeepSeek-V4-Pro-Official", DisplayName: "DeepSeek V4 Pro 正式版"},
 	}
-}
+	nativeConfigs := map[string]traeDetailModelConfig{
+		"deepseek-v4-pro-official": {ModelName: "upstream-ds-pro", ConfigName: "DeepSeek-V4-Pro-Official"},
+	}
+	nativeResult := nativeAppendTraeModernAliases(nativeModels, nativeConfigs, now)
 
-// nativeAppendTraeNoThinkingModel is a copy of the native appendTraeNoThinkingModel function.
-func nativeAppendTraeNoThinkingModel(models []nativeModelInfo, now int64) []nativeModelInfo {
-	for i := range models {
-		if strings.EqualFold(strings.TrimSpace(models[i].ID), "no_thinking_model") {
-			models[i].SupportedParameters = nativeRemoveSupportedParameter(models[i].SupportedParameters, "tools")
-			return models
+	if len(pluginResult) != len(nativeResult) {
+		t.Fatalf("result count mismatch: plugin=%d, native=%d", len(pluginResult), len(nativeResult))
+	}
+
+	for i := range pluginResult {
+		if pluginResult[i].ID != nativeResult[i].ID {
+			t.Errorf("model[%d].ID mismatch: plugin=%q, native=%q", i, pluginResult[i].ID, nativeResult[i].ID)
 		}
 	}
-	return append(models, nativeModelInfo{
-		ID:                  "no_thinking_model",
-		Object:              "model",
-		Created:             now,
-		OwnedBy:             "trae",
-		Type:                "trae",
-		DisplayName:         "Trae No Thinking Model",
-		Name:                "no_thinking_model",
-		ContextLength:       40000,
-		MaxCompletionTokens: 65536,
-	})
 }
 
-func nativeRemoveSupportedParameter(parameters []string, parameter string) []string {
-	filtered := parameters[:0]
-	for _, current := range parameters {
-		if strings.EqualFold(strings.TrimSpace(current), parameter) {
+func nativeAppendTraeModernAliases(models []nativeModelInfo, configs map[string]traeDetailModelConfig, now int64) []nativeModelInfo {
+	aliases := []struct {
+		id          string
+		officialID  string
+		displayName string
+	}{
+		{"DeepSeek-V4-Pro", "DeepSeek-V4-Pro-Official", "DeepSeek V4 Pro"},
+		{"DeepSeek-V4-Flash", "DeepSeek-V4-Flash-Official", "DeepSeek V4 Flash"},
+	}
+	existing := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		existing[strings.ToLower(strings.TrimSpace(m.ID))] = struct{}{}
+	}
+	for _, a := range aliases {
+		if _, ok := existing[strings.ToLower(a.id)]; ok {
 			continue
 		}
-		filtered = append(filtered, current)
+		if _, ok := existing[strings.ToLower(a.officialID)]; ok {
+			models = append(models, nativeModelInfo{
+				ID:                  a.id,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             "trae",
+				Type:                "trae",
+				DisplayName:         a.displayName,
+				Name:                a.id,
+				ContextLength:       128000,
+				MaxCompletionTokens: 65536,
+				SupportedParameters: []string{"tools"},
+			})
+			if configs != nil {
+				if offCfg, has := configs[strings.ToLower(a.officialID)]; has {
+					configs[strings.ToLower(a.id)] = offCfg
+				}
+			}
+		}
 	}
-	return filtered
+	return models
 }

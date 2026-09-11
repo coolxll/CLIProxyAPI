@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"slices"
 	"strings"
 	"testing"
 
@@ -72,43 +71,29 @@ func TestParseTraeModels(t *testing.T) {
 	}
 }
 
-func TestAppendTraeNoThinkingModel(t *testing.T) {
-	models := appendTraeNoThinkingModel(parseTraeModels([]byte(`{"model_configs":[{"name":"seed_m8","status":true}]}`), 123), 123)
-	if len(models) != 2 {
-		t.Fatalf("len(models) = %d, want 2", len(models))
+func TestAppendTraeModernAliases(t *testing.T) {
+	models := []*registry.ModelInfo{
+		{ID: "DeepSeek-V4-Pro-Official", DisplayName: "DeepSeek V4 Pro 正式版"},
 	}
-	if got := models[1].ID; got != "no_thinking_model" {
-		t.Fatalf("appended model ID = %q, want no_thinking_model", got)
-	}
-	if slices.Contains(models[1].SupportedParameters, "tools") {
-		t.Fatalf("no_thinking_model should not advertise tools: %#v", models[1].SupportedParameters)
+	configs := map[string]traeDetailModelConfig{
+		"deepseek-v4-pro-official": {ModelName: "upstream-ds-pro", ConfigName: "DeepSeek-V4-Pro-Official"},
 	}
 
-	existing := appendTraeNoThinkingModel([]*registry.ModelInfo{{
-		ID:                  "no_thinking_model",
-		SupportedParameters: []string{"tools", "temperature"},
-	}}, 123)
-	if slices.Contains(existing[0].SupportedParameters, "tools") {
-		t.Fatalf("existing no_thinking_model should not advertise tools: %#v", existing[0].SupportedParameters)
+	result := appendTraeModernAliases(models, configs, 123)
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2", len(result))
 	}
-	if !slices.Contains(existing[0].SupportedParameters, "temperature") {
-		t.Fatalf("existing supported parameter should be preserved: %#v", existing[0].SupportedParameters)
+	if got := result[1].ID; got != "DeepSeek-V4-Pro" {
+		t.Fatalf("appended model ID = %q, want DeepSeek-V4-Pro", got)
 	}
-}
-
-func TestAppendTraeV3AgentModels(t *testing.T) {
-	models := appendTraeV3AgentModels(nil, 123)
-	if len(models) != 7 {
-		t.Fatalf("len(models) = %d, want 7", len(models))
-	}
-	if got := models[0].ID; got != "glm-4.7" {
-		t.Fatalf("first model ID = %q, want glm-4.7", got)
+	if cfg, ok := configs["deepseek-v4-pro"]; !ok || cfg.ModelName != "upstream-ds-pro" {
+		t.Fatalf("expected config for alias, got %+v", cfg)
 	}
 
 	// Should not duplicate
-	models = appendTraeV3AgentModels(models, 123)
-	if len(models) != 7 {
-		t.Fatalf("after dedup len(models) = %d, want 7", len(models))
+	result = appendTraeModernAliases(result, configs, 123)
+	if len(result) != 2 {
+		t.Fatalf("after dedup len(result) = %d, want 2", len(result))
 	}
 }
 
@@ -374,20 +359,4 @@ func modelIDs(models []*registry.ModelInfo) []string {
 		}
 	}
 	return ids
-}
-
-func TestAppendTraeV1RawChatModels(t *testing.T) {
-	models := appendTraeV1RawChatModels(nil, 123)
-	if len(models) != 4 {
-		t.Fatalf("len(models) = %d, want 4", len(models))
-	}
-	if got := models[0].ID; got != "seed_m8" {
-		t.Fatalf("first model ID = %q, want seed_m8", got)
-	}
-
-	// Should not duplicate
-	models = appendTraeV1RawChatModels(models, 123)
-	if len(models) != 4 {
-		t.Fatalf("after dedup len(models) = %d, want 4", len(models))
-	}
 }

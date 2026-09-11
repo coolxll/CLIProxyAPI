@@ -33,7 +33,6 @@ func (e *TraeExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Auth)
 			return nil, err
 		}
 	}
-	models = appendTraeNoThinkingModel(models, now)
 	return models, nil
 }
 
@@ -71,8 +70,7 @@ func (e *TraeExecutor) fetchModelsFromDetailParam(ctx context.Context, creds *tr
 		return nil, fmt.Errorf("get_detail_param returned no usable chat_completion configs")
 	}
 	e.replaceTraeDetailModelConfigs(auth, configs)
-	models = appendTraeV1RawChatModels(models, now)
-	models = appendTraeV3AgentModels(models, now)
+	models = appendTraeModernAliases(models, configs, now)
 	return models, nil
 }
 
@@ -96,7 +94,7 @@ func (e *TraeExecutor) fetchModelsFromModelList(ctx context.Context, creds *trae
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("model list API error (%d): %s", httpResp.StatusCode, string(b))
+		return nil, fmt.Errorf("model_list API error (%d): %s", httpResp.StatusCode, string(b))
 	}
 
 	data, err := io.ReadAll(httpResp.Body)
@@ -104,7 +102,6 @@ func (e *TraeExecutor) fetchModelsFromModelList(ctx context.Context, creds *trae
 		return nil, err
 	}
 	models := parseTraeModels(data, now)
-	models = appendTraeV3AgentModels(models, now)
 	return models, nil
 }
 
@@ -295,50 +292,14 @@ func parseTraeModels(data []byte, now int64) []*registry.ModelInfo {
 	return models
 }
 
-func appendTraeNoThinkingModel(models []*registry.ModelInfo, now int64) []*registry.ModelInfo {
-	for _, model := range models {
-		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), "no_thinking_model") {
-			model.SupportedParameters = removeSupportedParameter(model.SupportedParameters, "tools")
-			return models
-		}
-	}
-	return append(models, &registry.ModelInfo{
-		ID:                  "no_thinking_model",
-		Object:              "model",
-		Created:             now,
-		OwnedBy:             "trae",
-		Type:                "trae",
-		DisplayName:         "Trae No Thinking Model",
-		Name:                "no_thinking_model",
-		ContextLength:       40000,
-		MaxCompletionTokens: 65536,
-	})
-}
-
-func removeSupportedParameter(parameters []string, parameter string) []string {
-	filtered := parameters[:0]
-	for _, current := range parameters {
-		if strings.EqualFold(strings.TrimSpace(current), parameter) {
-			continue
-		}
-		filtered = append(filtered, current)
-	}
-	return filtered
-}
-
-func appendTraeV3AgentModels(models []*registry.ModelInfo, now int64) []*registry.ModelInfo {
-	v3Models := []struct {
+func appendTraeModernAliases(models []*registry.ModelInfo, configs map[string]traeDetailModelConfig, now int64) []*registry.ModelInfo {
+	aliases := []struct {
 		id          string
+		officialID  string
 		displayName string
-		context     int
 	}{
-		{"glm-4.7", "GLM-4.7", 16000},
-		{"glm-5", "GLM-5", 16000},
-		{"glm-5.1", "GLM-5.1", 16000},
-		{"DeepSeek-V4-Pro", "DeepSeek V4 Pro", 16000},
-		{"DeepSeek-V4-Flash", "DeepSeek V4 Flash", 16000},
-		{"kimi-k2.6", "Kimi K2.6", 16000},
-		{"qwen-3.6-plus", "Qwen 3.6 Plus", 16000},
+		{"DeepSeek-V4-Pro", "DeepSeek-V4-Pro-Official", "DeepSeek V4 Pro"},
+		{"DeepSeek-V4-Flash", "DeepSeek-V4-Flash-Official", "DeepSeek V4 Flash"},
 	}
 	existing := make(map[string]struct{}, len(models))
 	for _, m := range models {
@@ -346,22 +307,29 @@ func appendTraeV3AgentModels(models []*registry.ModelInfo, now int64) []*registr
 			existing[strings.ToLower(strings.TrimSpace(m.ID))] = struct{}{}
 		}
 	}
-	for _, v := range v3Models {
-		if _, ok := existing[strings.ToLower(v.id)]; ok {
+	for _, a := range aliases {
+		if _, ok := existing[strings.ToLower(a.id)]; ok {
 			continue
 		}
-		models = append(models, &registry.ModelInfo{
-			ID:                  v.id,
-			Object:              "model",
-			Created:             now,
-			OwnedBy:             "trae",
-			Type:                "trae",
-			DisplayName:         v.displayName,
-			Name:                v.id,
-			ContextLength:       v.context,
-			MaxCompletionTokens: 65536,
-			SupportedParameters: []string{"tools"},
-		})
+		if _, ok := existing[strings.ToLower(a.officialID)]; ok {
+			models = append(models, &registry.ModelInfo{
+				ID:                  a.id,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             "trae",
+				Type:                "trae",
+				DisplayName:         a.displayName,
+				Name:                a.id,
+				ContextLength:       128000,
+				MaxCompletionTokens: 65536,
+				SupportedParameters: []string{"tools"},
+			})
+			if configs != nil {
+				if offCfg, has := configs[strings.ToLower(a.officialID)]; has {
+					configs[strings.ToLower(a.id)] = offCfg
+				}
+			}
+		}
 	}
 	return models
 }
@@ -449,41 +417,4 @@ func parseTraeDetailParamWithConfigs(data []byte, now int64) ([]*registry.ModelI
 		}
 	}
 	return models, detailConfigs
-}
-
-func appendTraeV1RawChatModels(models []*registry.ModelInfo, now int64) []*registry.ModelInfo {
-	v1Models := []struct {
-		id          string
-		displayName string
-		context     int
-	}{
-		{"seed_m8", "Doubao 1.5 Pro", 28000},
-		{"deepseek-R1", "DeepSeek Reasoner R1", 40000},
-		{"deepseek-V3", "DeepSeek V3", 40000},
-		{"deepseek-V3-0324", "DeepSeek V3 0324", 40000},
-	}
-	existing := make(map[string]struct{}, len(models))
-	for _, m := range models {
-		if m != nil {
-			existing[strings.ToLower(strings.TrimSpace(m.ID))] = struct{}{}
-		}
-	}
-	for _, v := range v1Models {
-		if _, ok := existing[strings.ToLower(v.id)]; ok {
-			continue
-		}
-		models = append(models, &registry.ModelInfo{
-			ID:                  v.id,
-			Object:              "model",
-			Created:             now,
-			OwnedBy:             "trae",
-			Type:                "trae",
-			DisplayName:         v.displayName,
-			Name:                v.id,
-			ContextLength:       v.context,
-			MaxCompletionTokens: 65536,
-			SupportedParameters: []string{"tools"},
-		})
-	}
-	return models
 }

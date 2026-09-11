@@ -373,10 +373,13 @@ func (p *Plugin) aggregateToResponse(aggregate []byte, req executorRPCRequest, h
 
 	for _, line := range bytes.Split(aggregate, []byte{'\n'}) {
 		trimmed := bytes.TrimSpace(line)
-		if len(trimmed) == 0 || !bytes.HasPrefix(trimmed, []byte("data:")) {
+		if len(trimmed) == 0 {
 			continue
 		}
-		data := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+		data := trimmed
+		if bytes.HasPrefix(trimmed, []byte("data:")) {
+			data = bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+		}
 		if string(data) == "[DONE]" || !gjson.ValidBytes(data) {
 			continue
 		}

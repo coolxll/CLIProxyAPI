@@ -486,6 +486,9 @@ func mergedStorageJSON(raw []byte, metadata map[string]any, provider string) ([]
 		}
 	}
 	for key, value := range metadata {
+		if coreauth.IsAuthTokenPayloadKey(key) {
+			continue
+		}
 		out[key] = value
 	}
 	provider = normalizeProviderID(provider)

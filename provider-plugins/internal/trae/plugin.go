@@ -260,8 +260,9 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
 	p.replaceTraeDetailModelConfigs(req.AuthID, nil)
 	models, configs, errModels := fetchModels(host, creds)
-	if errModels != nil {
-		return nil, errModels
+	if errModels != nil || len(models) == 0 {
+		models = staticModels()
+		configs = nil
 	}
 	p.replaceTraeDetailModelConfigs(req.AuthID, configs)
 	return pluginOK(pluginapi.ModelResponse{

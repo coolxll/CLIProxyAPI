@@ -23,7 +23,7 @@ func fetchModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, map[st
 	if err != nil {
 		models, err = fetchModelsFromModelList(host, creds, now)
 		if err != nil {
-			return nil, nil, err
+			return staticModels(), nil, nil
 		}
 		configs = nil
 	}

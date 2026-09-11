@@ -201,9 +201,6 @@ func (p *Plugin) pollLogin(raw []byte) ([]byte, error) {
 		return pluginruntime.OK(pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusPending})
 	}
 
-	// Login succeeded! Clean up process and work directory
-	p.removeOAuthSession(state)
-
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
 	config := p.configSnapshot()
 	if errExchange := exchangeToken(host, creds, config.APIBaseURL); errExchange != nil {
@@ -212,6 +209,9 @@ func (p *Plugin) pollLogin(raw []byte) ([]byte, error) {
 	if errValidate := validateCredentials(*creds); errValidate != nil {
 		return nil, errValidate
 	}
+
+	// Login succeeded! Clean up process and work directory
+	p.removeOAuthSession(state)
 
 	label := strings.TrimSpace(creds.Name)
 	if label == "" {

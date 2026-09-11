@@ -47,10 +47,16 @@ func FindLingmaServiceBinary() (string, error) {
 	return NewLingmaBinaryResolver().Resolve()
 }
 
-// EnsureLingmaServiceBinary finds an existing binary, or automatically downloads it from VSIX.
+// EnsureLingmaServiceBinary finds an existing binary, extracts an embedded binary if available,
+// or automatically downloads it from VSIX.
 func EnsureLingmaServiceBinary() (string, error) {
 	if bin, err := FindLingmaServiceBinary(); err == nil && bin != "" {
 		return bin, nil
+	}
+	if hasEmbeddedLingma() {
+		if bin, err := extractEmbeddedLingma(""); err == nil && bin != "" {
+			return bin, nil
+		}
 	}
 	return DownloadLingmaServiceBinary("")
 }
@@ -128,6 +134,24 @@ func (r LingmaBinaryResolver) candidates(env func(string) string) []string {
 		for _, platform := range platforms {
 			candidates = append(candidates, filepath.Join("/usr/local/bin/Lingma"))
 			candidates = append(candidates, filepath.Join(home, ".config", "lingma", "bin", platform, "Lingma"))
+		}
+	}
+
+	// Look in local plugins directory (e.g. plugins/linux/amd64/Lingma) and relative to executable
+	binaryName := "Lingma"
+	if r.GOOS == "windows" {
+		binaryName = "Lingma.exe"
+	}
+	for _, platform := range platforms {
+		candidates = append(candidates, filepath.Join("plugins", platform, binaryName))
+		candidates = append(candidates, filepath.Join("plugins", r.GOOS, r.GOARCH, binaryName))
+	}
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		for _, platform := range platforms {
+			candidates = append(candidates, filepath.Join(exeDir, "plugins", platform, binaryName))
+			candidates = append(candidates, filepath.Join(exeDir, "plugins", r.GOOS, r.GOARCH, binaryName))
+			candidates = append(candidates, filepath.Join(exeDir, binaryName))
 		}
 	}
 
@@ -276,54 +300,120 @@ func DownloadLingmaServiceBinary(destDir string) (string, error) {
 	}
 	_ = tmpFile.Close()
 
-	// Extract binary from zip
-	zr, err := zip.OpenReader(tmpFile.Name())
+	return ExtractLingmaServiceBinaryFromVSIX(tmpFile.Name(), destDir, platforms, binaryName)
+}
+
+// ExtractLingmaServiceBinaryFromVSIX extracts the official service binary and related assets
+// from a downloaded Lingma VSIX extension package.
+func ExtractLingmaServiceBinaryFromVSIX(vsixPath, destDir string, platforms []string, binaryName string) (string, error) {
+	zr, err := zip.OpenReader(vsixPath)
 	if err != nil {
 		return "", fmt.Errorf("open lingma vsix zip: %w", err)
 	}
 	defer zr.Close()
 
-	// Search for binary matching one of the platform directories
-	var matchedFile *zip.File
+	// Strategy 1: Check directly in the outer zip (e.g. desktop app or future VSIX layout)
 	for _, p := range platforms {
 		expectedSuffix := "resources/bin/" + p + "/" + binaryName
 		for _, f := range zr.File {
 			cleanName := strings.ReplaceAll(filepath.ToSlash(f.Name), "\\", "/")
-			if strings.HasSuffix(cleanName, expectedSuffix) {
-				matchedFile = f
-				primaryPlatform = p
-				finalPath = filepath.Join(destDir, primaryPlatform, binaryName)
-				break
+			if strings.HasSuffix(cleanName, expectedSuffix) || strings.HasSuffix(cleanName, p+"/"+binaryName) {
+				finalPath := filepath.Join(destDir, p, binaryName)
+				if err := extractSingleZipFile(f, finalPath); err != nil {
+					return "", err
+				}
+				return finalPath, nil
 			}
 		}
-		if matchedFile != nil {
-			break
+	}
+
+	// Strategy 2: Check for embedded inner zip (e.g. extension/dist/bin/lingma-*.zip in official VSIX)
+	for _, f := range zr.File {
+		cleanName := strings.ReplaceAll(filepath.ToSlash(f.Name), "\\", "/")
+		if !strings.HasSuffix(strings.ToLower(cleanName), ".zip") {
+			continue
 		}
+
+		tmpInner, errTmp := os.CreateTemp("", "lingma-inner-*.zip")
+		if errTmp != nil {
+			return "", fmt.Errorf("create temp inner zip: %w", errTmp)
+		}
+		defer func(name string) {
+			_ = os.Remove(name)
+		}(tmpInner.Name())
+
+		rc, errOpen := f.Open()
+		if errOpen != nil {
+			_ = tmpInner.Close()
+			continue
+		}
+		_, errCopy := io.Copy(tmpInner, rc)
+		_ = rc.Close()
+		_ = tmpInner.Close()
+		if errCopy != nil {
+			continue
+		}
+
+		innerZR, errInner := zip.OpenReader(tmpInner.Name())
+		if errInner != nil {
+			continue
+		}
+
+		for _, p := range platforms {
+			targetSuffix := "/" + p + "/" + binaryName
+			for _, item := range innerZR.File {
+				itemName := strings.ReplaceAll(filepath.ToSlash(item.Name), "\\", "/")
+				if strings.HasSuffix(itemName, targetSuffix) || itemName == p+"/"+binaryName {
+					platformPrefix := itemName[:len(itemName)-len(binaryName)]
+					for _, subItem := range innerZR.File {
+						subName := strings.ReplaceAll(filepath.ToSlash(subItem.Name), "\\", "/")
+						if strings.HasPrefix(subName, platformPrefix) && !subItem.FileInfo().IsDir() {
+							rel := strings.TrimPrefix(subName, platformPrefix)
+							targetFilePath := filepath.Join(destDir, p, rel)
+							if err := extractSingleZipFile(subItem, targetFilePath); err != nil {
+								_ = innerZR.Close()
+								return "", err
+							}
+						}
+					}
+					_ = innerZR.Close()
+					finalPath := filepath.Join(destDir, p, binaryName)
+					return finalPath, nil
+				}
+			}
+		}
+		_ = innerZR.Close()
 	}
 
-	if matchedFile == nil {
-		return "", fmt.Errorf("binary %s not found in Lingma VSIX for platforms %v", binaryName, platforms)
-	}
+	return "", fmt.Errorf("binary %s not found in Lingma VSIX for platforms %v", binaryName, platforms)
+}
 
-	rc, err := matchedFile.Open()
+func extractSingleZipFile(f *zip.File, destPath string) error {
+	rc, err := f.Open()
 	if err != nil {
-		return "", fmt.Errorf("open binary in vsix zip: %w", err)
+		return fmt.Errorf("open zip item %s: %w", f.Name, err)
 	}
 	defer rc.Close()
 
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		return "", fmt.Errorf("create binary destination dir: %w", err)
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return fmt.Errorf("create dir for %s: %w", destPath, err)
 	}
 
-	outFile, err := os.OpenFile(finalPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	mode := f.Mode()
+	if mode&0o111 != 0 || !strings.HasSuffix(strings.ToLower(destPath), ".dll") {
+		mode = 0o755
+	} else {
+		mode = 0o644
+	}
+
+	outFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
-		return "", fmt.Errorf("create extracted binary: %w", err)
+		return fmt.Errorf("create output file %s: %w", destPath, err)
 	}
 	defer outFile.Close()
 
 	if _, err := io.Copy(outFile, rc); err != nil {
-		return "", fmt.Errorf("extract binary data: %w", err)
+		return fmt.Errorf("write data to %s: %w", destPath, err)
 	}
-
-	return finalPath, nil
+	return nil
 }

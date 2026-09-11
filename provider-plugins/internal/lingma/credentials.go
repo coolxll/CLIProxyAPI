@@ -129,7 +129,7 @@ func exchangeToken(host hostRPC, creds *credentials, apiBaseURL string) error {
 	}
 
 	if errActivate := activateCosyKey(host, *creds, apiBaseURL); errActivate != nil {
-		return fmt.Errorf("activate Lingma key: %w", errActivate)
+		host.log("warn", "Lingma key activation probe warning: "+errActivate.Error(), nil)
 	}
 	return nil
 }

@@ -1,0 +1,26 @@
+{
+  "model_configs": [
+    {
+      "status": true,
+      "name": "DeepSeek-V4-Pro",
+      "display_name": "DeepSeek V4 Pro",
+      "prompt_max_tokens": 100000
+    },
+    {
+      "status": true,
+      "name": "glm-5.1",
+      "display_name": "GLM-5.1",
+      "prompt_max_tokens": 100000
+    },
+    {
+      "status": false,
+      "name": "disabled-model",
+      "display_name": "Disabled Model"
+    },
+    {
+      "status": true,
+      "name": "Doubao_1_5_thinking_pro",
+      "display_name": "Doubao 1.5 Thinking Pro"
+    }
+  ]
+}

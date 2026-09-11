@@ -14,10 +14,11 @@ PLUGIN_EXT := so
 endif
 
 LINGMA_ARTIFACT := $(BIN_DIR)/lingma-plugin-v$(VERSION).$(PLUGIN_EXT)
+TRAE_ARTIFACT := $(BIN_DIR)/trae-plugin-v$(VERSION).$(PLUGIN_EXT)
 
-.PHONY: build test fmt package checksums package-check release-check clean force
+.PHONY: build test fmt download-lingma package checksums package-check release-check clean force
 
-build: $(LINGMA_ARTIFACT)
+build: $(LINGMA_ARTIFACT) $(TRAE_ARTIFACT)
 
 test:
 	go test ./...
@@ -25,12 +26,17 @@ test:
 fmt:
 	gofmt -w .
 
+download-lingma:
+	go run ./cmd/download-lingma
+
 package: build
+	rm -rf $(DIST_DIR)
 	mkdir -p $(DIST_DIR)
-	rm -f $(DIST_DIR)/lingma-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip $(DIST_DIR)/checksums.txt
 	cp $(LINGMA_ARTIFACT) $(DIST_DIR)/lingma-plugin.$(PLUGIN_EXT)
+	cp $(TRAE_ARTIFACT) $(DIST_DIR)/trae-plugin.$(PLUGIN_EXT)
 	cd $(DIST_DIR) && zip -q lingma-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip lingma-plugin.$(PLUGIN_EXT)
-	rm -f $(DIST_DIR)/lingma-plugin.$(PLUGIN_EXT)
+	cd $(DIST_DIR) && zip -q trae-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip trae-plugin.$(PLUGIN_EXT)
+	rm -f $(DIST_DIR)/lingma-plugin.$(PLUGIN_EXT) $(DIST_DIR)/trae-plugin.$(PLUGIN_EXT)
 	$(MAKE) checksums
 	$(MAKE) package-check
 
@@ -39,19 +45,24 @@ checksums:
 
 package-check:
 	test "$$(unzip -Z1 $(DIST_DIR)/lingma-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip)" = "lingma-plugin.$(PLUGIN_EXT)"
+	test "$$(unzip -Z1 $(DIST_DIR)/trae-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip)" = "trae-plugin.$(PLUGIN_EXT)"
 	cd $(DIST_DIR) && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c checksums.txt; else shasum -a 256 -c checksums.txt; fi
 
 release-check: fmt test package
 
 clean:
-	rm -f $(LINGMA_ARTIFACT)
-	rm -f $(DIST_DIR)/lingma-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip $(DIST_DIR)/checksums.txt
+	rm -rf $(BIN_DIR)
+	rm -rf $(DIST_DIR)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 $(LINGMA_ARTIFACT): force | $(BIN_DIR)
 	CGO_ENABLED=1 go build -buildmode=c-shared -o $@ ./cmd/lingma
+	rm -f $(basename $@).h
+
+$(TRAE_ARTIFACT): force | $(BIN_DIR)
+	CGO_ENABLED=1 go build -buildmode=c-shared -o $@ ./cmd/trae
 	rm -f $(basename $@).h
 
 force:

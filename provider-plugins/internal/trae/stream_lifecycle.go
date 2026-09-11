@@ -1,4 +1,4 @@
-package lingma
+package trae
 
 import "fmt"
 
@@ -22,32 +22,6 @@ func (p *Plugin) beginStream(outputID string, host hostRPC, upstreamID string) b
 	p.streamWG.Add(1)
 	p.activeStreams[outputID] = activePluginStream{host: host, upstreamID: upstreamID}
 	return true
-}
-
-func (p *Plugin) updateStreamUpstream(outputID, upstreamID string) bool {
-	if p == nil {
-		return false
-	}
-	p.streamMu.Lock()
-	defer p.streamMu.Unlock()
-	if p.shuttingDown {
-		return false
-	}
-	stream, ok := p.activeStreams[outputID]
-	if ok {
-		stream.upstreamID = upstreamID
-		p.activeStreams[outputID] = stream
-	}
-	return ok
-}
-
-func (p *Plugin) isShuttingDown() bool {
-	if p == nil {
-		return true
-	}
-	p.streamMu.Lock()
-	defer p.streamMu.Unlock()
-	return p.shuttingDown
 }
 
 func (p *Plugin) endStream(outputID string) {
@@ -77,21 +51,8 @@ func (p *Plugin) Shutdown() {
 
 		for outputID, stream := range active {
 			stream.host.closeHTTPStream(stream.upstreamID)
-			stream.host.closeOutputStream(outputID, fmt.Errorf("Lingma plugin is shutting down"))
+			stream.host.closeOutputStream(outputID, fmt.Errorf("Trae plugin is shutting down"))
 		}
 		p.streamWG.Wait()
-
-		p.oauthMu.Lock()
-		sessions := make([]*lingmaOAuthSession, 0, len(p.oauthSessions))
-		for _, s := range p.oauthSessions {
-			sessions = append(sessions, s)
-		}
-		p.oauthSessions = make(map[string]*lingmaOAuthSession)
-		p.oauthMu.Unlock()
-		for _, s := range sessions {
-			if s != nil {
-				s.stop()
-			}
-		}
 	})
 }

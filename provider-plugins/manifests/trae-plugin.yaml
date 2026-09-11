@@ -1,0 +1,14 @@
+schema-version: 1
+id: trae-plugin
+name: Trae Provider
+description: Trae authentication, dynamic models, V1/V2/V3 protocols, streaming, tools, and usage support.
+author: CLIProxyAPI contributors
+version: 0.2.0
+release-tag: v0.2.0
+repository: https://github.com/coolxll/CLIProxyAPI
+homepage: https://github.com/coolxll/CLIProxyAPI/tree/codex/lingma-trae-provider-plugins/provider-plugins
+tags:
+  - provider
+  - trae
+install:
+  type: github-release

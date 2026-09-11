@@ -1,0 +1,83 @@
+{
+  "config_info_list": [
+    {
+      "usage": "chat_completion",
+      "config_switch": true,
+      "is_invisible_to_user": false,
+      "config_name": "DeepSeek-V4-Pro",
+      "model_detail_list": [
+        {
+          "model_name": "deepseek-v4-pro-20250101",
+          "prompt_max_tokens": 100000,
+          "max_tokens": 16000
+        }
+      ],
+      "display_config": {
+        "display_name": "DeepSeek V4 Pro",
+        "multimodal": false
+      }
+    },
+    {
+      "usage": "chat_completion",
+      "config_switch": true,
+      "is_invisible_to_user": false,
+      "config_name": "Doubao-Seed-2.0-Code",
+      "model_detail_list": [
+        {
+          "model_name": "doubao-seed-2.0-code-20250101",
+          "prompt_max_tokens": 100000,
+          "max_tokens": 16000
+        }
+      ],
+      "display_config": {
+        "display_name": "Doubao-Seed-2.0-Code",
+        "multimodal": true
+      }
+    },
+    {
+      "usage": "chat_completion",
+      "config_switch": false,
+      "is_invisible_to_user": false,
+      "config_name": "disabled-model",
+      "display_config": {
+        "display_name": "Disabled Model"
+      }
+    },
+    {
+      "usage": "chat_completion",
+      "config_switch": true,
+      "is_invisible_to_user": true,
+      "config_name": "hidden-model",
+      "display_config": {
+        "display_name": "Hidden Model"
+      }
+    },
+    {
+      "usage": "other_usage",
+      "config_switch": true,
+      "is_invisible_to_user": false,
+      "config_name": "non-chat-model",
+      "display_config": {
+        "display_name": "Non-Chat Model"
+      }
+    },
+    {
+      "usage": "chat_completion",
+      "config_switch": true,
+      "is_invisible_to_user": false,
+      "config_name": "custom_model_test",
+      "display_config": {
+        "display_name": "Custom Model"
+      }
+    },
+    {
+      "usage": "chat_completion",
+      "config_switch": true,
+      "is_invisible_to_user": false,
+      "config_name": "test-auto",
+      "display_config": {
+        "display_name": "Auto Model"
+      }
+    }
+  ]
+}

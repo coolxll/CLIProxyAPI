@@ -1,4 +1,4 @@
-package lingma
+package trae
 
 import (
 	"bytes"
@@ -15,13 +15,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	"github.com/tidwall/sjson"
 )
 
 const (
 	// ProviderID is intentionally different from the native provider during the
 	// shadow migration phase.
-	ProviderID = "lingma-plugin"
+	ProviderID = "trae-plugin"
 	Version    = "0.2.0"
 )
 
@@ -30,22 +29,16 @@ var unsafeFileCharacter = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 // HostCall invokes one of the host callbacks exposed by the C ABI.
 type HostCall func(method string, request []byte) ([]byte, error)
 
-// Plugin owns Lingma authentication, model discovery, translation, execution,
-// recovery, and one-shot thinking fallback state.
+// Plugin owns Trae provider state.
 type Plugin struct {
-	hostCall HostCall
-	mu       sync.RWMutex
-	config   pluginConfig
-	fallback *oneShotFallback
-
-	streamMu      sync.Mutex
-	streamWG      sync.WaitGroup
-	activeStreams map[string]activePluginStream
-	shuttingDown  bool
-	shutdownOnce  sync.Once
-
-	oauthMu       sync.Mutex
-	oauthSessions map[string]*lingmaOAuthSession
+	hostCall       HostCall
+	detailConfigMu sync.RWMutex
+	detailConfigs  map[string]map[string]traeDetailModelConfig
+	streamMu       sync.Mutex
+	streamWG       sync.WaitGroup
+	activeStreams  map[string]activePluginStream
+	shuttingDown   bool
+	shutdownOnce   sync.Once
 }
 
 type lifecycleRequest struct {
@@ -65,7 +58,6 @@ type registrationCapabilities struct {
 	ExecutorModelScope    pluginapi.ExecutorModelScope `json:"executor_model_scope"`
 	ExecutorInputFormats  []string                     `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
-	ThinkingApplier       bool                         `json:"thinking_applier"`
 }
 
 type identifierResponse struct {
@@ -73,27 +65,22 @@ type identifierResponse struct {
 }
 
 type credentials struct {
-	Type               string `json:"type"`
-	MachineID          string `json:"machine_id"`
-	UID                string `json:"uid"`
-	OrganizationID     string `json:"organization_id"`
-	CosyKey            string `json:"key"`
-	SecurityOAuthToken string `json:"security_oauth_token"`
-	RefreshToken       string `json:"refresh_token"`
-	ExpireTime         int64  `json:"expire_time"`
-	EncryptUserInfo    string `json:"encrypt_user_info"`
-	UserType           string `json:"user_type"`
-	Name               string `json:"name"`
+	Type          string `json:"type"`
+	JWTToken      string `json:"jwt_token"`
+	MachineID     string `json:"machine_id"`
+	DeviceID      string `json:"device_id"`
+	UserID        string `json:"user_id"`
+	Name          string `json:"name"`
+	WorkspacePath string `json:"workspace_path"`
+	RefreshToken  string `json:"refresh_token"`
 }
 
-// New constructs a Lingma shadow plugin.
+// New constructs a Trae shadow plugin.
 func New(hostCall HostCall) *Plugin {
 	return &Plugin{
 		hostCall:      hostCall,
-		config:        defaultPluginConfig(),
-		fallback:      newOneShotFallback(),
+		detailConfigs: make(map[string]map[string]traeDetailModelConfig),
 		activeStreams: make(map[string]activePluginStream),
-		oauthSessions: make(map[string]*lingmaOAuthSession),
 	}
 }
 
@@ -115,13 +102,6 @@ func (p *Plugin) Handle(method string, request []byte) ([]byte, error) {
 				return nil, fmt.Errorf("decode lifecycle request: %w", errUnmarshal)
 			}
 		}
-		config, errConfig := parsePluginConfig(lifecycle.ConfigYAML)
-		if errConfig != nil {
-			return nil, fmt.Errorf("decode Lingma plugin configuration: %w", errConfig)
-		}
-		p.mu.Lock()
-		p.config = config
-		p.mu.Unlock()
 		return pluginruntime.OK(pluginRegistration())
 	case pluginabi.MethodPluginShutdown:
 		p.Shutdown()
@@ -137,7 +117,7 @@ func (p *Plugin) Handle(method string, request []byte) ([]byte, error) {
 	case pluginabi.MethodAuthRefresh:
 		return p.refreshAuth(request)
 	case pluginabi.MethodModelStatic:
-		return pluginruntime.OK(pluginapi.ModelResponse{Provider: ProviderID})
+		return p.staticModels(request)
 	case pluginabi.MethodModelForAuth:
 		return p.modelsForAuth(request)
 	case pluginabi.MethodExecutorIdentifier:
@@ -150,10 +130,6 @@ func (p *Plugin) Handle(method string, request []byte) ([]byte, error) {
 		return p.countTokens(request)
 	case pluginabi.MethodExecutorHTTPRequest:
 		return p.httpRequest(request)
-	case pluginabi.MethodThinkingIdentifier:
-		return pluginruntime.OK(identifierResponse{Identifier: ProviderID})
-	case pluginabi.MethodThinkingApply:
-		return p.applyThinking(request)
 	default:
 		return pluginruntime.Failure("unknown_method", "unknown method: "+method), nil
 	}
@@ -163,26 +139,19 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:             "Lingma Provider (shadow release candidate)",
+			Name:             "Trae Provider (shadow release candidate)",
 			Version:          Version,
 			Author:           "CLIProxyAPI contributors",
 			GitHubRepository: "https://github.com/coolxll/CLIProxyAPI",
-			ConfigFields: []pluginapi.ConfigField{
-				{Name: "api-base-url", Type: pluginapi.ConfigFieldTypeString, Description: "Lingma API base URL; intended for controlled testing."},
-				{Name: "force-http-1-1", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Force upstream HTTP/1.1 to avoid HTTP/2 stream resets."},
-				{Name: "thinking-fallback-enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable one-shot and in-request thinking fallback for large gm51model histories."},
-				{Name: "thinking-fallback-ttl", Type: pluginapi.ConfigFieldTypeString, Description: "One-shot fallback marker lifetime."},
-				{Name: "upstream-recovery", Type: pluginapi.ConfigFieldTypeObject, Description: "Transient retry settings."},
-			},
+			ConfigFields:     []pluginapi.ConfigField{},
 		},
 		Capabilities: registrationCapabilities{
 			ModelProvider:         true,
 			AuthProvider:          true,
 			Executor:              true,
 			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
-			ExecutorInputFormats:  []string{formatOpenAI, formatClaude},
-			ExecutorOutputFormats: []string{formatOpenAI, formatClaude},
-			ThinkingApplier:       true,
+			ExecutorInputFormats:  []string{"openai", "claude"},
+			ExecutorOutputFormats: []string{"openai", "claude"},
 		},
 	}
 }
@@ -190,15 +159,18 @@ func pluginRegistration() registration {
 func (p *Plugin) parseAuth(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthParseRequest
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
-		return nil, fmt.Errorf("decode Lingma auth parse request: %w", errUnmarshal)
+		return nil, fmt.Errorf("decode Trae auth parse request: %w", errUnmarshal)
 	}
 
 	var creds credentials
 	if errUnmarshal := json.Unmarshal(req.RawJSON, &creds); errUnmarshal != nil {
-		return nil, fmt.Errorf("decode Lingma credential JSON: %w", errUnmarshal)
+		return nil, fmt.Errorf("decode Trae credential JSON: %w", errUnmarshal)
 	}
 	if !strings.EqualFold(strings.TrimSpace(creds.Type), ProviderID) {
 		return pluginruntime.OK(pluginapi.AuthParseResponse{Handled: false})
+	}
+	if creds.DeviceID == "" || creds.DeviceID == defaultTraeID {
+		creds.DeviceID = deriveStableDeviceID(creds.JWTToken, creds.UserID)
 	}
 	if errValidate := validateCredentials(creds); errValidate != nil {
 		return nil, errValidate
@@ -208,10 +180,10 @@ func (p *Plugin) parseAuth(raw []byte) ([]byte, error) {
 	if errStorage != nil {
 		return nil, errStorage
 	}
-	fileName := normalizedFileName(req.FileName, creds.UID)
+	fileName := normalizedFileName(req.FileName, accountLabel(creds))
 	label := strings.TrimSpace(creds.Name)
 	if label == "" {
-		label = creds.UID
+		label = accountLabel(creds)
 	}
 	auth := pluginapi.AuthData{
 		Provider:    ProviderID,
@@ -220,12 +192,12 @@ func (p *Plugin) parseAuth(raw []byte) ([]byte, error) {
 		Label:       label,
 		StorageJSON: storageJSON,
 		Metadata: map[string]any{
-			"type": ProviderID,
-			"uid":  creds.UID,
-			"name": label,
+			"type":    ProviderID,
+			"user_id": strings.TrimSpace(creds.UserID),
+			"name":    label,
 		},
 		Attributes: map[string]string{
-			"account": creds.UID,
+			"account": accountLabel(creds),
 		},
 		NextRefreshAfter: nextRefreshTime(creds, time.Now()),
 	}
@@ -242,28 +214,23 @@ type authModelRPCRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
-type thinkingRPCRequest struct {
-	pluginapi.ThinkingApplyRequest
-	HostCallbackID string `json:"host_callback_id,omitempty"`
-}
-
 func (p *Plugin) refreshAuth(raw []byte) ([]byte, error) {
 	var req authRefreshRPCRequest
 	if errUnmarshal := unmarshalRequest(raw, &req); errUnmarshal != nil {
-		return nil, fmt.Errorf("decode Lingma refresh request: %w", errUnmarshal)
+		return nil, fmt.Errorf("decode Trae refresh request: %w", errUnmarshal)
 	}
 	creds, errCredentials := credentialsFromStorage(req.StorageJSON)
 	if errCredentials != nil {
 		return nil, errCredentials
 	}
-	config := p.configSnapshot()
-	if errExchange := exchangeToken(hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}, &creds, config.APIBaseURL); errExchange != nil {
-		return nil, errExchange
+	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
+	if errRefresh := refreshToken(host, &creds, traeAPIHost); errRefresh != nil {
+		return nil, errRefresh
 	}
 	storage := marshalStorage(creds)
 	label := strings.TrimSpace(creds.Name)
 	if label == "" {
-		label = creds.UID
+		label = accountLabel(creds)
 	}
 	nextRefresh := nextRefreshTime(creds, time.Now())
 	auth := pluginapi.AuthData{
@@ -272,7 +239,7 @@ func (p *Plugin) refreshAuth(raw []byte) ([]byte, error) {
 		Label:            label,
 		StorageJSON:      storage,
 		Metadata:         sanitizedMetadata(creds, label),
-		Attributes:       cloneAttributes(req.Attributes, creds.UID),
+		Attributes:       cloneAttributes(req.Attributes, creds.UserID),
 		NextRefreshAfter: nextRefresh,
 	}
 	if auth.ID == "" {
@@ -281,65 +248,37 @@ func (p *Plugin) refreshAuth(raw []byte) ([]byte, error) {
 	return pluginruntime.OK(pluginapi.AuthRefreshResponse{Auth: auth, NextRefreshAfter: nextRefresh})
 }
 
-func (p *Plugin) applyThinking(raw []byte) ([]byte, error) {
-	var req thinkingRPCRequest
+func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
+	var req authModelRPCRequest
 	if errUnmarshal := unmarshalRequest(raw, &req); errUnmarshal != nil {
-		return nil, fmt.Errorf("decode Lingma thinking request: %w", errUnmarshal)
+		return nil, fmt.Errorf("decode Trae model request: %w", errUnmarshal)
 	}
-	enabled := true
-	switch strings.ToLower(strings.TrimSpace(req.Config.Mode)) {
-	case "none":
-		enabled = false
-	case "budget":
-		enabled = req.Config.Budget != 0
-	case "level":
-		enabled = !strings.EqualFold(strings.TrimSpace(req.Config.Level), "none")
+	creds, errCredentials := credentialsFromStorage(req.StorageJSON)
+	if errCredentials != nil {
+		return nil, errCredentials
 	}
-	body := req.Body
-	if len(body) == 0 {
-		body = []byte(`{}`)
+	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
+	p.replaceTraeDetailModelConfigs(req.AuthID, nil)
+	models, configs, errModels := fetchModels(host, creds)
+	if errModels != nil {
+		return nil, errModels
 	}
-	result, errSet := sjson.SetBytes(body, "model_config.is_reasoning", enabled)
-	if errSet != nil {
-		return nil, errSet
-	}
-	if !enabled {
-		result = disableThinking(result)
-	}
-	return pluginruntime.OK(pluginapi.PayloadResponse{Body: result})
+	p.replaceTraeDetailModelConfigs(req.AuthID, configs)
+	return pluginOK(pluginapi.ModelResponse{
+		Provider: ProviderID,
+		Models:   models,
+	})
 }
 
-func sanitizedMetadata(creds credentials, label string) map[string]any {
-	metadata := map[string]any{
-		"type":        ProviderID,
-		"uid":         creds.UID,
-		"name":        label,
-		"user_type":   creds.UserType,
-		"expire_time": creds.ExpireTime,
-		"expires_at":  credentialExpiry(creds, time.Now()),
+func (p *Plugin) staticModels(raw []byte) ([]byte, error) {
+	var req pluginapi.StaticModelRequest
+	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode Trae static model request: %w", errUnmarshal)
 	}
-	if creds.OrganizationID != "" {
-		metadata["organization_id"] = creds.OrganizationID
-	}
-	return metadata
-}
-
-func cloneAttributes(source map[string]string, uid string) map[string]string {
-	result := make(map[string]string, len(source)+1)
-	for key, value := range source {
-		result[key] = value
-	}
-	result["account"] = uid
-	return result
-}
-
-func (p *Plugin) configSnapshot() pluginConfig {
-	if p == nil {
-		return defaultPluginConfig()
-	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.config
+	return pluginOK(pluginapi.ModelResponse{
+		Provider: ProviderID,
+		Models:   staticModels(),
+	})
 }
 
 func validateCredentials(creds credentials) error {
@@ -347,15 +286,13 @@ func validateCredentials(creds credentials) error {
 		name  string
 		value string
 	}{
+		{name: "jwt_token", value: creds.JWTToken},
 		{name: "machine_id", value: creds.MachineID},
-		{name: "uid", value: creds.UID},
-		{name: "key", value: creds.CosyKey},
-		{name: "security_oauth_token", value: creds.SecurityOAuthToken},
-		{name: "encrypt_user_info", value: creds.EncryptUserInfo},
+		{name: "device_id", value: creds.DeviceID},
 	}
 	for _, field := range required {
 		if strings.TrimSpace(field.value) == "" {
-			return fmt.Errorf("Lingma credential is missing required field %s", field.name)
+			return fmt.Errorf("Trae credential is missing required field %s", field.name)
 		}
 	}
 	return nil
@@ -364,25 +301,66 @@ func validateCredentials(creds credentials) error {
 func compactJSON(raw []byte) ([]byte, error) {
 	var out bytes.Buffer
 	if errCompact := json.Compact(&out, raw); errCompact != nil {
-		return nil, fmt.Errorf("compact Lingma credential JSON: %w", errCompact)
+		return nil, fmt.Errorf("compact Trae credential JSON: %w", errCompact)
 	}
 	return out.Bytes(), nil
 }
 
 func stableAuthID(creds credentials) string {
-	digest := sha256.Sum256([]byte(strings.TrimSpace(creds.MachineID)))
-	return ProviderID + ":" + strings.TrimSpace(creds.UID) + ":" + hex.EncodeToString(digest[:4])
+	digest := sha256.Sum256([]byte(strings.TrimSpace(creds.JWTToken) + "\x00" + strings.TrimSpace(creds.MachineID)))
+	return ProviderID + ":" + accountLabel(creds) + ":" + hex.EncodeToString(digest[:4])
 }
 
-func normalizedFileName(candidate, uid string) string {
+func accountLabel(creds credentials) string {
+	if userID := strings.TrimSpace(creds.UserID); userID != "" && userID != "0" {
+		return userID
+	}
+	digest := sha256.Sum256([]byte(strings.TrimSpace(creds.JWTToken)))
+	return "account-" + hex.EncodeToString(digest[:4])
+}
+
+func normalizedFileName(candidate, account string) string {
 	base := filepath.Base(strings.TrimSpace(candidate))
 	if strings.EqualFold(filepath.Ext(base), ".json") && base != ".json" {
 		return base
 	}
-	account := unsafeFileCharacter.ReplaceAllString(strings.TrimSpace(uid), "-")
+	account = unsafeFileCharacter.ReplaceAllString(strings.TrimSpace(account), "-")
 	account = strings.Trim(account, "-._")
 	if account == "" {
 		account = "account"
 	}
 	return ProviderID + "-" + account + ".json"
+}
+
+func marshalStorage(creds credentials) []byte {
+	data, err := json.Marshal(creds)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+func sanitizedMetadata(creds credentials, label string) map[string]any {
+	return map[string]any{
+		"type":    ProviderID,
+		"user_id": strings.TrimSpace(creds.UserID),
+		"name":    label,
+	}
+}
+
+func cloneAttributes(source map[string]string, userID string) map[string]string {
+	result := make(map[string]string, len(source)+1)
+	for key, value := range source {
+		result[key] = value
+	}
+	result["account"] = userID
+	return result
+}
+
+func unmarshalRequest(raw []byte, target any) error {
+	return json.Unmarshal(raw, target)
+}
+
+func pluginOK[T any](result T) ([]byte, error) {
+	return pluginruntime.OK(result)
 }

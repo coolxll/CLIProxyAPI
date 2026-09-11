@@ -159,6 +159,9 @@ func (p *traeStreamProcessor) processLine(line []byte) error {
 		p.captureHistory(data)
 		return nil
 	}
+	if event == "extra_info" || event == "metadata" || event == "timing_cost" {
+		return nil
+	}
 
 	content := firstStringField(dataStr,
 		"choices.0.delta.content",
@@ -457,6 +460,12 @@ func (p *traeStreamProcessor) emitTranslated(chunk []byte) error {
 		&p.translateParam,
 	)
 	for _, output := range translated {
+		output = bytes.TrimPrefix(output, []byte("data: "))
+		output = bytes.TrimSuffix(output, []byte("\n\n"))
+		output = bytes.TrimSuffix(output, []byte("\n"))
+		if len(output) == 0 {
+			continue
+		}
 		if err := p.emit(output, nil); err != nil {
 			return err
 		}

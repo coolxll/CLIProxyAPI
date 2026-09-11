@@ -252,7 +252,10 @@ func openAIStreamData(stream []byte) []string {
 	for _, line := range bytes.Split(stream, []byte{'\n'}) {
 		trimmed := bytes.TrimSpace(line)
 		if bytes.HasPrefix(trimmed, []byte("data:")) {
-			data = append(data, strings.TrimSpace(string(bytes.TrimPrefix(trimmed, []byte("data:")))))
+			trimmed = bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+		}
+		if len(trimmed) > 0 {
+			data = append(data, string(trimmed))
 		}
 	}
 	return data

@@ -251,9 +251,15 @@ func (p *Plugin) openUpstreamStream(host hostRPC, creds credentials, build *trae
 	}
 	httpReq.Headers.Set("Content-Type", "application/json")
 	setTraeCommonHeaders(httpReq.Headers, creds)
-	httpReq.Headers.Set("X-Ide-Session-Id", build.SessionID)
-	httpReq.Headers.Set("X-Request-Pin", build.RequestPin)
-	httpReq.Headers.Set("X-Requested-At", strconv.FormatInt(build.RequestAt, 10))
+	if build.SessionID != "" {
+		httpReq.Headers.Set("X-Ide-Session-Id", build.SessionID)
+	}
+	if build.RequestPin != "" {
+		httpReq.Headers.Set("X-Request-Pin", build.RequestPin)
+	}
+	if build.RequestAt > 0 {
+		httpReq.Headers.Set("X-Requested-At", strconv.FormatInt(build.RequestAt, 10))
+	}
 	httpReq.Headers.Set("Accept", "text/event-stream")
 	httpReq.Headers.Set("Cache-Control", "no-cache")
 	for name, values := range build.ExtraHeaders {

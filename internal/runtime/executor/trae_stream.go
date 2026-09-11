@@ -119,9 +119,15 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	// Request settings matching reverse-engineered headers
 	httpReq.Header.Set("Content-Type", "application/json")
 	setTraeCommonHeaders(httpReq.Header, creds)
-	httpReq.Header.Set("X-Ide-Session-Id", build.SessionID)
-	httpReq.Header.Set("X-Request-Pin", build.RequestPin)
-	httpReq.Header.Set("X-Requested-At", strconv.FormatInt(build.RequestAt, 10))
+	if build.SessionID != "" {
+		httpReq.Header.Set("X-Ide-Session-Id", build.SessionID)
+	}
+	if build.RequestPin != "" {
+		httpReq.Header.Set("X-Request-Pin", build.RequestPin)
+	}
+	if build.RequestAt > 0 {
+		httpReq.Header.Set("X-Requested-At", strconv.FormatInt(build.RequestAt, 10))
+	}
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Cache-Control", "no-cache")
 	for name, values := range build.ExtraHeaders {

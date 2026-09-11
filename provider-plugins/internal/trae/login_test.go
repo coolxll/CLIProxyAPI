@@ -79,8 +79,11 @@ func TestTraeLoginStartAndPoll(t *testing.T) {
 	if errParse != nil {
 		t.Fatalf("parse callback URL: %v", errParse)
 	}
-	if callbackURL.Query().Get("state") != start.State || callbackURL.Query().Get("provider") != ProviderID {
-		t.Fatalf("callback URL is missing plugin state/provider: %s", callbackURL)
+	if verificationURL.Query().Get("login_trace_id") != start.State {
+		t.Fatalf("verification URL is missing login_trace_id: %s", verificationURL)
+	}
+	if callbackURL.Path != "/authorize" {
+		t.Fatalf("callback URL path must be /authorize, got: %s", callbackURL)
 	}
 
 	pollReq := authLoginPollRPCRequest{

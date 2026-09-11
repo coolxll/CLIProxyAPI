@@ -53,16 +53,18 @@ func (p *Plugin) startLogin(raw []byte) ([]byte, error) {
 	if errState != nil {
 		return nil, errState
 	}
-	query := callbackURL.Query()
-	query.Set("provider", ProviderID)
-	query.Set("state", state)
-	callbackURL.RawQuery = query.Encode()
+
+	port := callbackURL.Port()
+	if port == "" {
+		port = "8317"
+	}
+	traeCallback := fmt.Sprintf("http://127.0.0.1:%s/authorize", port)
 
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
 	loginHost := resolveTraeLoginHost(host, state)
 	machineID := firstNonEmpty(metadataString(req.Metadata, "machine_id"), defaultTraeID)
 	deviceID := firstNonEmpty(metadataString(req.Metadata, "device_id"), defaultTraeID)
-	verificationURL := buildTraeVerificationURL(loginHost, state, callbackURL.String(), machineID, deviceID)
+	verificationURL := buildTraeVerificationURL(loginHost, state, traeCallback, machineID, deviceID)
 	expiresAt := time.Now().Add(traeOAuthFlowTTL).UTC()
 
 	return pluginOK(pluginapi.AuthLoginStartResponse{

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	log "github.com/sirupsen/logrus"
 )
@@ -321,3 +322,57 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 
 	c.File(filePath)
 }
+
+func (s *Server) serveTraeAuthorize(c *gin.Context) {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return
+	}
+	q := c.Request.URL.Query()
+	if len(q) == 0 || (q.Get("isRedirect") != "true" && q.Get("refreshToken") == "" && q.Get("loginTraceID") == "") {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, "<!doctype html><html><body><h2>Processing Trae authorization...</h2>"+
+			"<script>(function(){if(location.hash&&location.hash.length>1){"+
+			"location.replace(location.origin+location.pathname+'?'+location.hash.slice(1));"+
+			"}})();</script></body></html>")
+		return
+	}
+
+	state := strings.TrimSpace(q.Get("loginTraceID"))
+	if state == "" {
+		state = strings.TrimSpace(q.Get("login_trace_id"))
+	}
+	if state == "" {
+		state = strings.TrimSpace(q.Get("state"))
+	}
+	if state == "" {
+		state = strings.TrimSpace(q.Get("traceId"))
+	}
+
+	if state == "" {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusBadRequest, "<html><body><h2>Missing loginTraceID parameter</h2></body></html>")
+		return
+	}
+
+	code := c.Request.URL.RawQuery
+	errMsg := strings.TrimSpace(q.Get("error"))
+	if errMsg == "" {
+		errMsg = strings.TrimSpace(q.Get("error_description"))
+	}
+
+	authDir := ""
+	if s.cfg != nil {
+		authDir = s.cfg.AuthDir
+	}
+
+	if _, errWrite := managementHandlers.WriteOAuthCallbackFileForPendingSession(authDir, "trae-plugin", state, code, errMsg); errWrite != nil {
+		log.WithError(errWrite).Error("failed to write Trae authorize callback file")
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusInternalServerError, "<html><body><h2>Failed to save authorization: "+errWrite.Error()+"</h2></body></html>")
+		return
+	}
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, "<html><body><h2>Trae authorization successful! You may close this tab.</h2></body></html>")
+}
+

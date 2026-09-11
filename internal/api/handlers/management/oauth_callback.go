@@ -66,7 +66,12 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 		parsedURL = u
 		q := u.Query()
 		if state == "" {
-			state = strings.TrimSpace(q.Get("state"))
+			state = firstNonEmpty(
+				strings.TrimSpace(q.Get("state")),
+				strings.TrimSpace(q.Get("loginTraceID")),
+				strings.TrimSpace(q.Get("login_trace_id")),
+				strings.TrimSpace(q.Get("traceId")),
+			)
 		}
 		if code == "" {
 			code = strings.TrimSpace(q.Get("code"))
@@ -80,7 +85,12 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 		if u.Fragment != "" {
 			if fragQuery, errFrag := url.ParseQuery(u.Fragment); errFrag == nil {
 				if state == "" {
-					state = strings.TrimSpace(fragQuery.Get("state"))
+					state = firstNonEmpty(
+						strings.TrimSpace(fragQuery.Get("state")),
+						strings.TrimSpace(fragQuery.Get("loginTraceID")),
+						strings.TrimSpace(fragQuery.Get("login_trace_id")),
+						strings.TrimSpace(fragQuery.Get("traceId")),
+					)
 				}
 				if code == "" {
 					code = strings.TrimSpace(fragQuery.Get("code"))
@@ -94,7 +104,7 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 			}
 		}
 		if code == "" {
-			if q.Get("refreshToken") != "" || q.Get("refresh_token") != "" || q.Get("token") != "" || q.Get("auth") != "" {
+			if q.Get("refreshToken") != "" || q.Get("refresh_token") != "" || q.Get("token") != "" || q.Get("auth") != "" || q.Get("loginTraceID") != "" {
 				code = u.RawQuery
 			}
 		}

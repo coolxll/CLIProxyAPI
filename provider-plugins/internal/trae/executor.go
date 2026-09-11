@@ -205,7 +205,16 @@ func (p *Plugin) prepareRequest(host hostRPC, req executorRPCRequest) (credentia
 	if isToolCommit && len(toolMessages) > 0 {
 		build, err = buildTraeToolCommitRequest(creds, toolMessages)
 	} else if protocol == traeProtocolV1 || protocol == traeProtocolV2 || protocol == traeProtocolSolo {
-		build, err = buildTraeRawChatRequest(creds, protocol, upstreamModel, openaiReq, req.Metadata)
+		metadata := cloneMetadata(req.Metadata)
+		if detailConfig, ok := p.traeDetailModelConfig(req.AuthID, upstreamModel); ok {
+			if metadataString(metadata, traeModelNameMeta) == "" {
+				metadata[traeModelNameMeta] = detailConfig.ModelName
+			}
+			if metadataString(metadata, traeConfigMeta) == "" {
+				metadata[traeConfigMeta] = detailConfig.ConfigName
+			}
+		}
+		build, err = buildTraeRawChatRequest(creds, protocol, upstreamModel, openaiReq, metadata)
 	} else {
 		metadata := cloneMetadata(req.Metadata)
 		if detailConfig, ok := p.traeDetailModelConfig(req.AuthID, upstreamModel); ok {

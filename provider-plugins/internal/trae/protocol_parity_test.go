@@ -1,6 +1,7 @@
 package trae
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,10 @@ func nativeResolveTraeProtocol(model string, metadata map[string]any) (string, s
 		prefix   string
 		protocol string
 	}{
+		{"trae-solo/", traeProtocolSolo},
+		{"solo/", traeProtocolSolo},
+		{"utils/", traeProtocolSolo},
+		{"chat/", traeProtocolSolo},
 		{"trae-v1/", traeProtocolV1},
 		{"raw-v1/", traeProtocolV1},
 		{"v1/", traeProtocolV1},
@@ -31,6 +36,7 @@ func nativeResolveTraeProtocol(model string, metadata map[string]any) (string, s
 		{"v2/", traeProtocolV2},
 		{"trae-v3/", traeProtocolV3},
 		{"agent/", traeProtocolV3},
+		{"builder/", traeProtocolV3},
 		{"v3/", traeProtocolV3},
 	} {
 		if stripped, ok := nativeStripCaseInsensitivePrefix(model, candidate.prefix); ok {
@@ -43,7 +49,22 @@ func nativeResolveTraeProtocol(model string, metadata map[string]any) (string, s
 	if nativeIsTraeV2RawChatModel(model) {
 		return traeProtocolV2, model
 	}
+	if nativeIsTraeSoloChatModel(model) {
+		return traeProtocolSolo, model
+	}
 	return traeProtocolV3, model
+}
+
+func nativeIsTraeSoloChatModel(model string) bool {
+	lower := toLower(stripWhitespace(model))
+	switch lower {
+	case "deepseek-v4-flash", "deepseek-v4-flash-official", "deepseek-v4-pro-official":
+		return true
+	}
+	if strings.HasSuffix(lower, "-official") || strings.Contains(lower, "official") || strings.Contains(lower, "flash") {
+		return true
+	}
+	return false
 }
 
 func nativeIsTraeV1RawChatModel(model string) bool {
@@ -61,7 +82,7 @@ func nativeIsTraeV2RawChatModel(model string) bool {
 }
 
 func nativeStripTraeProtocolPrefix(model string) string {
-	for _, prefix := range []string{"trae-v1/", "raw-v1/", "v1/", "trae-v2/", "raw-v2/", "v2/", "trae-v3/", "agent/", "v3/"} {
+	for _, prefix := range []string{"trae-solo/", "solo/", "utils/", "chat/", "trae-v1/", "raw-v1/", "v1/", "trae-v2/", "raw-v2/", "v2/", "trae-v3/", "agent/", "builder/", "v3/"} {
 		if stripped, ok := nativeStripCaseInsensitivePrefix(model, prefix); ok {
 			return stripped
 		}
@@ -84,6 +105,8 @@ func nativeNormalizeTraeProtocol(protocol string) string {
 		return traeProtocolV2
 	case "3", "v3", "agent", "builder", "builder_v3", "create_agent_task":
 		return traeProtocolV3
+	case "solo", "trae-solo", "solo_work_lite", "chat_lite", "llm_utils_chat":
+		return traeProtocolSolo
 	default:
 		return ""
 	}
@@ -165,6 +188,10 @@ func TestResolveTraeProtocolParity(t *testing.T) {
 		{"metadata v3", "custom-model", map[string]any{traeProtocolMeta: "builder_v3"}},
 		{"case insensitive", "TRAE-V1/DeepSeek-R1", nil},
 		{"whitespace", "  trae-v1/deepseek-r1  ", nil},
+		{"solo prefix", "trae-solo/glm-5", nil},
+		{"flash model", "DeepSeek-V4-Flash", nil},
+		{"flash official model", "DeepSeek-V4-Flash-Official", nil},
+		{"metadata solo", "custom-model", map[string]any{traeProtocolMeta: "solo"}},
 	}
 
 	for _, tt := range tests {

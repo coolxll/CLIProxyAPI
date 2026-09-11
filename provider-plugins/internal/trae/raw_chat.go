@@ -37,19 +37,21 @@ func buildTraeRawChatRequest(creds credentials, protocol, upstreamModel string, 
 		targetURL = "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat"
 		extraHeaders.Set("User-Agent", "Trae/0.1.52")
 		extraHeaders.Set("X-App-Id", "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8")
-		extraHeaders.Set("X-App-Version", "default")
-		extraHeaders.Set("X-Ide-Version", "0.1.52")
-		extraHeaders.Set("X-Ide-Version-Code", "20260811")
-		extraHeaders.Set("X-App-Version-Code", "20260811")
-		extraHeaders.Set("X-Ide-Version-Type", "stable")
-		extraHeaders.Set("X-Ide-Function", "solo_work_lite")
-		extraHeaders.Set("X-Device-Type", "mac")
-		extraHeaders.Set("X-Device-Brand", "Apple")
-		extraHeaders.Set("Request-Traffic-Type", "prod")
-		extraHeaders.Set("X-Device-Id", creds.DeviceID)
-		extraHeaders.Set("X-Machine-Id", creds.MachineID)
+		extraHeaders.Set("x-app-version", "default")
+		extraHeaders.Set("x-ide-version", "0.1.52")
+		extraHeaders.Set("x-ide-version-code", "20260811")
+		extraHeaders.Set("x-app-version-code", "20260811")
+		extraHeaders.Set("x-ide-version-type", "stable")
+		extraHeaders.Set("x-ide-function", "solo_work_lite")
+		extraHeaders.Set("x-device-type", "mac")
+		extraHeaders.Set("x-device-brand", "Apple")
+		extraHeaders.Set("x-os-version", "mac")
+		extraHeaders.Set("request-traffic-type", "prod")
+		extraHeaders.Set("get-svc", "1")
+		extraHeaders.Set("x-device-id", creds.DeviceID)
+		extraHeaders.Set("x-machine-id", creds.MachineID)
 		if creds.UserID != "" {
-			extraHeaders.Set("X-Uid", creds.UserID)
+			extraHeaders.Set("x-uid", creds.UserID)
 		}
 		rawPayload := map[string]any{
 			"messages":    buildTraeRawChatMessages(openaiReq, protocol),
@@ -59,6 +61,28 @@ func buildTraeRawChatRequest(creds credentials, protocol, upstreamModel string, 
 			"stream":      true,
 			"session_id":  sessionID,
 			"request_id":  sessionID,
+		}
+		if rawTools := gjson.GetBytes(openaiReq, "tools"); rawTools.Exists() && rawTools.IsArray() && len(rawTools.Array()) > 0 {
+			var formattedTools []map[string]any
+			for _, t := range rawTools.Array() {
+				toolMap := map[string]any{
+					"type": firstNonEmpty(t.Get("type").String(), "function"),
+					"function": map[string]any{
+						"name":        t.Get("function.name").String(),
+						"description": t.Get("function.description").String(),
+					},
+				}
+				params := t.Get("function.parameters")
+				if params.Exists() {
+					if params.Type == gjson.String {
+						toolMap["function"].(map[string]any)["parameters"] = params.String()
+					} else {
+						toolMap["function"].(map[string]any)["parameters"] = params.Raw
+					}
+				}
+				formattedTools = append(formattedTools, toolMap)
+			}
+			rawPayload["tools"] = formattedTools
 		}
 		var err error
 		requestBody, err = json.Marshal(rawPayload)

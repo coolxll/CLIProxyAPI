@@ -72,6 +72,27 @@ func TestResolveTraeProtocol(t *testing.T) {
 			wantProtocol:      traeProtocolV3,
 			wantUpstreamModel: "some-model",
 		},
+		{
+			name:              "Solo model with prefix",
+			model:             "trae-solo/glm-5",
+			metadata:          nil,
+			wantProtocol:      traeProtocolSolo,
+			wantUpstreamModel: "glm-5",
+		},
+		{
+			name:              "Solo known model - DeepSeek-V4-Flash",
+			model:             "DeepSeek-V4-Flash",
+			metadata:          nil,
+			wantProtocol:      traeProtocolSolo,
+			wantUpstreamModel: "DeepSeek-V4-Flash",
+		},
+		{
+			name:              "Solo known model - DeepSeek-V4-Flash-Official",
+			model:             "DeepSeek-V4-Flash-Official",
+			metadata:          nil,
+			wantProtocol:      traeProtocolSolo,
+			wantUpstreamModel: "DeepSeek-V4-Flash-Official",
+		},
 	}
 
 	for _, tt := range tests {

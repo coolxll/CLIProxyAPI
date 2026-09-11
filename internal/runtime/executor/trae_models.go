@@ -120,6 +120,10 @@ func resolveTraeProtocol(model string, metadata map[string]any) (string, string)
 		prefix   string
 		protocol string
 	}{
+		{"trae-solo/", traeProtocolSolo},
+		{"solo/", traeProtocolSolo},
+		{"utils/", traeProtocolSolo},
+		{"chat/", traeProtocolSolo},
 		{"trae-v1/", traeProtocolV1},
 		{"raw-v1/", traeProtocolV1},
 		{"v1/", traeProtocolV1},
@@ -128,6 +132,7 @@ func resolveTraeProtocol(model string, metadata map[string]any) (string, string)
 		{"v2/", traeProtocolV2},
 		{"trae-v3/", traeProtocolV3},
 		{"agent/", traeProtocolV3},
+		{"builder/", traeProtocolV3},
 		{"v3/", traeProtocolV3},
 	} {
 		if stripped, ok := stripCaseInsensitivePrefix(model, candidate.prefix); ok {
@@ -140,7 +145,22 @@ func resolveTraeProtocol(model string, metadata map[string]any) (string, string)
 	if isTraeV2RawChatModel(model) {
 		return traeProtocolV2, model
 	}
+	if isTraeSoloChatModel(model) {
+		return traeProtocolSolo, model
+	}
 	return traeProtocolV3, model
+}
+
+func isTraeSoloChatModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	switch lower {
+	case "deepseek-v4-flash", "deepseek-v4-flash-official", "deepseek-v4-pro-official":
+		return true
+	}
+	if strings.HasSuffix(lower, "-official") || strings.Contains(lower, "official") || strings.Contains(lower, "flash") {
+		return true
+	}
+	return false
 }
 
 func isTraeV1RawChatModel(model string) bool {
@@ -158,7 +178,7 @@ func isTraeV2RawChatModel(model string) bool {
 }
 
 func stripTraeProtocolPrefix(model string) string {
-	for _, prefix := range []string{"trae-v1/", "raw-v1/", "v1/", "trae-v2/", "raw-v2/", "v2/", "trae-v3/", "agent/", "v3/"} {
+	for _, prefix := range []string{"trae-solo/", "solo/", "utils/", "chat/", "trae-v1/", "raw-v1/", "v1/", "trae-v2/", "raw-v2/", "v2/", "trae-v3/", "agent/", "builder/", "v3/"} {
 		if stripped, ok := stripCaseInsensitivePrefix(model, prefix); ok {
 			return stripped
 		}
@@ -181,6 +201,8 @@ func normalizeTraeProtocol(protocol string) string {
 		return traeProtocolV2
 	case "3", "v3", "agent", "builder", "builder_v3", "create_agent_task":
 		return traeProtocolV3
+	case "solo", "trae-solo", "solo_work_lite", "chat_lite", "llm_utils_chat":
+		return traeProtocolSolo
 	default:
 		return ""
 	}

@@ -135,6 +135,13 @@ func (p *traeStreamProcessor) processLine(line []byte) error {
 		return traeStatusErr{code: http.StatusBadGateway, msg: message}
 	}
 
+	if event == "done" {
+		if fr := gjson.Get(dataStr, "finish_reason").String(); fr != "" {
+			p.finishReason = fr
+		}
+		return nil
+	}
+
 	if event == "task_created" {
 		if taskID := gjson.Get(dataStr, "task_id").String(); taskID != "" {
 			p.taskID = taskID
@@ -223,15 +230,27 @@ func (p *traeStreamProcessor) processLine(line []byte) error {
 		toolCalls = append(toolCalls, p.buildToolCalls(parsed.ToolCalls, "inline", &p.inlineToolIndex)...)
 	}
 
-	if value := gjson.Get(dataStr, "choices.0.delta.tool_calls"); value.Exists() && value.IsArray() {
-		for _, toolCall := range value.Array() {
-			name := p.normalizeTool(toolCall.Get("function.name").String())
-			arguments := normalizeTraeToolArguments(name, toolCall.Get("function.arguments").String())
+	rawToolCalls := gjson.Get(dataStr, "choices.0.delta.tool_calls")
+	if !rawToolCalls.Exists() || !rawToolCalls.IsArray() {
+		rawToolCalls = gjson.Get(dataStr, "tool_calls")
+	}
+	if rawToolCalls.Exists() && rawToolCalls.IsArray() {
+		for _, toolCall := range rawToolCalls.Array() {
+			fnName := firstNonEmpty(
+				toolCall.Get("function.name").String(),
+				toolCall.Get("function_call.name").String(),
+			)
+			fnArgs := firstNonEmpty(
+				toolCall.Get("function.arguments").String(),
+				toolCall.Get("function_call.arguments").String(),
+			)
+			name := p.normalizeTool(fnName)
+			arguments := normalizeTraeToolArguments(name, fnArgs)
 			p.hasToolCall = true
 			toolCalls = append(toolCalls, openaiToolCall{
 				Index: int(toolCall.Get("index").Int()),
-				ID:    toolCall.Get("id").String(),
-				Type:  toolCall.Get("type").String(),
+				ID:    firstNonEmpty(toolCall.Get("id").String(), toolCall.Get("toolcall_id").String()),
+				Type:  firstNonEmpty(toolCall.Get("type").String(), "function"),
 				Function: openaiFunction{
 					Name:      name,
 					Arguments: arguments,

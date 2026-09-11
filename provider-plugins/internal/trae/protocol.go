@@ -32,6 +32,7 @@ func resolveTraeProtocol(model string, metadata map[string]any) (string, string)
 		{"v2/", traeProtocolV2},
 		{"trae-v3/", traeProtocolV3},
 		{"agent/", traeProtocolV3},
+		{"builder/", traeProtocolV3},
 		{"v3/", traeProtocolV3},
 	} {
 		if stripped, ok := stripCaseInsensitivePrefix(model, candidate.prefix); ok {
@@ -44,7 +45,22 @@ func resolveTraeProtocol(model string, metadata map[string]any) (string, string)
 	if isTraeV2RawChatModel(model) {
 		return traeProtocolV2, model
 	}
+	if isTraeSoloChatModel(model) {
+		return traeProtocolSolo, model
+	}
 	return traeProtocolV3, model
+}
+
+func isTraeSoloChatModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	switch lower {
+	case "deepseek-v4-flash", "deepseek-v4-flash-official", "deepseek-v4-pro-official":
+		return true
+	}
+	if strings.HasSuffix(lower, "-official") || strings.Contains(lower, "official") || strings.Contains(lower, "flash") {
+		return true
+	}
+	return false
 }
 
 func isTraeV1RawChatModel(model string) bool {
@@ -62,7 +78,7 @@ func isTraeV2RawChatModel(model string) bool {
 }
 
 func stripTraeProtocolPrefix(model string) string {
-	for _, prefix := range []string{"trae-solo/", "solo/", "utils/", "trae-v1/", "raw-v1/", "v1/", "trae-v2/", "raw-v2/", "v2/", "trae-v3/", "agent/", "v3/"} {
+	for _, prefix := range []string{"trae-solo/", "solo/", "utils/", "trae-v1/", "raw-v1/", "v1/", "trae-v2/", "raw-v2/", "v2/", "trae-v3/", "agent/", "builder/", "v3/"} {
 		if stripped, ok := stripCaseInsensitivePrefix(model, prefix); ok {
 			return stripped
 		}
@@ -181,19 +197,21 @@ func resolveModelConfig(requested string) traeDetailModelConfig {
 
 	exact := map[string]traeDetailModelConfig{
 		// Top Curated Models
-		"glm-5.3":           {ModelName: "glm-5.3", ConfigName: "glm-5.3", DisplayName: "GLM-5.3"},
-		"glm-5.2":           {ModelName: "glm-5.2", ConfigName: "glm-5.2", DisplayName: "GLM-5.2"},
-		"glm-5.1":           {ModelName: "glm-5.1", ConfigName: "glm-5.1", DisplayName: "GLM-5.1"},
-		"glm-5":             {ModelName: "glm-5", ConfigName: "glm-5", DisplayName: "GLM-5"},
-		"glm-5v-turbo":      {ModelName: "glm-5v-turbo", ConfigName: "glm-5v-turbo", DisplayName: "GLM-5v-Turbo"},
-		"deepseek-v4-pro":   {ModelName: "DeepSeek-V4-Pro", ConfigName: "DeepSeek-V4-Pro", DisplayName: "DeepSeek V4 Pro"},
-		"deepseek-v4-flash": {ModelName: "DeepSeek-V4-Flash", ConfigName: "DeepSeek-V4-Flash", DisplayName: "DeepSeek V4 Flash"},
-		"kimi-k3":           {ModelName: "kimi-k3", ConfigName: "kimi-k3", DisplayName: "Kimi K3"},
-		"kimi-k2.7-code":    {ModelName: "kimi-k2.7-code", ConfigName: "kimi-k2.7-code", DisplayName: "Kimi K2.7 Code"},
-		"kimi-k2.6":         {ModelName: "kimi-k2.6", ConfigName: "kimi-k2.6", DisplayName: "Kimi K2.6"},
-		"qwen3.8-max":       {ModelName: "qwen3.8-max", ConfigName: "qwen3.8-max", DisplayName: "Qwen 3.8 Max"},
-		"qwen-3.7-plus":     {ModelName: "qwen-3.7-plus", ConfigName: "qwen-3.7-plus", DisplayName: "Qwen 3.7 Plus"},
-		"qwen-3.6-plus":     {ModelName: "qwen-3.6-plus__v2", ConfigName: "qwen-3.6-plus", DisplayName: "Qwen 3.6 Plus"},
+		"glm-5.3":                    {ModelName: "glm-5.3", ConfigName: "glm-5.3", DisplayName: "GLM-5.3"},
+		"glm-5.2":                    {ModelName: "glm-5.2", ConfigName: "glm-5.2", DisplayName: "GLM-5.2"},
+		"glm-5.1":                    {ModelName: "glm-5.1", ConfigName: "glm-5.1", DisplayName: "GLM-5.1"},
+		"glm-5":                      {ModelName: "glm-5", ConfigName: "glm-5", DisplayName: "GLM-5"},
+		"glm-5v-turbo":               {ModelName: "glm-5v-turbo", ConfigName: "glm-5v-turbo", DisplayName: "GLM-5v-Turbo"},
+		"deepseek-v4-pro-official":   {ModelName: "DeepSeek-V4-Pro", ConfigName: "DeepSeek-V4-Pro", DisplayName: "DeepSeek V4 Pro 正式版"},
+		"deepseek-v4-pro":            {ModelName: "DeepSeek-V4-Pro", ConfigName: "DeepSeek-V4-Pro", DisplayName: "DeepSeek V4 Pro"},
+		"deepseek-v4-flash-official": {ModelName: "DeepSeek-V4-Flash", ConfigName: "DeepSeek-V4-Flash", DisplayName: "DeepSeek V4 Flash 正式版"},
+		"deepseek-v4-flash":          {ModelName: "DeepSeek-V4-Flash", ConfigName: "DeepSeek-V4-Flash", DisplayName: "DeepSeek V4 Flash"},
+		"kimi-k3":                    {ModelName: "kimi-k3", ConfigName: "kimi-k3", DisplayName: "Kimi K3"},
+		"kimi-k2.7-code":             {ModelName: "kimi-k2.7-code", ConfigName: "kimi-k2.7-code", DisplayName: "Kimi K2.7 Code"},
+		"kimi-k2.6":                  {ModelName: "kimi-k2.6", ConfigName: "kimi-k2.6", DisplayName: "Kimi K2.6"},
+		"qwen3.8-max":                {ModelName: "qwen3.8-max", ConfigName: "qwen3.8-max", DisplayName: "Qwen 3.8 Max"},
+		"qwen-3.7-plus":              {ModelName: "qwen-3.7-plus", ConfigName: "qwen-3.7-plus", DisplayName: "Qwen 3.7 Plus"},
+		"qwen-3.6-plus":              {ModelName: "qwen-3.6-plus", ConfigName: "qwen-3.6-plus", DisplayName: "Qwen 3.6 Plus"},
 
 		// Other GLM
 		"glm-4.7": {ModelName: "glm-4.7", ConfigName: "glm-4.7", DisplayName: "GLM-4.7"},

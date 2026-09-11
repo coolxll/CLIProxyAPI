@@ -57,6 +57,7 @@ const (
 	traeProtocolV1     = "v1"
 	traeProtocolV2     = "v2"
 	traeProtocolV3     = "v3"
+	traeProtocolSolo   = "solo"
 	traeProtocolMeta   = "trae_protocol"
 	traeModelNameMeta  = "trae_model_name"
 	traeConfigMeta     = "trae_config_name"

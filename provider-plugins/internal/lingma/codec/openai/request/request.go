@@ -44,14 +44,14 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 	}
 
 	// 2. Map messages
-	var lingmaMessages []any
+	var lingmaMessages []map[string]any
 	res.Get("messages").ForEach(func(key, value gjson.Result) bool {
 		role := value.Get("role").String()
 		msg := map[string]any{
 			"role": role,
 		}
 
-		// Handle content: could be string or array of content parts
+		// Handle content: could be string, array of parts, null, or missing
 		contentVal := value.Get("content")
 		if contentVal.Exists() {
 			if contentVal.IsArray() {
@@ -77,6 +77,8 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 					})
 					msg["content"] = strings.Join(textParts, "\n")
 				}
+			} else if contentVal.Type == gjson.Null {
+				msg["content"] = nil
 			} else {
 				msg["content"] = contentVal.String()
 			}
@@ -86,10 +88,14 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		if reasoning := value.Get("reasoning_content"); reasoning.Exists() && reasoning.String() != "" {
 			reasoningText := reasoning.String()
 			thoughtBlock := "<thought>" + reasoningText + "</thought>"
-			if existing, ok := msg["content"]; ok {
+			if existing, ok := msg["content"]; ok && existing != nil {
 				switch v := existing.(type) {
 				case string:
-					msg["content"] = thoughtBlock + "\n" + v
+					if v == "" {
+						msg["content"] = thoughtBlock
+					} else {
+						msg["content"] = thoughtBlock + "\n" + v
+					}
 				default:
 					// For array content (multimodal), prepend thought block as a text element
 					if arr, ok := existing.([]any); ok {
@@ -121,6 +127,8 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		lingmaMessages = append(lingmaMessages, msg)
 		return true
 	})
+
+	lingmaMessages = NormalizeLingmaToolCallContent(lingmaMessages)
 
 	requestID := uuid.New().String()
 
@@ -216,4 +224,65 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 func generateSessionID(rawJSON []byte) string {
 	hash := sha256.Sum256(rawJSON)
 	return hex.EncodeToString(hash[:16])
+}
+
+// NormalizeLingmaToolCallContent adapts OpenAI-compatible assistant tool-call
+// history to the stricter provider behind Lingma. OpenAI permits content=null
+// (or omitted content) when tool_calls is present, but that provider fails to
+// recognize the tool_calls and then rejects the following tool result as orphaned.
+// Setting content to "" preserves the message semantics while satisfying both schemas.
+//
+// Only modifies messages satisfying all of:
+// 1. role is "assistant"
+// 2. tool_calls is non-empty
+// 3. content is null or missing
+//
+// Normal assistant, user, and tool messages with null content are preserved unchanged.
+// The original slice and maps are not mutated in-place.
+func NormalizeLingmaToolCallContent(messages []map[string]any) []map[string]any {
+	if len(messages) == 0 {
+		return messages
+	}
+	normalized := make([]map[string]any, len(messages))
+	for i, message := range messages {
+		if message == nil {
+			continue
+		}
+		// Clone each message map so the caller's objects are not mutated
+		cloned := make(map[string]any, len(message))
+		for k, v := range message {
+			cloned[k] = v
+		}
+		normalized[i] = cloned
+
+		role, _ := cloned["role"].(string)
+		if role != "assistant" {
+			continue
+		}
+		content, hasContent := cloned["content"]
+		if hasContent && content != nil {
+			continue
+		}
+		if !hasLingmaToolCalls(cloned["tool_calls"]) {
+			continue
+		}
+		cloned["content"] = ""
+	}
+	return normalized
+}
+
+func hasLingmaToolCalls(value any) bool {
+	if value == nil {
+		return false
+	}
+	switch calls := value.(type) {
+	case []any:
+		return len(calls) > 0
+	case []map[string]any:
+		return len(calls) > 0
+	case []json.RawMessage:
+		return len(calls) > 0
+	default:
+		return false
+	}
 }

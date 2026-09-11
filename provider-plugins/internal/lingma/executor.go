@@ -96,9 +96,9 @@ func (p *Plugin) execute(raw []byte) ([]byte, error) {
 		aggregate = upstream.Body
 		responseHeaders = upstream.Headers.Clone()
 		attemptBody = currentBody
-		if sseErr := aggregateRetryableSSEError(aggregate); sseErr != nil {
-			if plan.hasNext() {
-				plan.logRetry(sseErr, 0)
+		if status, sseErr, isErr := findSSEError(aggregate); isErr {
+			if shouldRetryStatus(status) && plan.hasNext() {
+				plan.logRetry(sseErr, status)
 				continue
 			}
 			return nil, sseErr
@@ -210,8 +210,12 @@ func (p *Plugin) runStream(req executorRPCRequest, format, baseModel string, att
 				streamErr = newStatusError(http.StatusBadGateway, "Lingma upstream stream ended before completion")
 			}
 		}
-		if !emittedOutput && plan.hasNext() && !p.isShuttingDown() {
-			plan.logRetry(streamErr, 0)
+		status := http.StatusBadGateway
+		if sc, ok := streamErr.(interface{ StatusCode() int }); ok && sc != nil {
+			status = sc.StatusCode()
+		}
+		if !emittedOutput && shouldRetryStatus(status) && plan.hasNext() && !p.isShuttingDown() {
+			plan.logRetry(streamErr, status)
 			next, nextBody, errNext := plan.openStream()
 			if errNext == nil {
 				upstream, attemptBody = next, nextBody
@@ -242,8 +246,8 @@ func (p *Plugin) consumeUpstreamStream(host hostRPC, streamID string, onLine fun
 			return nil
 		}
 		sawData = true
-		if retryable := retryableSSEError(line); retryable != nil {
-			return retryable
+		if errInfo, isErr := lingmahelpers.ParseLingmaError(line); isErr {
+			return newStatusError(errInfo.StatusCode, errInfo.Message)
 		}
 		if lingmahelpers.IsLingmaDone(line) {
 			sawDone = true
@@ -454,61 +458,20 @@ func aggregateHasDone(data []byte) bool {
 	return false
 }
 
-func aggregateRetryableSSEError(data []byte) error {
+func findSSEError(data []byte) (int, error, bool) {
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		if err := retryableSSEError(line); err != nil {
-			return err
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		if info, ok := lingmahelpers.ParseLingmaError(line); ok {
+			return info.StatusCode, newStatusError(info.StatusCode, info.Message), true
 		}
 	}
-	return nil
-}
-
-func retryableSSEError(raw []byte) error {
-	payload := bytes.TrimSpace(raw)
-	if bytes.HasPrefix(payload, []byte("data:")) {
-		payload = bytes.TrimSpace(bytes.TrimPrefix(payload, []byte("data:")))
+	if info, ok := lingmahelpers.ParseLingmaError(data); ok {
+		return info.StatusCode, newStatusError(info.StatusCode, info.Message), true
 	}
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return nil
-	}
-	root := gjson.ParseBytes(payload)
-	if body := root.Get("body"); body.Exists() && body.Type == gjson.String {
-		root = gjson.Parse(body.String())
-	}
-	errorNode := root.Get("error")
-	if !errorNode.Exists() {
-		return nil
-	}
-	status := int(errorNode.Get("status").Int())
-	if status == 0 {
-		status = int(errorNode.Get("code").Int())
-	}
-	if !shouldRetryStatus(status) {
-		if status != 0 {
-			return nil
-		}
-		errorType := strings.ToLower(strings.TrimSpace(errorNode.Get("type").String()))
-		for _, marker := range []string{"server", "internal", "overload", "rate", "timeout", "unavailable"} {
-			if !strings.Contains(errorType, marker) {
-				continue
-			}
-			status = http.StatusBadGateway
-			if marker == "rate" {
-				status = http.StatusTooManyRequests
-			} else if marker == "timeout" {
-				status = http.StatusGatewayTimeout
-			}
-			break
-		}
-		if status == 0 {
-			return nil
-		}
-	}
-	message := strings.TrimSpace(errorNode.Get("message").String())
-	if message == "" {
-		message = "Lingma upstream returned a retryable SSE error"
-	}
-	return newStatusError(status, message)
+	return 0, nil, false
 }
 
 func (p *Plugin) logLargeThinking(host hostRPC, profile requestProfile, model string) {

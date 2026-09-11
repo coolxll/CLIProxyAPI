@@ -60,3 +60,70 @@ func hasClaudeEvent(outputs [][]byte, eventType, path, want string) bool {
 	}
 	return false
 }
+
+func TestConvertLingmaResponseToClaude_ProviderErrorStream(t *testing.T) {
+	raw := []byte(`data: {
+  "headers": {"Content-Type": ["application/json"]},
+  "body": "{\"code\":\"provider_error\",\"message\":\"Error in upstream response\",\"request_id\":\"1869151502422008\",\"type\":\"provider_error\",\"details\":\"{\\\"error\\\":{\\\"message\\\":\\\"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'\\\",\\\"type\\\":\\\"invalid_request_error\\\",\\\"param\\\":null,\\\"code\\\":\\\"invalid_request_error\\\"}}\"}",
+  "statusCodeValue": 400,
+  "statusCode": "BAD_REQUEST"
+}`)
+
+	var param any
+	outputs := ConvertLingmaResponseToClaude(context.Background(), "claude-3-5-sonnet", nil, nil, raw, &param)
+	if len(outputs) == 0 {
+		t.Fatalf("expected Claude error output, got 0 chunks")
+	}
+
+	foundErrorEvent := false
+	wantMsg := "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+	for _, payload := range outputs {
+		for _, block := range bytes.Split(payload, []byte("\n\n")) {
+			trimmed := bytes.TrimSpace(block)
+			if len(trimmed) == 0 {
+				continue
+			}
+			lines := bytes.Split(trimmed, []byte("\n"))
+			for _, line := range lines {
+				line = bytes.TrimSpace(line)
+				if bytes.HasPrefix(line, []byte("data:")) {
+					data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+					errNode := gjson.GetBytes(data, "error")
+					if errNode.Exists() {
+						foundErrorEvent = true
+						if got := errNode.Get("message").String(); got != wantMsg {
+							t.Errorf("error.message = %q, want %q", got, wantMsg)
+						}
+						if got := errNode.Get("type").String(); got != "invalid_request_error" {
+							t.Errorf("error.type = %q, want invalid_request_error", got)
+						}
+					}
+				}
+			}
+		}
+	}
+	if !foundErrorEvent {
+		t.Fatalf("did not find Claude error event in outputs: %q", outputs)
+	}
+}
+
+func TestConvertLingmaResponseToClaudeNonStream_ProviderError(t *testing.T) {
+	raw := []byte(`data: {
+  "headers": {"Content-Type": ["application/json"]},
+  "body": "{\"code\":\"provider_error\",\"message\":\"Error in upstream response\",\"request_id\":\"1869151502422008\",\"type\":\"provider_error\",\"details\":\"{\\\"error\\\":{\\\"message\\\":\\\"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'\\\",\\\"type\\\":\\\"invalid_request_error\\\",\\\"param\\\":null,\\\"code\\\":\\\"invalid_request_error\\\"}}\"}",
+  "statusCodeValue": 400,
+  "statusCode": "BAD_REQUEST"
+}`)
+
+	out := ConvertLingmaResponseToClaudeNonStream(context.Background(), "claude-3-5-sonnet", nil, nil, raw, nil)
+	if gjson.GetBytes(out, "type").String() != "error" {
+		t.Fatalf("response type = %q, want error; payload=%s", gjson.GetBytes(out, "type").String(), out)
+	}
+	wantMsg := "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+	if got := gjson.GetBytes(out, "error.message").String(); got != wantMsg {
+		t.Fatalf("error.message = %q, want %q", got, wantMsg)
+	}
+	if got := gjson.GetBytes(out, "error.type").String(); got != "invalid_request_error" {
+		t.Fatalf("error.type = %q, want invalid_request_error", got)
+	}
+}

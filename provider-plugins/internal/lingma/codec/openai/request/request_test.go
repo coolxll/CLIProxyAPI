@@ -2,6 +2,7 @@ package chat_completions
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -234,4 +235,153 @@ func decodeLingmaRequestPayload(t *testing.T, raw []byte) map[string]any {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
 	return payload
+}
+
+func TestNormalizeLingmaToolCallContent(t *testing.T) {
+	toolCall := map[string]any{
+		"id":   "call_1",
+		"type": "function",
+		"function": map[string]any{
+			"name":      "bash",
+			"arguments": `{"command":"pwd"}`,
+		},
+	}
+	input := []map[string]any{
+		{"role": "user", "content": "run tool"},
+		{
+			"role":       "assistant",
+			"content":    nil,
+			"tool_calls": []any{toolCall},
+		},
+		{"role": "tool", "tool_call_id": "call_1", "content": "/workspace"},
+		{"role": "assistant", "content": nil},
+		{"role": "user", "content": nil, "tool_calls": []any{toolCall}},
+		{"role": "assistant", "content": nil, "tool_calls": []any{}},
+		{"role": "assistant", "tool_calls": []any{toolCall}}, // content omitted
+	}
+
+	// Make a shallow copy of original maps to test immutability
+	inputCopy := make([]map[string]any, len(input))
+	for i, m := range input {
+		c := make(map[string]any, len(m))
+		for k, v := range m {
+			c[k] = v
+		}
+		inputCopy[i] = c
+	}
+
+	normalized := NormalizeLingmaToolCallContent(input)
+
+	// 1. assistant + content:null + non-empty tool_calls -> content: ""
+	if got := normalized[1]["content"]; got != "" {
+		t.Fatalf("assistant with tool_calls content = %#v, want empty string", got)
+	}
+
+	// 2. tool_calls and subsequent tool result fully preserved
+	calls, ok := normalized[1]["tool_calls"].([]any)
+	if !ok || len(calls) != 1 {
+		t.Fatalf("tool_calls = %#v, want 1 call", normalized[1]["tool_calls"])
+	}
+	if normalized[2]["role"] != "tool" || normalized[2]["tool_call_id"] != "call_1" || normalized[2]["content"] != "/workspace" {
+		t.Fatalf("tool result altered: %#v", normalized[2])
+	}
+
+	// 3. assistant + missing content + non-empty tool_calls -> content: ""
+	if got := normalized[6]["content"]; got != "" {
+		t.Fatalf("assistant with omitted content = %#v, want empty string", got)
+	}
+
+	// 4. normal null content not altered
+	if normalized[3]["content"] != nil {
+		t.Fatalf("assistant without tool_calls content = %#v, want nil", normalized[3]["content"])
+	}
+	if normalized[4]["content"] != nil {
+		t.Fatalf("user with tool_calls content = %#v, want nil", normalized[4]["content"])
+	}
+	if normalized[5]["content"] != nil {
+		t.Fatalf("assistant with empty tool_calls content = %#v, want nil", normalized[5]["content"])
+	}
+
+	// 5. input object was not mutated in-place
+	if input[1]["content"] != nil {
+		t.Fatalf("input was mutated in place: %#v", input[1])
+	}
+	if _, hasContent := input[6]["content"]; hasContent {
+		t.Fatalf("input message 6 was mutated in place: %#v", input[6])
+	}
+	for i := range input {
+		for k, v := range inputCopy[i] {
+			if !reflect.DeepEqual(input[i][k], v) {
+				t.Fatalf("input[%d][%s] was mutated from %#v to %#v", i, k, v, input[i][k])
+			}
+		}
+	}
+}
+
+func TestConvertOpenAIRequestToLingma_NormalizesAssistantToolCallNullContent(t *testing.T) {
+	raw := []byte(`{
+		"model": "dashscope_qmodel",
+		"messages": [
+			{"role": "user", "content": "run tool"},
+			{
+				"role": "assistant",
+				"content": null,
+				"tool_calls": [
+					{
+						"id": "call_1",
+						"type": "function",
+						"function": {"name": "bash", "arguments": "{\"command\":\"pwd\"}"}
+					}
+				]
+			},
+			{"role": "tool", "tool_call_id": "call_1", "content": "/workspace"},
+			{"role": "user", "content": null},
+			{"role": "assistant", "content": null}
+		],
+		"stream": true
+	}`)
+
+	payload := decodeLingmaRequestPayload(t, ConvertOpenAIRequestToLingma("dashscope_qmodel", raw, true))
+	messages, ok := payload["messages"].([]any)
+	if !ok || len(messages) != 5 {
+		t.Fatalf("messages = %#v", payload["messages"])
+	}
+
+	msg1, ok := messages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("message 1 = %T", messages[1])
+	}
+	if got := msg1["content"]; got != "" {
+		t.Fatalf("assistant tool-call content = %#v, want empty string", got)
+	}
+	if calls, ok := msg1["tool_calls"].([]any); !ok || len(calls) != 1 {
+		t.Fatalf("tool_calls = %#v, want 1 tool call", msg1["tool_calls"])
+	}
+
+	// Tool message preserved
+	msg2, ok := messages[2].(map[string]any)
+	if !ok {
+		t.Fatalf("message 2 = %T", messages[2])
+	}
+	if msg2["role"] != "tool" || msg2["tool_call_id"] != "call_1" || msg2["content"] != "/workspace" {
+		t.Fatalf("tool message = %#v", msg2)
+	}
+
+	// Normal user null content preserved
+	msg3, ok := messages[3].(map[string]any)
+	if !ok {
+		t.Fatalf("message 3 = %T", messages[3])
+	}
+	if msg3["content"] != nil {
+		t.Fatalf("user null content = %#v, want nil", msg3["content"])
+	}
+
+	// Normal assistant null content preserved
+	msg4, ok := messages[4].(map[string]any)
+	if !ok {
+		t.Fatalf("message 4 = %T", messages[4])
+	}
+	if msg4["content"] != nil {
+		t.Fatalf("assistant null content = %#v, want nil", msg4["content"])
+	}
 }

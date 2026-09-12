@@ -388,6 +388,75 @@ func TestExecutorAdapterExecuteStreamPublishesUsage(t *testing.T) {
 	}
 }
 
+// TestExecutorAdapterExecuteStreamPrefersPluginUsageOverClaudeFrames guards the cache
+// rate regression: Claude frames carry cache-exclusive input_tokens (100 -> 70) and the
+// plugin-reported provider-native usage must win so keeper sees an inclusive input.
+func TestExecutorAdapterExecuteStreamPrefersPluginUsageOverClaudeFrames(t *testing.T) {
+	plugin := newTestUsageCapturePlugin("plugin-provider-claude-frames")
+	registerTestUsagePlugin(t, "test-executor-adapter-claude-frames-usage", plugin)
+
+	executorRecord := normalizeTestCapabilityRecord(capabilityRecord{id: "executor-plugin-claude-frames"})
+	host := newHostWithRecords(executorRecord)
+
+	streamChunks := make(chan pluginapi.ExecutorStreamChunk, 4)
+	streamChunks <- pluginapi.ExecutorStreamChunk{Usage: &pluginapi.UsageDetail{
+		InputTokens:         100,
+		OutputTokens:        50,
+		CachedTokens:        30,
+		CacheReadTokens:     30,
+		CacheCreationTokens: 5,
+		TotalTokens:         150,
+	}}
+	streamChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":70,\"output_tokens\":50,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}\n\n")}
+	close(streamChunks)
+
+	exec := &fakeExecutor{
+		identifier: "plugin-provider-claude-frames",
+		executeStream: func(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			return pluginapi.ExecutorStreamResponse{Chunks: streamChunks}, nil
+		},
+	}
+
+	adapter := newExecutorAdapterForRecordForTest(host, executorRecord, exec,
+		[]sdktranslator.Format{sdktranslator.FormatClaude},
+		[]sdktranslator.Format{sdktranslator.FormatClaude},
+	)
+	adapter.provider = "plugin-provider-claude-frames"
+
+	auth := &coreauth.Auth{
+		ID:       "auth-claude-frames-1",
+		Provider: "plugin-provider-claude-frames",
+	}
+	req := coreexecutor.Request{
+		Model:   "test-model",
+		Payload: []byte(`{"model":"test-model","stream":true}`),
+	}
+	opts := coreexecutor.Options{
+		SourceFormat:   sdktranslator.FormatClaude,
+		ResponseFormat: sdktranslator.FormatClaude,
+		Stream:         true,
+	}
+
+	streamRes, err := adapter.ExecuteStream(context.Background(), auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream returned unexpected error: %v", err)
+	}
+	for chunk := range streamRes.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+	}
+
+	rec := plugin.waitRecord(t, 200*time.Millisecond)
+	if rec.Provider != "plugin-provider-claude-frames" {
+		t.Errorf("got provider %q, want %q", rec.Provider, "plugin-provider-claude-frames")
+	}
+	if rec.Detail.InputTokens != 100 || rec.Detail.OutputTokens != 50 ||
+		rec.Detail.CacheReadTokens != 30 || rec.Detail.CacheCreationTokens != 5 || rec.Detail.TotalTokens != 150 {
+		t.Errorf("got usage %+v, want input=100 output=50 cache_read=30 cache_creation=5 total=150", rec.Detail)
+	}
+}
+
 func TestExecutorAdapterExecuteStreamThroughAuthManagerPublishesUsage(t *testing.T) {
 	plugin := newTestUsageCapturePlugin("plugin-provider-stream-mgr")
 	registerTestUsagePlugin(t, "test-executor-adapter-auth-manager-stream-usage", plugin)

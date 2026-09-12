@@ -845,6 +845,10 @@ func (a *executorAdapter) observeAndTranslateExecutorStream(ctx context.Context,
 					continue
 				}
 
+				// The plugin's own usage is recorded as it arrives so it outranks any
+				// frame-derived usage observed before or after it.
+				streamUsage.ObserveNative(pluginUsageDetailToCore(chunk.Usage), chunk.Usage != nil)
+
 				if len(chunk.Payload) > 0 {
 					helps.ObservePluginExecutorStreamTTFT(prepared.outputFormat.String(), reporter, chunk.Payload)
 

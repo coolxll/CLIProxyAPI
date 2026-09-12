@@ -646,6 +646,10 @@ func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
 type StreamUsageBuffer struct {
 	detail usage.Detail
 	ok     bool
+	// native records that detail was reported by the executor itself, whose token
+	// counts follow provider-native semantics and take precedence over usage
+	// re-derived from translated frames.
+	native bool
 }
 
 var (
@@ -654,8 +658,35 @@ var (
 )
 
 // Observe records detail when ok is true, allowing the final stream usage to win.
+// Details observed this way are derived from translated stream frames and never
+// displace a native detail recorded by ObserveNative.
 func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
 	if b == nil || !ok {
+		return
+	}
+	b.observe(detail, false)
+}
+
+// ObserveNative records usage reported by the executor itself. Such details carry
+// provider-native token semantics, so frame-derived usage must not replace them: the
+// same request re-read through another protocol's frame semantics would otherwise be
+// mis-accounted (Claude frames report cache-exclusive input_tokens, which inflates the
+// cache read rate when read as an inclusive input count). A detail without token counts
+// is ignored so it cannot blank out usage already observed.
+func (b *StreamUsageBuffer) ObserveNative(detail usage.Detail, ok bool) {
+	if b == nil || !ok || !hasNonZeroTokenUsage(detail) {
+		return
+	}
+	b.observe(detail, true)
+}
+
+func (b *StreamUsageBuffer) observe(detail usage.Detail, native bool) {
+	if b.native && !native {
+		// Native usage is already recorded; keep its tokens and only take the response
+		// service tier, which native usage does not always carry.
+		if tier := strings.TrimSpace(detail.ResponseServiceTier); tier != "" && b.detail.ResponseServiceTier == "" {
+			b.detail.ResponseServiceTier = tier
+		}
 		return
 	}
 	responseServiceTier := strings.TrimSpace(detail.ResponseServiceTier)
@@ -665,6 +696,7 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
 		if b.detail.ResponseServiceTier == "" {
 			b.detail.ResponseServiceTier = preservedTier
 		}
+		b.native = native
 	} else {
 		b.detail.ResponseServiceTier = responseServiceTier
 	}

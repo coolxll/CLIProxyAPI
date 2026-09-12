@@ -1,0 +1,14 @@
+schema-version: 1
+id: opencode-plugin
+name: OpenCode Provider
+description: OpenCode Zen Cloud & Daemon provider plugin supporting session affinity, anonymous free models (Bearer public), streaming reasoning, and tool calling.
+author: CLIProxyAPI contributors
+version: 0.2.0
+release-tag: v0.2.0
+repository: https://github.com/coolxll/CLIProxyAPI
+homepage: https://github.com/coolxll/CLIProxyAPI/tree/main/provider-plugins
+tags:
+  - provider
+  - opencode
+install:
+  type: github-release

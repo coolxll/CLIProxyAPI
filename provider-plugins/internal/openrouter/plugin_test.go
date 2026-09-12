@@ -34,6 +34,9 @@ func TestPluginRegister(t *testing.T) {
 	if !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider || !reg.Capabilities.Executor {
 		t.Errorf("missing capabilities in registration: %+v", reg.Capabilities)
 	}
+	if reg.Capabilities.ExecutorModelScope != pluginapi.ExecutorModelScopeOAuth {
+		t.Errorf("got ExecutorModelScope %q, want %q", reg.Capabilities.ExecutorModelScope, pluginapi.ExecutorModelScopeOAuth)
+	}
 	if reg.Metadata.Name != "OpenRouter Free Provider" {
 		t.Errorf("got name %q, want 'OpenRouter Free Provider'", reg.Metadata.Name)
 	}
@@ -129,8 +132,34 @@ func TestPluginStaticModels(t *testing.T) {
 	if resp.Provider != ProviderID {
 		t.Errorf("got provider %q, want %q", resp.Provider, ProviderID)
 	}
+	if len(resp.Models) != 0 {
+		t.Errorf("expected 0 static models when unauthenticated, got %d", len(resp.Models))
+	}
+}
+
+func TestPluginModelsForAuth(t *testing.T) {
+	plugin := New(nil)
+	req := authModelRPCRequest{
+		AuthModelRequest: pluginapi.AuthModelRequest{
+			StorageJSON: []byte(`{"type":"openrouter","api_key":"sk-or-v1-test"}`),
+		},
+	}
+	rawReq, _ := json.Marshal(req)
+	rawResp, err := plugin.Handle(pluginabi.MethodModelForAuth, rawReq)
+	if err != nil {
+		t.Fatalf("Handle(model.auth) error: %v", err)
+	}
+
+	var env pluginruntime.Envelope
+	_ = json.Unmarshal(rawResp, &env)
+	var resp pluginapi.ModelResponse
+	_ = json.Unmarshal(env.Result, &resp)
+
+	if resp.Provider != ProviderID {
+		t.Errorf("got provider %q, want %q", resp.Provider, ProviderID)
+	}
 	if len(resp.Models) == 0 {
-		t.Fatalf("expected static models, got none")
+		t.Fatalf("expected models for auth, got none")
 	}
 
 	hasFreeRouter := false
@@ -141,7 +170,7 @@ func TestPluginStaticModels(t *testing.T) {
 		}
 	}
 	if !hasFreeRouter {
-		t.Errorf("expected openrouter/free in static models")
+		t.Errorf("expected openrouter/free in auth models")
 	}
 }
 

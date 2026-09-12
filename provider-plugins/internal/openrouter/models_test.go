@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -64,33 +65,31 @@ func TestCleanModelID(t *testing.T) {
 
 func TestStaticModels(t *testing.T) {
 	models := staticModels()
-	if len(models) == 0 {
-		t.Fatalf("expected non-empty static models")
+	if len(models) != 0 {
+		t.Fatalf("expected nil or empty static models when unauthenticated, got %d", len(models))
+	}
+
+	fbModels := fallbackFreeModels(time.Now().Unix())
+	if len(fbModels) == 0 {
+		t.Fatalf("expected non-empty fallback free models")
 	}
 
 	foundFreeRouter := false
-	foundTierS := false
 	foundQualityBadge := false
 
-	for _, m := range models {
+	for _, m := range fbModels {
 		if m.ID == "openrouter/free" {
 			foundFreeRouter = true
 		}
-		if m.ID == "openrouter/free:s" || m.ID == "free:s" {
-			foundTierS = true
-		}
-		if m.ID == "google/gemma-4-31b-it:free" && strings.Contains(m.Description, "Tier: S") {
+		if m.ID == "openrouter/google/gemma-4-31b-it:free" && strings.Contains(m.Description, "Tier: S") {
 			foundQualityBadge = true
 		}
 	}
 	if !foundFreeRouter {
-		t.Errorf("expected openrouter/free in static models")
-	}
-	if !foundTierS {
-		t.Errorf("expected free:s virtual router in static models")
+		t.Errorf("expected openrouter/free in fallback free models")
 	}
 	if !foundQualityBadge {
-		t.Errorf("expected quality badge in static model description")
+		t.Errorf("expected quality badge in fallback model description")
 	}
 }
 
@@ -122,14 +121,17 @@ func TestParseOpenRouterModels(t *testing.T) {
 		modelMap[m.ID] = true
 	}
 
-	if !modelMap["google/gemma-4-31b-it:free"] {
-		t.Errorf("expected google/gemma-4-31b-it:free to be present")
+	if !modelMap["openrouter/google/gemma-4-31b-it:free"] {
+		t.Errorf("expected openrouter/google/gemma-4-31b-it:free to be present")
 	}
 	if !modelMap["openrouter/free"] {
 		t.Errorf("expected openrouter/free to be present")
 	}
 	if modelMap["openai/gpt-4o"] {
 		t.Errorf("expected openai/gpt-4o to be filtered out when freeOnly is true")
+	}
+	if modelMap["google/gemma-4-31b-it:free"] {
+		t.Errorf("expected bare id google/gemma-4-31b-it:free to not be present (only openrouter/ prefix)")
 	}
 }
 
@@ -164,7 +166,7 @@ func TestFetchModelsMock(t *testing.T) {
 		seen[m.ID] = true
 	}
 
-	if !seen["nvidia/nemotron-3.5-lightning:free"] {
-		t.Errorf("expected nvidia/nemotron-3.5-lightning:free to be in model list")
+	if !seen["openrouter/nvidia/nemotron-3.5-lightning:free"] {
+		t.Errorf("expected openrouter/nvidia/nemotron-3.5-lightning:free to be in model list, got: %+v", seen)
 	}
 }

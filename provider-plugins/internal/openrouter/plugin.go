@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -138,7 +139,7 @@ func pluginRegistration() registration {
 			ModelProvider:         true,
 			AuthProvider:          true,
 			Executor:              true,
-			ExecutorModelScope:    pluginapi.ExecutorModelScopeBoth,
+			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats:  []string{"openai", "claude"},
 			ExecutorOutputFormats: []string{"openai", "claude"},
 		},
@@ -229,7 +230,7 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
 	models, errModels := fetchModels(host, creds)
 	if errModels != nil || len(models) == 0 {
-		models = staticModels()
+		models = fallbackFreeModels(time.Now().Unix())
 	}
 	return pluginruntime.OK(pluginapi.ModelResponse{
 		Provider: ProviderID,
@@ -240,7 +241,7 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 func (p *Plugin) staticModels(raw []byte) ([]byte, error) {
 	return pluginruntime.OK(pluginapi.ModelResponse{
 		Provider: ProviderID,
-		Models:   staticModels(),
+		Models:   nil,
 	})
 }
 

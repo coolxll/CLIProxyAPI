@@ -17,40 +17,28 @@ var virtualModels = []struct {
 	description string
 }{
 	{
-		id:          "openrouter/free:s",
-		aliases:     []string{"free:s", "tier:s"},
-		displayName: "OpenRouter Free (Tier S Flagship)",
-		description: "[Tier: S+/S | Flagship] Virtual router auto-routing to highest-performing free models (Nemotron 3 Super, DeepSeek R1, MiniMax M2.5, etc.)",
-	},
-	{
-		id:          "openrouter/free:a",
-		aliases:     []string{"free:a", "tier:a"},
-		displayName: "OpenRouter Free (Tier A Workhorse)",
-		description: "[Tier: A+/A | Workhorse] Virtual router auto-routing to balanced free models (Qwen 32B Coder, GPT OSS 120B, Llama 3.3 70B, etc.)",
+		id:          "openrouter/free",
+		aliases:     []string{"free"},
+		displayName: "OpenRouter Free (Auto-Router)",
+		description: "[Dynamic Free Router] Auto-routes across all available free models with quality-preserving failover",
 	},
 	{
 		id:          "openrouter/free:coding",
 		aliases:     []string{"free:coding", "free:code"},
 		displayName: "OpenRouter Free (Coding Priority)",
-		description: "[Category: Coding] Virtual router auto-routing to top-rated coding models (Qwen Coder 480B/32B, DeepSeek, etc.)",
+		description: "[Category: Coding] Auto-routes to top free coding models (e.g. Qwen 2.5 Coder 32B)",
 	},
 	{
 		id:          "openrouter/free:reasoning",
 		aliases:     []string{"free:reasoning", "free:thinking"},
 		displayName: "OpenRouter Free (Reasoning Priority)",
-		description: "[Category: Reasoning] Virtual router auto-routing to deep thinking & reasoning models (DeepSeek R1, Nemotron Reasoning, etc.)",
+		description: "[Category: Reasoning] Auto-routes to top free reasoning models (e.g. DeepSeek R1)",
 	},
 	{
 		id:          "openrouter/free:fast",
 		aliases:     []string{"free:fast", "fast"},
 		displayName: "OpenRouter Free (Speed Priority)",
-		description: "[Category: Fast TPS] Virtual router auto-routing to ultra-fast free models (>100 tokens/sec)",
-	},
-	{
-		id:          "openrouter/free",
-		aliases:     []string{"free"},
-		displayName: "OpenRouter Free (All Tiers Auto-Router)",
-		description: "[Dynamic Free Router] Auto-routes across all available free models with quality-preserving failover",
+		description: "[Category: Fast TPS] Auto-routes to ultra-fast free models",
 	},
 }
 
@@ -114,46 +102,13 @@ func createModelInfo(id string, now int64) pluginapi.ModelInfo {
 }
 
 func staticModels() []pluginapi.ModelInfo {
-	now := time.Now().Unix()
-	rawIDs := []string{
-		"openrouter/free",
-		"google/gemma-4-31b-it:free",
-		"google/gemma-4-26b-a4b-it:free",
-		"nvidia/nemotron-3.5-lightning:free",
-		"nvidia/nemotron-3-super-120b-a12b:free",
-		"nvidia/nemotron-3-ultra-550b-a55b:free",
-		"nex-agi/nex-n2.5-pro:free",
-		"nex-agi/nex-n2.5-mini:free",
-		"inclusionai/ling-3.0-flash-fin:free",
-		"inclusionai/ling-3.0-flash-vl:free",
-		"liquid/lfm-2.5-2.6b:free",
-		"thinkingmachines/inkling:free",
-		"poolside/laguna-s-2.1:free",
-		"cohere/north-mini-code:free",
-		"meta-llama/llama-3.3-70b-instruct:free",
-		"deepseek/deepseek-r1:free",
-		"deepseek/deepseek-chat:free",
-		"qwen/qwen-2.5-coder-32b-instruct:free",
-		"mistralai/mistral-7b-instruct:free",
-	}
+	return nil
+}
 
-	models := make([]pluginapi.ModelInfo, 0, len(rawIDs)*3+len(virtualModels)*2)
-	seen := make(map[string]struct{})
-
-	addModel := func(info pluginapi.ModelInfo) {
-		if info.ID == "" {
-			return
-		}
-		if _, exists := seen[info.ID]; exists {
-			return
-		}
-		seen[info.ID] = struct{}{}
-		models = append(models, info)
-	}
-
-	// 1. Add virtual intent routers first
+func fallbackFreeModels(now int64) []pluginapi.ModelInfo {
+	models := make([]pluginapi.ModelInfo, 0, len(virtualModels)+6)
 	for _, vm := range virtualModels {
-		addModel(pluginapi.ModelInfo{
+		models = append(models, pluginapi.ModelInfo{
 			ID:          vm.id,
 			Object:      "model",
 			Created:     now,
@@ -162,36 +117,18 @@ func staticModels() []pluginapi.ModelInfo {
 			Description: vm.description,
 			Type:        "router",
 		})
-		for _, alias := range vm.aliases {
-			addModel(pluginapi.ModelInfo{
-				ID:          alias,
-				Object:      "model",
-				Created:     now,
-				OwnedBy:     "openrouter",
-				DisplayName: vm.displayName,
-				Description: vm.description,
-				Type:        "router",
-			})
-		}
 	}
-
-	// 2. Add concrete models
-	for _, id := range rawIDs {
-		info := createModelInfo(id, now)
-		addModel(info)
-		if !strings.HasPrefix(id, "openrouter/") {
-			infoWithPrefix := createModelInfo(fmt.Sprintf("openrouter/%s", id), now)
-			addModel(infoWithPrefix)
-		}
-		if strings.HasSuffix(id, ":free") {
-			bareNoFree := strings.TrimSuffix(id, ":free")
-			infoBare := createModelInfo(bareNoFree, now)
-			addModel(infoBare)
-			infoBarePrefix := createModelInfo(fmt.Sprintf("openrouter/%s", bareNoFree), now)
-			addModel(infoBarePrefix)
-		}
+	topFreeIDs := []string{
+		"openrouter/deepseek/deepseek-r1:free",
+		"openrouter/deepseek/deepseek-chat:free",
+		"openrouter/qwen/qwen-2.5-coder-32b-instruct:free",
+		"openrouter/meta-llama/llama-3.3-70b-instruct:free",
+		"openrouter/google/gemma-4-31b-it:free",
+		"openrouter/nvidia/nemotron-3.5-lightning:free",
 	}
-
+	for _, id := range topFreeIDs {
+		models = append(models, createModelInfo(id, now))
+	}
 	return models
 }
 
@@ -205,12 +142,12 @@ func fetchModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, error)
 		Headers: headers,
 	})
 	if err != nil || resp.StatusCode != http.StatusOK {
-		return staticModels(), nil
+		return fallbackFreeModels(time.Now().Unix()), nil
 	}
 
 	models, errParse := parseOpenRouterModels(resp.Body, creds.isFreeOnly())
 	if errParse != nil || len(models) == 0 {
-		return staticModels(), nil
+		return fallbackFreeModels(time.Now().Unix()), nil
 	}
 	return models, nil
 }
@@ -236,7 +173,7 @@ func parseOpenRouterModels(body []byte, freeOnly bool) ([]pluginapi.ModelInfo, e
 		models = append(models, info)
 	}
 
-	// 1. Add virtual intent routers first
+	// 1. Add virtual intent routers (canonical IDs only)
 	for _, vm := range virtualModels {
 		addModel(pluginapi.ModelInfo{
 			ID:          vm.id,
@@ -247,20 +184,9 @@ func parseOpenRouterModels(body []byte, freeOnly bool) ([]pluginapi.ModelInfo, e
 			Description: vm.description,
 			Type:        "router",
 		})
-		for _, alias := range vm.aliases {
-			addModel(pluginapi.ModelInfo{
-				ID:          alias,
-				Object:      "model",
-				Created:     now,
-				OwnedBy:     "openrouter",
-				DisplayName: vm.displayName,
-				Description: vm.description,
-				Type:        "router",
-			})
-		}
 	}
 
-	// 2. Add parsed upstream models with quality info
+	// 2. Add parsed upstream models with quality info (canonical openrouter/ prefixed IDs only)
 	for _, item := range parsed.Array() {
 		mID := strings.TrimSpace(item.Get("id").String())
 		if mID == "" {
@@ -275,19 +201,12 @@ func parseOpenRouterModels(body []byte, freeOnly bool) ([]pluginapi.ModelInfo, e
 			continue
 		}
 
-		info := createModelInfo(mID, now)
+		canonicalID := mID
+		if !strings.HasPrefix(canonicalID, "openrouter/") {
+			canonicalID = fmt.Sprintf("openrouter/%s", canonicalID)
+		}
+		info := createModelInfo(canonicalID, now)
 		addModel(info)
-		if !strings.HasPrefix(mID, "openrouter/") {
-			infoWithPrefix := createModelInfo(fmt.Sprintf("openrouter/%s", mID), now)
-			addModel(infoWithPrefix)
-		}
-		if strings.HasSuffix(mID, ":free") {
-			bareNoFree := strings.TrimSuffix(mID, ":free")
-			infoBare := createModelInfo(bareNoFree, now)
-			addModel(infoBare)
-			infoBarePrefix := createModelInfo(fmt.Sprintf("openrouter/%s", bareNoFree), now)
-			addModel(infoBarePrefix)
-		}
 	}
 
 	return models, nil

@@ -1,0 +1,15 @@
+schema-version: 1
+id: openrouter-plugin
+name: OpenRouter Free Provider
+description: OpenRouter provider plugin supporting free models discovery (:free), openrouter/free dynamic routing, rate-limit 429 auto-failover, and streaming reasoning normalization.
+author: CLIProxyAPI contributors
+version: 0.2.0
+release-tag: v0.2.0
+repository: https://github.com/coolxll/CLIProxyAPI
+homepage: https://github.com/coolxll/CLIProxyAPI/tree/main/provider-plugins
+tags:
+  - provider
+  - openrouter
+  - free
+install:
+  type: github-release

@@ -15,10 +15,12 @@ endif
 
 LINGMA_ARTIFACT := $(BIN_DIR)/lingma-plugin-v$(VERSION).$(PLUGIN_EXT)
 TRAE_ARTIFACT := $(BIN_DIR)/trae-plugin-v$(VERSION).$(PLUGIN_EXT)
+OPENCODE_ARTIFACT := $(BIN_DIR)/opencode-plugin-v$(VERSION).$(PLUGIN_EXT)
+OPENROUTER_ARTIFACT := $(BIN_DIR)/openrouter-plugin-v$(VERSION).$(PLUGIN_EXT)
 
 .PHONY: build test fmt download-lingma package checksums package-check release-check clean force
 
-build: $(LINGMA_ARTIFACT) $(TRAE_ARTIFACT)
+build: $(LINGMA_ARTIFACT) $(TRAE_ARTIFACT) $(OPENCODE_ARTIFACT) $(OPENROUTER_ARTIFACT)
 
 test:
 	go test ./...
@@ -34,9 +36,13 @@ package: build
 	mkdir -p $(DIST_DIR)
 	cp $(LINGMA_ARTIFACT) $(DIST_DIR)/lingma-plugin.$(PLUGIN_EXT)
 	cp $(TRAE_ARTIFACT) $(DIST_DIR)/trae-plugin.$(PLUGIN_EXT)
+	cp $(OPENCODE_ARTIFACT) $(DIST_DIR)/opencode-plugin.$(PLUGIN_EXT)
+	cp $(OPENROUTER_ARTIFACT) $(DIST_DIR)/openrouter-plugin.$(PLUGIN_EXT)
 	cd $(DIST_DIR) && zip -q lingma-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip lingma-plugin.$(PLUGIN_EXT)
 	cd $(DIST_DIR) && zip -q trae-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip trae-plugin.$(PLUGIN_EXT)
-	rm -f $(DIST_DIR)/lingma-plugin.$(PLUGIN_EXT) $(DIST_DIR)/trae-plugin.$(PLUGIN_EXT)
+	cd $(DIST_DIR) && zip -q opencode-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip opencode-plugin.$(PLUGIN_EXT)
+	cd $(DIST_DIR) && zip -q openrouter-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip openrouter-plugin.$(PLUGIN_EXT)
+	rm -f $(DIST_DIR)/lingma-plugin.$(PLUGIN_EXT) $(DIST_DIR)/trae-plugin.$(PLUGIN_EXT) $(DIST_DIR)/opencode-plugin.$(PLUGIN_EXT) $(DIST_DIR)/openrouter-plugin.$(PLUGIN_EXT)
 	$(MAKE) checksums
 	$(MAKE) package-check
 
@@ -46,6 +52,8 @@ checksums:
 package-check:
 	test "$$(unzip -Z1 $(DIST_DIR)/lingma-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip)" = "lingma-plugin.$(PLUGIN_EXT)"
 	test "$$(unzip -Z1 $(DIST_DIR)/trae-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip)" = "trae-plugin.$(PLUGIN_EXT)"
+	test "$$(unzip -Z1 $(DIST_DIR)/opencode-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip)" = "opencode-plugin.$(PLUGIN_EXT)"
+	test "$$(unzip -Z1 $(DIST_DIR)/openrouter-plugin_$(VERSION)_$(GOOS_NAME)_$(GOARCH_NAME).zip)" = "openrouter-plugin.$(PLUGIN_EXT)"
 	cd $(DIST_DIR) && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c checksums.txt; else shasum -a 256 -c checksums.txt; fi
 
 release-check: fmt test package
@@ -63,6 +71,14 @@ $(LINGMA_ARTIFACT): force | $(BIN_DIR)
 
 $(TRAE_ARTIFACT): force | $(BIN_DIR)
 	CGO_ENABLED=1 go build -buildmode=c-shared -o $@ ./cmd/trae
+	rm -f $(basename $@).h
+
+$(OPENCODE_ARTIFACT): force | $(BIN_DIR)
+	CGO_ENABLED=1 go build -buildmode=c-shared -o $@ ./cmd/opencode
+	rm -f $(basename $@).h
+
+$(OPENROUTER_ARTIFACT): force | $(BIN_DIR)
+	CGO_ENABLED=1 go build -buildmode=c-shared -o $@ ./cmd/openrouter
 	rm -f $(basename $@).h
 
 force:

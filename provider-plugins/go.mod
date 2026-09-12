@@ -47,6 +47,6 @@ require (
 )
 
 replace (
-	github.com/coolxll/lingma-protocol-go => ../../../lingma-protocol-go
+	github.com/coolxll/lingma-protocol-go => ../../lingma-protocol-go
 	github.com/router-for-me/CLIProxyAPI/v7 => ..
 )

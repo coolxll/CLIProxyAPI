@@ -1,10 +1,10 @@
 package opencode
 
 import (
-	"encoding/json"
 	"net/http"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -61,30 +61,6 @@ func TestResolveCloudZenModel(t *testing.T) {
 	}
 }
 
-func TestStaticModels(t *testing.T) {
-	models := staticModels()
-	if len(models) == 0 {
-		t.Fatalf("expected non-empty static models")
-	}
-
-	foundBigPickle := false
-	foundBarePickle := false
-	for _, m := range models {
-		if m.ID == "opencode/big-pickle" {
-			foundBigPickle = true
-		}
-		if m.ID == "big-pickle" {
-			foundBarePickle = true
-		}
-	}
-	if !foundBigPickle {
-		t.Errorf("expected to find opencode/big-pickle in static models")
-	}
-	if !foundBarePickle {
-		t.Errorf("expected to find bare big-pickle in static models")
-	}
-}
-
 func TestFetchCloudZenModels(t *testing.T) {
 	mockResponse := []byte(`{
 		"object": "list",
@@ -98,7 +74,7 @@ func TestFetchCloudZenModels(t *testing.T) {
 
 	host := hostRPC{
 		call: func(method string, request []byte) ([]byte, error) {
-			return json.Marshal(pluginapi.HTTPResponse{
+			return pluginruntime.OK(pluginapi.HTTPResponse{
 				StatusCode: http.StatusOK,
 				Body:       mockResponse,
 			})

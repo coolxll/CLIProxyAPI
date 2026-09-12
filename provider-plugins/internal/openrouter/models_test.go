@@ -2,9 +2,7 @@ package openrouter
 
 import (
 	"net/http"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -67,29 +65,6 @@ func TestStaticModels(t *testing.T) {
 	models := staticModels()
 	if len(models) != 0 {
 		t.Fatalf("expected nil or empty static models when unauthenticated, got %d", len(models))
-	}
-
-	fbModels := fallbackFreeModels(time.Now().Unix())
-	if len(fbModels) == 0 {
-		t.Fatalf("expected non-empty fallback free models")
-	}
-
-	foundFreeRouter := false
-	foundQualityBadge := false
-
-	for _, m := range fbModels {
-		if m.ID == "openrouter/free" {
-			foundFreeRouter = true
-		}
-		if m.ID == "openrouter/google/gemma-4-31b-it:free" && strings.Contains(m.Description, "Tier: S") {
-			foundQualityBadge = true
-		}
-	}
-	if !foundFreeRouter {
-		t.Errorf("expected openrouter/free in fallback free models")
-	}
-	if !foundQualityBadge {
-		t.Errorf("expected quality badge in fallback model description")
 	}
 }
 

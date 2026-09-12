@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -177,10 +176,10 @@ func (p *Plugin) parseAuth(raw []byte) ([]byte, error) {
 		Label:       label,
 		StorageJSON: []byte(storageJSON),
 		Metadata: map[string]any{
-			"type":       ProviderID,
-			"base_url":   creds.baseURL(),
-			"name":       label,
-			"free_only":  creds.isFreeOnly(),
+			"type":      ProviderID,
+			"base_url":  creds.baseURL(),
+			"name":      label,
+			"free_only": creds.isFreeOnly(),
 		},
 		Attributes: map[string]string{
 			"account": label,
@@ -205,10 +204,10 @@ func (p *Plugin) refreshAuth(raw []byte) ([]byte, error) {
 		Label:       label,
 		StorageJSON: req.StorageJSON,
 		Metadata: map[string]any{
-			"type":       ProviderID,
-			"base_url":   creds.baseURL(),
-			"name":       label,
-			"free_only":  creds.isFreeOnly(),
+			"type":      ProviderID,
+			"base_url":  creds.baseURL(),
+			"name":      label,
+			"free_only": creds.isFreeOnly(),
 		},
 		Attributes: req.Attributes,
 	}
@@ -229,8 +228,8 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 	}
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
 	models, errModels := fetchModels(host, creds)
-	if errModels != nil || len(models) == 0 {
-		models = fallbackFreeModels(time.Now().Unix())
+	if errModels != nil {
+		return nil, errModels
 	}
 	return pluginruntime.OK(pluginapi.ModelResponse{
 		Provider: ProviderID,

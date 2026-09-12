@@ -41,11 +41,9 @@ func (p *Plugin) execute(raw []byte) ([]byte, error) {
 	from := sdktranslator.Format(normalizeFormat(req.ExecutorRequest))
 	openaiFormat := sdktranslator.FormatOpenAI
 
-	targetModel := cleanModelID(req.Model)
-	if actualModel, isVirtual := resolveVirtualModel(targetModel, globalCooldowns); isVirtual {
-		targetModel = actualModel
-	} else if globalCooldowns.isCoolingDown(targetModel) && creds.isAutoFailover() {
-		targetModel = globalCooldowns.nextFallbackModel(targetModel, nil)
+	targetModel, errResolve := resolveRequestedModel(host, creds, req.Model)
+	if errResolve != nil {
+		return nil, errResolve
 	}
 
 	endpoint := fmt.Sprintf("%s/chat/completions", creds.baseURL())
@@ -78,7 +76,11 @@ func (p *Plugin) execute(raw []byte) ([]byte, error) {
 		if resp.StatusCode == http.StatusTooManyRequests {
 			globalCooldowns.markCooldown(currentModel, 10*time.Minute)
 			if creds.isAutoFailover() && attempt < maxAttempts {
-				currentModel = globalCooldowns.nextFallbackModel(currentModel, nil)
+				fallback, errFallback := nextLiveFallback(host, creds, currentModel)
+				if errFallback != nil {
+					return nil, errFallback
+				}
+				currentModel = fallback
 				continue
 			}
 			return nil, fmt.Errorf("OpenRouter 429 rate limit exceeded for model %q", currentModel)
@@ -129,11 +131,9 @@ func (p *Plugin) executeStream(raw []byte) ([]byte, error) {
 	from := sdktranslator.Format(normalizeFormat(req.ExecutorRequest))
 	openaiFormat := sdktranslator.FormatOpenAI
 
-	targetModel := cleanModelID(req.Model)
-	if actualModel, isVirtual := resolveVirtualModel(targetModel, globalCooldowns); isVirtual {
-		targetModel = actualModel
-	} else if globalCooldowns.isCoolingDown(targetModel) && creds.isAutoFailover() {
-		targetModel = globalCooldowns.nextFallbackModel(targetModel, nil)
+	targetModel, errResolve := resolveRequestedModel(host, creds, req.Model)
+	if errResolve != nil {
+		return nil, errResolve
 	}
 
 	endpoint := fmt.Sprintf("%s/chat/completions", creds.baseURL())
@@ -167,7 +167,11 @@ func (p *Plugin) executeStream(raw []byte) ([]byte, error) {
 			host.closeHTTPStream(sResp.StreamID)
 			globalCooldowns.markCooldown(currentModel, 10*time.Minute)
 			if creds.isAutoFailover() && attempt < maxAttempts {
-				currentModel = globalCooldowns.nextFallbackModel(currentModel, nil)
+				fallback, errFallback := nextLiveFallback(host, creds, currentModel)
+				if errFallback != nil {
+					return nil, errFallback
+				}
+				currentModel = fallback
 				continue
 			}
 			return nil, fmt.Errorf("OpenRouter 429 rate limit exceeded for model %q", currentModel)

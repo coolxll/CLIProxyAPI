@@ -397,3 +397,108 @@ func hostDoResponder(t *testing.T, respond func(pluginapi.HTTPRequest) pluginapi
 		return pluginruntime.OK(respond(req.Request))
 	}
 }
+
+func TestRefreshTokenWithUpstreamBoundDeviceID(t *testing.T) {
+	host := func(method string, raw []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostLog {
+			return pluginruntime.OK(struct{}{})
+		}
+		return pluginruntime.OK(pluginapi.HTTPResponse{
+			StatusCode: http.StatusOK,
+			Body: []byte(`{
+				"Result": {
+					"Token": "` + syntheticTraeJWT(t, "user-dev-test") + `",
+					"RefreshToken": "new-refresh",
+					"BoundDeviceID": "upstream-bound-device-id"
+				}
+			}`),
+		})
+	}
+
+	creds := credentials{
+		JWTToken:     "old-token",
+		MachineID:    "machine",
+		DeviceID:     "old-device",
+		RefreshToken: "old-refresh",
+	}
+
+	rpc := hostRPC{call: host}
+	if err := refreshToken(rpc, &creds, traeAPIHost); err != nil {
+		t.Fatalf("refresh token: %v", err)
+	}
+
+	if creds.DeviceID != "upstream-bound-device-id" {
+		t.Errorf("expected DeviceID upstream-bound-device-id, got %s", creds.DeviceID)
+	}
+}
+
+func TestRefreshTokenPreservesExistingBoundDeviceID(t *testing.T) {
+	host := func(method string, raw []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostLog {
+			return pluginruntime.OK(struct{}{})
+		}
+		return pluginruntime.OK(pluginapi.HTTPResponse{
+			StatusCode: http.StatusOK,
+			Body: []byte(`{
+				"Result": {
+					"Token": "` + syntheticTraeJWT(t, "user-dev-test") + `",
+					"RefreshToken": "new-refresh"
+				}
+			}`),
+		})
+	}
+
+	creds := credentials{
+		JWTToken:     "old-token",
+		MachineID:    "machine",
+		DeviceID:     "qwxe24l3old7ow",
+		RefreshToken: "old-refresh",
+	}
+
+	rpc := hostRPC{call: host}
+	if err := refreshToken(rpc, &creds, traeAPIHost); err != nil {
+		t.Fatalf("refresh token: %v", err)
+	}
+
+	// Must NOT be overridden by deriveStableDeviceID
+	if creds.DeviceID != "qwxe24l3old7ow" {
+		t.Errorf("expected DeviceID qwxe24l3old7ow, got %s", creds.DeviceID)
+	}
+}
+
+func TestRefreshTokenFallbackDerivesStableDeviceID(t *testing.T) {
+	host := func(method string, raw []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostLog {
+			return pluginruntime.OK(struct{}{})
+		}
+		return pluginruntime.OK(pluginapi.HTTPResponse{
+			StatusCode: http.StatusOK,
+			Body: []byte(`{
+				"Result": {
+					"Token": "` + syntheticTraeJWT(t, "user-fallback") + `",
+					"RefreshToken": "new-refresh"
+				}
+			}`),
+		})
+	}
+
+	creds := credentials{
+		JWTToken:     "old-token",
+		MachineID:    "machine",
+		DeviceID:     defaultTraeID,
+		RefreshToken: "old-refresh",
+	}
+
+	rpc := hostRPC{call: host}
+	if err := refreshToken(rpc, &creds, traeAPIHost); err != nil {
+		t.Fatalf("refresh token: %v", err)
+	}
+
+	if creds.DeviceID == "" || creds.DeviceID == defaultTraeID {
+		t.Errorf("expected derived stable device ID, got %s", creds.DeviceID)
+	}
+	if len(creds.DeviceID) != 16 {
+		t.Errorf("expected 16-digit device ID, got %s", creds.DeviceID)
+	}
+}
+

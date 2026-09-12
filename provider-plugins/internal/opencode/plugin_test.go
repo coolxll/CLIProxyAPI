@@ -102,8 +102,8 @@ func TestPluginStaticModels(t *testing.T) {
 	if resp.Provider != ProviderID {
 		t.Errorf("got provider %q, want %q", resp.Provider, ProviderID)
 	}
-	if len(resp.Models) == 0 {
-		t.Errorf("expected non-empty static models")
+	if len(resp.Models) != 0 {
+		t.Errorf("expected no fabricated static models, got %d", len(resp.Models))
 	}
 }
 

@@ -266,46 +266,6 @@ func TestAppendTraeModernAliases(t *testing.T) {
 	}
 }
 
-func TestStaticModels(t *testing.T) {
-	models := staticModels()
-
-	if len(models) < 10 {
-		t.Errorf("expected at least 10 modern static models, got %d", len(models))
-	}
-
-	// Check that all models have Type = ProviderID
-	for _, m := range models {
-		if m.Type != ProviderID {
-			t.Errorf("model %s has type %s, expected %s", m.ID, m.Type, ProviderID)
-		}
-	}
-
-	// Verify legacy models are NOT present
-	legacyModels := []string{"seed_m8", "deepseek-R1", "deepseek-V3", "deepseek-V3-0324", "no_thinking_model", "glm-4.7", "glm-5", "glm-5.1", "kimi-k2.6"}
-	for _, id := range legacyModels {
-		for _, m := range models {
-			if strings.EqualFold(m.ID, id) {
-				t.Errorf("legacy model %s should not be in static models", id)
-			}
-		}
-	}
-
-	// Verify modern models ARE present
-	modernModels := []string{"DeepSeek-V4-Pro", "glm-5.2", "minimax-m3", "qwen-3.7-plus", "kimi-k3"}
-	for _, id := range modernModels {
-		found := false
-		for _, m := range models {
-			if strings.EqualFold(m.ID, id) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("modern model %s not found in static models", id)
-		}
-	}
-}
-
 func TestModelExists(t *testing.T) {
 	models := []pluginapi.ModelInfo{
 		{ID: "model1"},

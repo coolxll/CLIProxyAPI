@@ -186,16 +186,12 @@ func (p *Plugin) parseAuth(raw []byte) ([]byte, error) {
 		label = accountLabel(creds)
 	}
 	auth := pluginapi.AuthData{
-		Provider:    ProviderID,
-		ID:          stableAuthID(creds),
-		FileName:    fileName,
-		Label:       label,
-		StorageJSON: storageJSON,
-		Metadata: map[string]any{
-			"type":    ProviderID,
-			"user_id": strings.TrimSpace(creds.UserID),
-			"name":    label,
-		},
+		Provider:         ProviderID,
+		ID:               stableAuthID(creds),
+		FileName:         fileName,
+		Label:            label,
+		StorageJSON:      storageJSON,
+		Metadata:         sanitizedMetadata(creds, label),
 		Attributes: map[string]string{
 			"account": accountLabel(creds),
 		},
@@ -260,9 +256,11 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
 	p.replaceTraeDetailModelConfigs(req.AuthID, nil)
 	models, configs, errModels := fetchModels(host, creds)
-	if errModels != nil || len(models) == 0 {
-		models = staticModels()
-		configs = nil
+	if errModels != nil {
+		return nil, errModels
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("Trae model list is empty")
 	}
 	p.replaceTraeDetailModelConfigs(req.AuthID, configs)
 	return pluginOK(pluginapi.ModelResponse{
@@ -271,15 +269,10 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 	})
 }
 
-func (p *Plugin) staticModels(raw []byte) ([]byte, error) {
-	var req pluginapi.StaticModelRequest
-	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
-		return nil, fmt.Errorf("decode Trae static model request: %w", errUnmarshal)
-	}
-	return pluginOK(pluginapi.ModelResponse{
-		Provider: ProviderID,
-		Models:   staticModels(),
-	})
+// staticModels deliberately returns no models: Trae models must come from a live
+// upstream fetch so the host never advertises stale or fabricated entries.
+func (p *Plugin) staticModels([]byte) ([]byte, error) {
+	return pluginOK(pluginapi.ModelResponse{Provider: ProviderID})
 }
 
 func validateCredentials(creds credentials) error {
@@ -342,11 +335,15 @@ func marshalStorage(creds credentials) []byte {
 }
 
 func sanitizedMetadata(creds credentials, label string) map[string]any {
-	return map[string]any{
+	meta := map[string]any{
 		"type":    ProviderID,
 		"user_id": strings.TrimSpace(creds.UserID),
 		"name":    label,
 	}
+	if did := strings.TrimSpace(creds.DeviceID); did != "" {
+		meta["device_id"] = did
+	}
+	return meta
 }
 
 func cloneAttributes(source map[string]string, userID string) map[string]string {

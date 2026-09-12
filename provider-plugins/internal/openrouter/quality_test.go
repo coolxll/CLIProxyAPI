@@ -113,9 +113,15 @@ func TestClassifyVirtualModel(t *testing.T) {
 
 func TestResolveVirtualModel(t *testing.T) {
 	tracker := &cooldownTracker{cooldowns: make(map[string]time.Time)}
+	live := liveEntryFromIDs(
+		"google/gemma-4-31b-it:free",
+		"nvidia/nemotron-3-super-120b-a12b:free",
+		"deepseek/deepseek-chat:free",
+		"qwen/qwen3-coder:free",
+	)
 
 	// Test free:s resolves to a Tier S/S+ model
-	modelS, isVirtual := resolveVirtualModel("free:s", tracker)
+	modelS, isVirtual := resolveVirtualModel("free:s", live, tracker)
 	if !isVirtual {
 		t.Fatalf("expected isVirtual to be true")
 	}
@@ -126,7 +132,7 @@ func TestResolveVirtualModel(t *testing.T) {
 
 	// Mark top model in cooldown
 	tracker.markCooldown(modelS, 10*time.Minute)
-	modelS2, _ := resolveVirtualModel("free:s", tracker)
+	modelS2, _ := resolveVirtualModel("free:s", live, tracker)
 	if modelS2 == modelS {
 		t.Errorf("expected different model after marking %s cooling down", modelS)
 	}
@@ -136,7 +142,7 @@ func TestResolveVirtualModel(t *testing.T) {
 	}
 
 	// Test free:coding resolves to a model with coding tag
-	modelCode, isVirtualCode := resolveVirtualModel("openrouter/free:coding", tracker)
+	modelCode, isVirtualCode := resolveVirtualModel("openrouter/free:coding", live, tracker)
 	if !isVirtualCode {
 		t.Fatalf("expected isVirtualCode to be true")
 	}
@@ -150,23 +156,5 @@ func TestResolveVirtualModel(t *testing.T) {
 	}
 	if !hasCoding {
 		t.Errorf("expected coding tag for %s, tags: %v", modelCode, qCode.Tags)
-	}
-}
-
-func TestQualityPreservingFallback(t *testing.T) {
-	tracker := &cooldownTracker{cooldowns: make(map[string]time.Time)}
-
-	failedModel := "google/gemma-4-31b-it:free" // Tier S
-	tracker.markCooldown(failedModel, 10*time.Minute)
-
-	fallback := qualityPreservingFallback(failedModel, tracker)
-	if fallback == failedModel {
-		t.Errorf("fallback returned same failed model")
-	}
-
-	qFallback := lookupQuality(fallback)
-	// Must be Tier S or S+ (same tier priority)
-	if qFallback.Tier != TierS && qFallback.Tier != TierSPlus {
-		t.Errorf("expected Tier S or S+ preserving fallback, got %s for %s", qFallback.Tier, fallback)
 	}
 }

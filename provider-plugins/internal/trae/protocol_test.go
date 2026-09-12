@@ -133,6 +133,30 @@ func TestResolveModelConfig(t *testing.T) {
 			wantModelName:  "unknown-model",
 			wantConfigName: "unknown-model",
 		},
+		{
+			name:           "removed family alias glm passes through",
+			model:          "glm",
+			wantModelName:  "glm",
+			wantConfigName: "glm",
+		},
+		{
+			name:           "removed family alias kimi passes through",
+			model:          "kimi",
+			wantModelName:  "kimi",
+			wantConfigName: "kimi",
+		},
+		{
+			name:           "removed family alias qwen passes through",
+			model:          "qwen",
+			wantModelName:  "qwen",
+			wantConfigName: "qwen",
+		},
+		{
+			name:           "removed family alias deepseek passes through",
+			model:          "deepseek",
+			wantModelName:  "deepseek",
+			wantConfigName: "deepseek",
+		},
 	}
 
 	for _, tt := range tests {
@@ -178,11 +202,25 @@ func TestResolveRawChatModelConfig(t *testing.T) {
 			wantConfigName: "title_generation",
 		},
 		{
-			name:           "V2 unknown model defaults to no_thinking_model",
+			name:           "V2 unknown model passes through honestly",
 			model:          "test-model",
 			protocol:       traeProtocolV2,
-			wantModelName:  "no_thinking_model",
-			wantConfigName: "title_generation",
+			wantModelName:  "test-model",
+			wantConfigName: "test-model",
+		},
+		{
+			name:           "V2 removed fake alias gpt-4o passes through",
+			model:          "gpt-4o",
+			protocol:       traeProtocolV2,
+			wantModelName:  "gpt-4o",
+			wantConfigName: "gpt-4o",
+		},
+		{
+			name:           "V2 removed fake alias claude-3-5-sonnet passes through",
+			model:          "claude-3-5-sonnet",
+			protocol:       traeProtocolV2,
+			wantModelName:  "claude-3-5-sonnet",
+			wantConfigName: "claude-3-5-sonnet",
 		},
 	}
 

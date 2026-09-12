@@ -3,7 +3,7 @@ package helpers
 import (
 	"encoding/json"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/lingmawire"
+	"github.com/coolxll/lingma-protocol-go"
 )
 
 // LingmaErrorInfo aliases lingmawire.ErrorInfo.

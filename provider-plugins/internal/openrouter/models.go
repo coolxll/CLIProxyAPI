@@ -105,33 +105,6 @@ func staticModels() []pluginapi.ModelInfo {
 	return nil
 }
 
-func fallbackFreeModels(now int64) []pluginapi.ModelInfo {
-	models := make([]pluginapi.ModelInfo, 0, len(virtualModels)+6)
-	for _, vm := range virtualModels {
-		models = append(models, pluginapi.ModelInfo{
-			ID:          vm.id,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     "openrouter",
-			DisplayName: vm.displayName,
-			Description: vm.description,
-			Type:        "router",
-		})
-	}
-	topFreeIDs := []string{
-		"openrouter/deepseek/deepseek-r1:free",
-		"openrouter/deepseek/deepseek-chat:free",
-		"openrouter/qwen/qwen-2.5-coder-32b-instruct:free",
-		"openrouter/meta-llama/llama-3.3-70b-instruct:free",
-		"openrouter/google/gemma-4-31b-it:free",
-		"openrouter/nvidia/nemotron-3.5-lightning:free",
-	}
-	for _, id := range topFreeIDs {
-		models = append(models, createModelInfo(id, now))
-	}
-	return models
-}
-
 func fetchModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, error) {
 	urlStr := fmt.Sprintf("%s/models", creds.baseURL())
 	headers := buildAuthHeaders(creds)
@@ -141,14 +114,23 @@ func fetchModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, error)
 		URL:     urlStr,
 		Headers: headers,
 	})
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return fallbackFreeModels(time.Now().Unix()), nil
+	if err != nil {
+		return nil, fmt.Errorf("OpenRouter model list request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("OpenRouter model list returned HTTP %d", resp.StatusCode)
 	}
 
 	models, errParse := parseOpenRouterModels(resp.Body, creds.isFreeOnly())
-	if errParse != nil || len(models) == 0 {
-		return fallbackFreeModels(time.Now().Unix()), nil
+	if errParse != nil {
+		return nil, errParse
 	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("OpenRouter returned no usable models")
+	}
+	// Remember the live listing so virtual routers and auto-failover only ever
+	// target models this account can actually reach.
+	storeLiveModels(creds, models)
 	return models, nil
 }
 
@@ -173,20 +155,10 @@ func parseOpenRouterModels(body []byte, freeOnly bool) ([]pluginapi.ModelInfo, e
 		models = append(models, info)
 	}
 
-	// 1. Add virtual intent routers (canonical IDs only)
-	for _, vm := range virtualModels {
-		addModel(pluginapi.ModelInfo{
-			ID:          vm.id,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     "openrouter",
-			DisplayName: vm.displayName,
-			Description: vm.description,
-			Type:        "router",
-		})
-	}
-
-	// 2. Add parsed upstream models with quality info (canonical openrouter/ prefixed IDs only)
+	// 1. Collect the upstream models this account can actually use (canonical
+	// openrouter/ prefixed IDs only) and count the free ones.
+	upstream := make([]pluginapi.ModelInfo, 0)
+	freeUpstream := 0
 	for _, item := range parsed.Array() {
 		mID := strings.TrimSpace(item.Get("id").String())
 		if mID == "" {
@@ -200,12 +172,34 @@ func parseOpenRouterModels(body []byte, freeOnly bool) ([]pluginapi.ModelInfo, e
 		if freeOnly && !isFree {
 			continue
 		}
+		if isFree && classifyVirtualModel(mID) == virtualKindNone {
+			freeUpstream++
+		}
 
 		canonicalID := mID
 		if !strings.HasPrefix(canonicalID, "openrouter/") {
 			canonicalID = fmt.Sprintf("openrouter/%s", canonicalID)
 		}
-		info := createModelInfo(canonicalID, now)
+		upstream = append(upstream, createModelInfo(canonicalID, now))
+	}
+
+	// 2. Advertise virtual intent routers only when this account has a free model
+	// to route to; otherwise they would list models that cannot be served.
+	if freeUpstream > 0 {
+		for _, vm := range virtualModels {
+			addModel(pluginapi.ModelInfo{
+				ID:          vm.id,
+				Object:      "model",
+				Created:     now,
+				OwnedBy:     "openrouter",
+				DisplayName: vm.displayName,
+				Description: vm.description,
+				Type:        "router",
+			})
+		}
+	}
+
+	for _, info := range upstream {
 		addModel(info)
 	}
 

@@ -23,11 +23,15 @@ type mockHostManager struct {
 	emitted      [][]byte
 	streamClosed bool
 	httpHandler  func(req pluginapi.HTTPRequest) pluginapi.HTTPResponse
+	// modelsBody answers GET /models so virtual routers and auto-failover resolve
+	// against a live listing. Defaults to testLiveModelsJSON.
+	modelsBody string
 }
 
 func newMockHostManager() *mockHostManager {
 	return &mockHostManager{
 		streamBodies: make(map[string]io.ReadCloser),
+		modelsBody:   testLiveModelsJSON,
 	}
 }
 
@@ -40,6 +44,16 @@ func (m *mockHostManager) makeHostCall() HostCall {
 		case pluginabi.MethodHostHTTPDo:
 			var req hostHTTPRequest
 			_ = json.Unmarshal(request, &req)
+			if req.Request.Method == http.MethodGet && strings.Contains(req.Request.URL, "/models") {
+				body := m.modelsBody
+				if body == "" {
+					body = testLiveModelsJSON
+				}
+				return pluginruntime.OK(pluginapi.HTTPResponse{
+					StatusCode: http.StatusOK,
+					Body:       []byte(body),
+				})
+			}
 			if m.httpHandler != nil {
 				resp := m.httpHandler(req.Request)
 				return pluginruntime.OK(resp)
@@ -155,10 +169,10 @@ func TestExecute_NonStreaming_Success(t *testing.T) {
 
 	execReq := executorRPCRequest{
 		ExecutorRequest: pluginapi.ExecutorRequest{
-			Model:        "openrouter/free",
-			Format:       "openai",
-			Payload:      []byte(`{"messages":[{"role":"user","content":"Hi"}]}`),
-			StorageJSON:  []byte(credJSON),
+			Model:       "openrouter/free",
+			Format:      "openai",
+			Payload:     []byte(`{"messages":[{"role":"user","content":"Hi"}]}`),
+			StorageJSON: []byte(credJSON),
 		},
 	}
 	rawReq, _ := json.Marshal(execReq)
@@ -212,10 +226,10 @@ func TestExecute_AutoFailover_429(t *testing.T) {
 
 	execReq := executorRPCRequest{
 		ExecutorRequest: pluginapi.ExecutorRequest{
-			Model:        "google/gemma-4-31b-it:free",
-			Format:       "openai",
-			Payload:      []byte(`{"messages":[{"role":"user","content":"Hi"}]}`),
-			StorageJSON:  []byte(credJSON),
+			Model:       "google/gemma-4-31b-it:free",
+			Format:      "openai",
+			Payload:     []byte(`{"messages":[{"role":"user","content":"Hi"}]}`),
+			StorageJSON: []byte(credJSON),
 		},
 	}
 	rawReq, _ := json.Marshal(execReq)
@@ -265,10 +279,10 @@ func TestExecuteStream_Success_WithReasoningNormalization(t *testing.T) {
 
 	streamReq := executorRPCRequest{
 		ExecutorRequest: pluginapi.ExecutorRequest{
-			Model:        "openrouter/free",
-			Format:       "openai",
-			Payload:      []byte(`{"messages":[{"role":"user","content":"Hello"}]}`),
-			StorageJSON:  []byte(credJSON),
+			Model:       "openrouter/free",
+			Format:      "openai",
+			Payload:     []byte(`{"messages":[{"role":"user","content":"Hello"}]}`),
+			StorageJSON: []byte(credJSON),
 		},
 		StreamID: "downstream_stream_1",
 	}
@@ -324,10 +338,10 @@ func TestExecute_MissingAPIKey(t *testing.T) {
 	credJSON := `{"type":"openrouter-plugin"}` // missing api_key
 	execReq := executorRPCRequest{
 		ExecutorRequest: pluginapi.ExecutorRequest{
-			Model:        "openrouter/free",
-			Format:       "openai",
-			Payload:      []byte(`{"messages":[{"role":"user","content":"Hi"}]}`),
-			StorageJSON:  []byte(credJSON),
+			Model:       "openrouter/free",
+			Format:      "openai",
+			Payload:     []byte(`{"messages":[{"role":"user","content":"Hi"}]}`),
+			StorageJSON: []byte(credJSON),
 		},
 	}
 	rawReq, _ := json.Marshal(execReq)

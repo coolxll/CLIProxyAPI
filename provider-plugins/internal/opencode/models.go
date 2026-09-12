@@ -49,48 +49,6 @@ func resolveCloudZenModel(requestedModel string) string {
 	return clean
 }
 
-func staticModels() []pluginapi.ModelInfo {
-	now := time.Now().Unix()
-	rawIDs := []string{
-		"opencode/free",
-		"opencode/big-pickle",
-		"opencode/mimo-v2.5-free",
-		"opencode/nemotron-3.5-lightning-free",
-		"opencode/nemotron-3-ultra-free",
-		"opencode/ling-3.0-flash-fin-free",
-	}
-
-	models := make([]pluginapi.ModelInfo, 0, len(rawIDs)*2)
-	seen := make(map[string]struct{})
-	for _, id := range rawIDs {
-		pID := "opencode"
-		mID := id
-		if parts := strings.SplitN(id, "/", 2); len(parts) == 2 {
-			pID = parts[0]
-			mID = parts[1]
-		}
-		if _, exists := seen[id]; !exists {
-			seen[id] = struct{}{}
-			models = append(models, pluginapi.ModelInfo{
-				ID:      id,
-				Object:  "model",
-				Created: now,
-				OwnedBy: pID,
-			})
-		}
-		if _, bareExists := seen[mID]; !bareExists {
-			seen[mID] = struct{}{}
-			models = append(models, pluginapi.ModelInfo{
-				ID:      mID,
-				Object:  "model",
-				Created: now,
-				OwnedBy: pID,
-			})
-		}
-	}
-	return models
-}
-
 func fetchModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, error) {
 	if creds.isCloudZen() {
 		return fetchCloudZenModels(host, creds)
@@ -122,13 +80,19 @@ func fetchCloudZenModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo
 		URL:     urlStr,
 		Headers: headers,
 	})
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return staticModels(), nil
+	if err != nil {
+		return nil, fmt.Errorf("OpenCode Zen model list request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("OpenCode Zen model list returned HTTP %d", resp.StatusCode)
 	}
 
 	var parsed cloudZenModelsResponse
-	if errUnmarshal := json.Unmarshal(resp.Body, &parsed); errUnmarshal != nil || len(parsed.Data) == 0 {
-		return staticModels(), nil
+	if errUnmarshal := json.Unmarshal(resp.Body, &parsed); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode OpenCode Zen model list: %w", errUnmarshal)
+	}
+	if len(parsed.Data) == 0 {
+		return nil, fmt.Errorf("OpenCode Zen model list is empty")
 	}
 
 	now := time.Now().Unix()
@@ -178,7 +142,7 @@ func fetchCloudZenModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo
 	}
 
 	if len(models) == 0 {
-		return staticModels(), nil
+		return nil, fmt.Errorf("OpenCode Zen returned no usable models")
 	}
 	return models, nil
 }
@@ -193,13 +157,19 @@ func fetchDaemonModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, 
 		URL:     urlStr,
 		Headers: headers,
 	})
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return staticModels(), nil
+	if err != nil {
+		return nil, fmt.Errorf("OpenCode daemon model list request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("OpenCode daemon model list returned HTTP %d", resp.StatusCode)
 	}
 
 	models, errParse := parseConfigProviders(resp.Body, creds.isFreeOnly())
-	if errParse != nil || len(models) == 0 {
-		return staticModels(), nil
+	if errParse != nil {
+		return nil, errParse
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("OpenCode daemon returned no usable models")
 	}
 	return models, nil
 }

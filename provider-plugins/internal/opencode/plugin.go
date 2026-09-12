@@ -227,8 +227,8 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 	}
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
 	models, errModels := fetchModels(host, creds)
-	if errModels != nil || len(models) == 0 {
-		models = staticModels()
+	if errModels != nil {
+		return nil, errModels
 	}
 	return pluginruntime.OK(pluginapi.ModelResponse{
 		Provider: ProviderID,
@@ -236,11 +236,10 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 	})
 }
 
-func (p *Plugin) staticModels(raw []byte) ([]byte, error) {
-	return pluginruntime.OK(pluginapi.ModelResponse{
-		Provider: ProviderID,
-		Models:   staticModels(),
-	})
+// staticModels deliberately returns no models: OpenCode models must come from a
+// live upstream fetch so the host never advertises stale or fabricated entries.
+func (p *Plugin) staticModels([]byte) ([]byte, error) {
+	return pluginruntime.OK(pluginapi.ModelResponse{Provider: ProviderID})
 }
 
 // Shutdown cancels active streams and waits for completion.

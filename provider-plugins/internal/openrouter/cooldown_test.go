@@ -35,16 +35,24 @@ func TestNextFallbackModel(t *testing.T) {
 	modelB := "nvidia/nemotron-3.5-lightning:free" // Tier A
 	available := []string{modelA, modelB, "openrouter/free"}
 
-	// When modelA fails, fallback should prefer closer tier modelB over unknown general router
+	// When modelA fails, fallback should prefer the live closer-tier modelB.
 	fallback := tracker.nextFallbackModel(modelA, available)
 	if fallback != modelB {
 		t.Errorf("expected modelB (%s) as tier-preserving fallback, got %q", modelB, fallback)
 	}
 
-	// When modelB is also in cooldown, should pick openrouter/free as last resort
+	// The failed model itself is never returned.
+	if tracker.nextFallbackModel(modelB, available) == modelB {
+		t.Errorf("fallback must not return the failed model")
+	}
+
+	// When no live candidate is left, there is no fallback: callers must fail
+	// instead of routing to a catalog model this account may not have.
 	tracker.markCooldown(modelB, 10*time.Minute)
-	fallback2 := tracker.nextFallbackModel(modelA, available)
-	if fallback2 != "openrouter/free" {
-		t.Errorf("expected openrouter/free as last resort fallback, got %q", fallback2)
+	if fallback2 := tracker.nextFallbackModel(modelA, available); fallback2 != "" {
+		t.Errorf("expected no fallback, got %q", fallback2)
+	}
+	if fallback3 := tracker.nextFallbackModel(modelA, nil); fallback3 != "" {
+		t.Errorf("expected no fallback without a live listing, got %q", fallback3)
 	}
 }

@@ -1,6 +1,6 @@
 package helpers
 
-import "github.com/router-for-me/CLIProxyAPI/v7/sdk/lingmawire"
+import "github.com/coolxll/lingma-protocol-go"
 
 const (
 	AgentChat    = lingmawire.AgentChat

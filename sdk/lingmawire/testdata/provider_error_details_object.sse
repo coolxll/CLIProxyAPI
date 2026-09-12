@@ -1,1 +1,0 @@
-data: {"body":{"code":"provider_error","message":"Error in upstream response","type":"provider_error","details":{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached","type":"rate_limit_error"}},"statusCodeValue":429,"statusCode":"TOO_MANY_REQUESTS"}}

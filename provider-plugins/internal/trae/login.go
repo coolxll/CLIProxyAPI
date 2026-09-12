@@ -133,10 +133,7 @@ func (p *Plugin) pollLogin(raw []byte) ([]byte, error) {
 	if errFragment != nil {
 		return nil, fmt.Errorf("decode Trae login callback fragment: %w", errFragment)
 	}
-	refresh := strings.TrimSpace(fragment.Get("refreshToken"))
-	if refresh == "" {
-		refresh = strings.TrimSpace(fragment.Get("refresh_token"))
-	}
+	boundDeviceID, refresh, initialToken := extractCallbackDeviceInfo(fragment)
 	if refresh == "" {
 		return pluginOK(pluginapi.AuthLoginPollResponse{
 			Status:  pluginapi.AuthLoginStatusError,
@@ -150,11 +147,17 @@ func (p *Plugin) pollLogin(raw []byte) ([]byte, error) {
 		metadataString(req.Metadata, "login_host"),
 		traeAPIHost,
 	)
+	resolvedDeviceID := firstNonEmpty(
+		boundDeviceID,
+		metadataString(req.Metadata, "device_id"),
+		defaultTraeID,
+	)
 	creds := credentials{
 		Type:         ProviderID,
 		MachineID:    firstNonEmpty(metadataString(req.Metadata, "machine_id"), defaultTraeID),
-		DeviceID:     firstNonEmpty(metadataString(req.Metadata, "device_id"), defaultTraeID),
+		DeviceID:     resolvedDeviceID,
 		RefreshToken: refresh,
+		JWTToken:     initialToken,
 	}
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
 	if errRefresh := refreshToken(host, &creds, loginHost); errRefresh != nil {
@@ -311,3 +314,68 @@ func metadataTime(metadata map[string]any, key string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 }
+
+// extractCallbackDeviceInfo extracts device_id, refresh_token, and initial token from callback fragment/query.
+func extractCallbackDeviceInfo(fragment url.Values) (boundDeviceID, refreshToken, token string) {
+	boundDeviceID = firstNonEmpty(
+		fragment.Get("BoundDeviceID"),
+		fragment.Get("boundDeviceID"),
+		fragment.Get("bound_device_id"),
+		fragment.Get("deviceId"),
+		fragment.Get("device_id"),
+		fragment.Get("DeviceID"),
+		fragment.Get("x_device_id"),
+	)
+	refreshToken = firstNonEmpty(
+		fragment.Get("refreshToken"),
+		fragment.Get("refresh_token"),
+		fragment.Get("RefreshToken"),
+		fragment.Get("refresh-token"),
+	)
+	token = firstNonEmpty(
+		fragment.Get("token"),
+		fragment.Get("Token"),
+		fragment.Get("accessToken"),
+		fragment.Get("access_token"),
+	)
+
+	userJwtRaw := firstNonEmpty(
+		fragment.Get("userJwt"),
+		fragment.Get("user_jwt"),
+		fragment.Get("userJWT"),
+		fragment.Get("user"),
+	)
+	if userJwtRaw != "" {
+		var userMap map[string]any
+		if err := json.Unmarshal([]byte(userJwtRaw), &userMap); err == nil {
+			if boundDeviceID == "" {
+				boundDeviceID = extractString(userMap, [][]string{
+					{"BoundDeviceID"},
+					{"boundDeviceId"},
+					{"bound_device_id"},
+					{"DeviceID"},
+					{"deviceId"},
+					{"device_id"},
+				})
+			}
+			if refreshToken == "" {
+				refreshToken = extractString(userMap, [][]string{
+					{"RefreshToken"},
+					{"refreshToken"},
+					{"refresh_token"},
+				})
+			}
+			if token == "" {
+				token = extractString(userMap, [][]string{
+					{"Token"},
+					{"token"},
+					{"AccessToken"},
+					{"accessToken"},
+					{"access_token"},
+				})
+			}
+		}
+	}
+	return strings.TrimSpace(boundDeviceID), strings.TrimSpace(refreshToken), strings.TrimSpace(token)
+}
+

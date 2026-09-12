@@ -2,6 +2,7 @@ package openrouter
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
@@ -138,7 +139,17 @@ func TestPluginStaticModels(t *testing.T) {
 }
 
 func TestPluginModelsForAuth(t *testing.T) {
-	plugin := New(nil)
+	host := newMockHostManager()
+	host.httpHandler = func(req pluginapi.HTTPRequest) pluginapi.HTTPResponse {
+		return pluginapi.HTTPResponse{
+			StatusCode: http.StatusOK,
+			Body: []byte(`{"data":[
+				{"id":"google/gemma-4-31b-it:free","pricing":{"prompt":"0","completion":"0"}},
+				{"id":"openai/gpt-4o","pricing":{"prompt":"0.000005","completion":"0.000015"}}
+			]}`),
+		}
+	}
+	plugin := New(host.makeHostCall())
 	req := authModelRPCRequest{
 		AuthModelRequest: pluginapi.AuthModelRequest{
 			StorageJSON: []byte(`{"type":"openrouter","api_key":"sk-or-v1-test"}`),
@@ -171,6 +182,12 @@ func TestPluginModelsForAuth(t *testing.T) {
 	}
 	if !hasFreeRouter {
 		t.Errorf("expected openrouter/free in auth models")
+	}
+
+	for _, m := range resp.Models {
+		if m.ID == "openrouter/openai/gpt-4o" || m.ID == "openai/gpt-4o" {
+			t.Errorf("expected paid model %q to be filtered out", m.ID)
+		}
 	}
 }
 

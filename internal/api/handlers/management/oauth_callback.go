@@ -104,7 +104,7 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 			}
 		}
 		if code == "" {
-			if q.Get("refreshToken") != "" || q.Get("refresh_token") != "" || q.Get("token") != "" || q.Get("auth") != "" || q.Get("loginTraceID") != "" {
+			if q.Get("refreshToken") != "" || q.Get("refresh_token") != "" || q.Get("token") != "" || q.Get("auth") != "" || q.Get("loginTraceID") != "" || q.Get("userJwt") != "" || q.Get("user_jwt") != "" {
 				code = u.RawQuery
 			}
 		}

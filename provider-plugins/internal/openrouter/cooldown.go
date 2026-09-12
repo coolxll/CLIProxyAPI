@@ -41,6 +41,9 @@ func (c *cooldownTracker) clear() {
 	c.cooldowns = make(map[string]time.Time)
 }
 
+// nextFallbackModel picks the best replacement for a failed model from the live
+// listing. It returns "" when no usable candidate is known, so callers fail
+// honestly instead of routing to a model the account may not be able to reach.
 func (c *cooldownTracker) nextFallbackModel(failedModel string, availableModels []string) string {
 	failedClean := strings.ToLower(strings.TrimSpace(failedModel))
 	c.mu.RLock()
@@ -59,7 +62,7 @@ func (c *cooldownTracker) nextFallbackModel(failedModel string, availableModels 
 		var candidates []candidateScore
 		for _, m := range availableModels {
 			clean := strings.ToLower(strings.TrimSpace(m))
-			if clean == failedClean {
+			if clean == failedClean || classifyVirtualModel(clean) != virtualKindNone {
 				continue
 			}
 			if !c.isCoolingDown(clean) {
@@ -88,14 +91,8 @@ func (c *cooldownTracker) nextFallbackModel(failedModel string, availableModels 
 		}
 	}
 
-	// 2. Otherwise use quality-preserving fallback from the known catalog
-	if failedClean != "openrouter/free" && failedClean != "free" {
-		fallback := qualityPreservingFallback(failedModel, c)
-		if fallback != "" && !strings.EqualFold(fallback, failedClean) && !c.isCoolingDown(fallback) {
-			return fallback
-		}
-	}
-
-	// 3. Fallback to openrouter/free as last resort
-	return "openrouter/free"
+	// 2. Without a live listing there is no safe fallback: routing to a catalog
+	// model this account may not have would silently substitute an unavailable
+	// model, so report that nothing is available instead.
+	return ""
 }

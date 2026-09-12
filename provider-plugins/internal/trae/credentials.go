@@ -115,6 +115,36 @@ func refreshToken(host hostRPC, creds *credentials, apiHost string) error {
 		}
 	}
 
+	// Extract upstream device ID if returned
+	if upstreamDeviceID := extractString(result, [][]string{
+		{"Result", "BoundDeviceID"},
+		{"Result", "boundDeviceId"},
+		{"Result", "bound_device_id"},
+		{"Result", "DeviceID"},
+		{"Result", "deviceId"},
+		{"Result", "device_id"},
+		{"result", "BoundDeviceID"},
+		{"result", "boundDeviceId"},
+		{"result", "bound_device_id"},
+		{"result", "DeviceID"},
+		{"result", "deviceId"},
+		{"result", "device_id"},
+		{"data", "BoundDeviceID"},
+		{"data", "boundDeviceId"},
+		{"data", "bound_device_id"},
+		{"data", "DeviceID"},
+		{"data", "deviceId"},
+		{"data", "device_id"},
+		{"BoundDeviceID"},
+		{"boundDeviceId"},
+		{"bound_device_id"},
+		{"DeviceID"},
+		{"deviceId"},
+		{"device_id"},
+	}); upstreamDeviceID != "" {
+		creds.DeviceID = upstreamDeviceID
+	}
+
 	if creds.DeviceID == "" || creds.DeviceID == defaultTraeID {
 		creds.DeviceID = deriveStableDeviceID(creds.JWTToken, creds.UserID)
 	}
@@ -155,7 +185,7 @@ func claimCheckinCredits(host hostRPC, jwtToken, deviceID string) error {
 		return fmt.Errorf("jwt token is empty")
 	}
 	did := deviceID
-	if did == "" {
+	if did == "" || did == defaultTraeID {
 		did = deriveStableDeviceID(jwtToken, "")
 	}
 	deviceType := "mac"

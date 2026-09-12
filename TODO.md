@@ -75,12 +75,12 @@ lingmawire (共享协议核心)
 
 ---
 
-### 第二阶段：抽取独立 Module 供 LingmaTap 共享
-
-- 将稳定后的 `sdk/lingmawire` 提取为独立小型 Go module（如 `lingma-protocol-go`）
-- `CLIProxyAPI` 与 `LingmaTap` 均通过 Go 模块版本依赖引入，通过版本升级保持多端修复与协议演进同步
-
----
+#### 第二阶段：抽取独立 Module 供 LingmaTap 共享 - [x] 已完成
+ 
+ - [x] 将稳定后的 `sdk/lingmawire` 提取为独立小型 Go module（`github.com/coolxll/lingma-protocol-go`）
+ - [x] `CLIProxyAPI` 与 `provider-plugins` 均通过 Go 模块版本依赖引入，完成多端去重重构
+ 
+ ---
 
 # TODO: Provider 插件模型列表诚实化（无兜底目录 / 无静默换模型）
 
@@ -92,7 +92,7 @@ lingmawire (共享协议核心)
 
 ## 待办
 
-### 1. 删除三个插件的兜底模型目录 - [x] 代码完成（未提交 / 未部署）
+### 1. 删除三个插件的兜底模型目录 - [x] 已完成并提交 commit 9d431f3e（待部署）
 
 - `trae`：`models.go` live 失败直接返回 err；删 `static_models.go`（假 `gpt-4o` / `claude-3-5-sonnet` / `auto` 别名源头）；`plugin.go` 无兜底；`model.static` RPC 返回空。
 - `opencode`：删 `staticModels()`，`fetchCloudZenModels` / `fetchDaemonModels` 5 处兜底改报错；保留 `verifiedAvailableFreeModels` 过滤与 `opencode/free` live 路径。
@@ -101,7 +101,7 @@ lingmawire (共享协议核心)
 - 测试：删 `TestStaticModels`，重写 openrouter 相关测试；`go test -count=1` trae/opencode/openrouter 全绿。
 - 宿主侧行为已验证：`sdk/cliproxy/service_executors.go:496` 出错时不注册模型且不禁用 auth；`internal/pluginhost/adapters.go:261` 打日志。
 
-### 2. A：OpenRouter 虚拟路由候选池改 live - [x] 代码完成、测试全绿（未提交 / 未部署）
+### 2. A：OpenRouter 虚拟路由候选池改 live - [x] 已完成并提交 commit 9d431f3e（待部署）
 
 目标：`openrouter/free`、`openrouter/free:coding` / `:reasoning` / `:fast` 等虚拟路由只从**本 auth 的 live 免费模型**中选；live 无免费模型则不暴露虚拟路由，请求时报明确错误；不再静默换模型。
 
@@ -119,7 +119,7 @@ lingmawire (共享协议核心)
 - [x] `go test -count=1 ./...` 在 `provider-plugins` 目录下全部包（trae / opencode / openrouter / lingma）全绿通过。
 
 剩余待办：
-- [x] 提交 commit（包含模型诚实化、OpenRouter live 路由、Trae 假别名清理与 DeviceID 对齐改造全部变动）。
+- [x] 提交 commit（包含模型诚实化、OpenRouter live 路由、Trae 假别名清理与 DeviceID 对齐改造全部变动，commit `9d431f3e`）。
 
 ### 3. D：`auto_failover` 配置止血（openrouter）- [ ] 阻塞
 
@@ -129,7 +129,7 @@ lingmawire (共享协议核心)
   ```
 - 阻塞原因：corp172-dev 上**没有 openrouter auth 文件**，无处可配；等建 auth 时一并带上。
 
-### 4. trae 假协议别名清理 - [x] 代码完成、测试全绿（未提交 / 未部署）
+### 4. trae 假协议别名清理 - [x] 已完成并提交 commit 9d431f3e（待部署）
 
 清理内容：
 - [x] 删除 `protocol.go` 中的假别名映射：`auto` / `claude-3-5-sonnet` / `gpt-4o` → `glm-5.2`（不再凭空伪造/冒充模型）。
@@ -158,7 +158,7 @@ lingmawire (共享协议核心)
 - **重新登录方式**：
   浏览器打开：`GET /v0/management/trae-plugin-auth-url` → 访问返回的 Trae OAuth 授权链接并完成授权 → 自动回调 `/v0/management/oauth-callback` 更新凭据文件。
 
-### 8. trae 插件 DeviceID 对齐 - [x] 代码完成、测试全绿（未提交 / 未部署）
+### 8. trae 插件 DeviceID 对齐 - [x] 已完成并提交 commit 9d431f3e（待部署）
 
 - **对齐改造内容**：
   - [x] `login.go`：新增 `extractCallbackDeviceInfo` 函数，在 `pollLogin` 接收回调时支持解析 `userJwt` JSON 以及直接 query 参数中的 `BoundDeviceID`、`deviceId` 等。若授权端下发了服务端认定的 `BoundDeviceID`（如 `qwxe24l3old7ow`），优先存入 `creds.DeviceID`，避免被假数字 ID 替换。

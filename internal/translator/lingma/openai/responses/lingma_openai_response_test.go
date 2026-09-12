@@ -403,3 +403,60 @@ func TestConvertLingmaResponseToOpenAIExtractsThought(t *testing.T) {
 		}
 	})
 }
+
+func TestConvertLingmaResponseToOpenAI_ProviderErrorStream(t *testing.T) {
+	raw := []byte(`data: {
+  "headers": {"Content-Type": ["application/json"]},
+  "body": "{\"code\":\"provider_error\",\"message\":\"Error in upstream response\",\"request_id\":\"1869151502422008\",\"type\":\"provider_error\",\"details\":\"{\\\"error\\\":{\\\"message\\\":\\\"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'\\\",\\\"type\\\":\\\"invalid_request_error\\\",\\\"param\\\":null,\\\"code\\\":\\\"invalid_request_error\\\"}}\"}",
+  "statusCodeValue": 400,
+  "statusCode": "BAD_REQUEST"
+}`)
+
+	var param any
+	chunks := ConvertLingmaResponseToOpenAI(context.Background(), "gm51model", nil, nil, raw, &param)
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+
+	errNode := gjson.GetBytes(chunks[0], "error")
+	if !errNode.Exists() {
+		t.Fatalf("expected error object in chunk, got %s", chunks[0])
+	}
+	wantMsg := "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+	if got := errNode.Get("message").String(); got != wantMsg {
+		t.Fatalf("error.message = %q, want %q", got, wantMsg)
+	}
+	if got := errNode.Get("type").String(); got != "invalid_request_error" {
+		t.Fatalf("error.type = %q, want invalid_request_error", got)
+	}
+	if got := errNode.Get("code").String(); got != "invalid_request_error" {
+		t.Fatalf("error.code = %q, want invalid_request_error", got)
+	}
+}
+
+func TestConvertLingmaResponseToOpenAINonStream_ProviderError(t *testing.T) {
+	rawSSE := []byte(`data: {
+  "headers": {"Content-Type": ["application/json"]},
+  "body": "{\"code\":\"provider_error\",\"message\":\"Error in upstream response\",\"request_id\":\"1869151502422008\",\"type\":\"provider_error\",\"details\":\"{\\\"error\\\":{\\\"message\\\":\\\"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'\\\",\\\"type\\\":\\\"invalid_request_error\\\",\\\"param\\\":null,\\\"code\\\":\\\"invalid_request_error\\\"}}\"}",
+  "statusCodeValue": 400,
+  "statusCode": "BAD_REQUEST"
+}
+
+`)
+
+	out := ConvertLingmaResponseToOpenAINonStream(context.Background(), "gm51model", nil, nil, rawSSE, nil)
+	errNode := gjson.GetBytes(out, "error")
+	if !errNode.Exists() {
+		t.Fatalf("expected error in non-stream response, got %s", out)
+	}
+	wantMsg := "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+	if got := errNode.Get("message").String(); got != wantMsg {
+		t.Fatalf("error.message = %q, want %q", got, wantMsg)
+	}
+	if got := errNode.Get("type").String(); got != "invalid_request_error" {
+		t.Fatalf("error.type = %q, want invalid_request_error", got)
+	}
+	if got := errNode.Get("code").String(); got != "invalid_request_error" {
+		t.Fatalf("error.code = %q, want invalid_request_error", got)
+	}
+}

@@ -41,36 +41,37 @@ lingmawire (共享协议核心)
 
 ## 落地规划
 
-### 第一阶段：CPA 内部解耦与去重（低风险优先）
+### 第一阶段：CPA 内部解耦与去重（低风险优先）- [x] 已完成
 
-1. **创建公共协议叶子包 `sdk/lingmawire/`**：
+1. **创建公共协议叶子包 `sdk/lingmawire/`**：[x]
    ```text
    sdk/lingmawire/
    ├── envelope.go    # SSE data: 前缀处理、body 双层解包、[DONE] 检查
-   ├── error.go       # ParseLingmaError、ResolveLingmaErrorDetails、LingmaErrorInfo
+   ├── error.go       # ParseError、ResolveErrorDetails、ErrorInfo
    ├── messages.go    # NormalizeAssistantToolCallContent、AgentID
    ├── usage.go       # SSE 流式/非流式 usage 提取与归一化
    └── testdata/      # 协议级共享 Contract Fixtures
    ```
 
-2. **建立协议级 Contract Fixtures 与共享断言测试**：
+2. **建立协议级 Contract Fixtures 与共享断言测试**：[x]
    - `provider_error_details_string.sse`（转义 JSON 字符串 details）
    - `provider_error_details_object.sse`（嵌套对象 details）
    - `assistant_null_tool_content.json`（tool_calls content 归一化输入样本）
    - `tool_call_stream.sse`（流式 tool call 帧）
    - `usage_variants.sse`（多版本 usage 输出）
+   - `sdk/lingmawire/lingmawire_test.go` 全绿通过
 
-3. **改造原生 translator (`internal/translator/lingma/`)**：
+3. **改造原生 translator (`internal/translator/lingma/`)**：[x]
    - 依赖 `sdk/lingmawire`
    - 同步修复原生 translator 中遗留的 details 展开与 tool call null content 问题
 
-4. **改造插件 codec (`provider-plugins/internal/lingma/`)**：
-   - 替换 `internal/lingma/codec/helpers/` 及相关模块，全面接入 `sdk/lingmawire`
-   - `executor.go` 的错误识别直接复用 `lingmawire.ParseLingmaError`
+4. **改造插件 codec (`provider-plugins/internal/lingma/`)**：[x]
+   - `internal/lingma/codec/helpers/` 及相关模块全面接入 `sdk/lingmawire`
+   - `executor.go` 的错误识别直接复用 `lingmawire.ParseError`
 
-5. **验证与回归**：
-   - 确保 `native_parity_test.go`、`request_parity_test.go`、`response_parity_test.go` 保持通过
-   - `go test ./...` 与 `cmd/server`、`cmd/lingma` 编译校验
+5. **验证与回归**：[x]
+   - `native_parity_test.go`、`request_parity_test.go`、`response_parity_test.go` 全绿通过
+   - `go test ./...` 与 `cmd/server`、`cmd/lingma` 编译校验全绿通过
 
 ---
 

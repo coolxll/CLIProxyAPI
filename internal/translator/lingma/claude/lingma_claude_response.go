@@ -80,6 +80,28 @@ func ConvertLingmaResponseToClaudeNonStream(ctx context.Context, modelName strin
 	// Step 1: Aggregate Lingma SSE -> single OpenAI Chat Completions JSON
 	openaiJSON := responses.ConvertLingmaResponseToOpenAINonStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, nil)
 
+	// Check if this response is an error
+	if errResult := gjson.GetBytes(openaiJSON, "error"); errResult.Exists() {
+		errType := errResult.Get("type").String()
+		if errType == "" {
+			errType = "api_error"
+		}
+		errMsg := errResult.Get("message").String()
+		if errMsg == "" {
+			errMsg = "unknown error from lingma"
+		}
+		claudeErr := map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    errType,
+				"message": errMsg,
+			},
+		}
+		if encoded, err := json.Marshal(claudeErr); err == nil {
+			return encoded
+		}
+	}
+
 	// Step 2: Convert OpenAI Chat Completions -> Claude
 	return openaiclaude.ConvertOpenAIResponseToClaudeNonStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, openaiJSON, nil)
 }

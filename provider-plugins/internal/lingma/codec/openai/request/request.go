@@ -11,6 +11,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/helpers"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/lingmawire"
 )
 
 const lingmaMaxTokensHardLimit = 16384
@@ -227,62 +228,7 @@ func generateSessionID(rawJSON []byte) string {
 }
 
 // NormalizeLingmaToolCallContent adapts OpenAI-compatible assistant tool-call
-// history to the stricter provider behind Lingma. OpenAI permits content=null
-// (or omitted content) when tool_calls is present, but that provider fails to
-// recognize the tool_calls and then rejects the following tool result as orphaned.
-// Setting content to "" preserves the message semantics while satisfying both schemas.
-//
-// Only modifies messages satisfying all of:
-// 1. role is "assistant"
-// 2. tool_calls is non-empty
-// 3. content is null or missing
-//
-// Normal assistant, user, and tool messages with null content are preserved unchanged.
-// The original slice and maps are not mutated in-place.
+// history to the stricter provider behind Lingma by delegating to lingmawire.
 func NormalizeLingmaToolCallContent(messages []map[string]any) []map[string]any {
-	if len(messages) == 0 {
-		return messages
-	}
-	normalized := make([]map[string]any, len(messages))
-	for i, message := range messages {
-		if message == nil {
-			continue
-		}
-		// Clone each message map so the caller's objects are not mutated
-		cloned := make(map[string]any, len(message))
-		for k, v := range message {
-			cloned[k] = v
-		}
-		normalized[i] = cloned
-
-		role, _ := cloned["role"].(string)
-		if role != "assistant" {
-			continue
-		}
-		content, hasContent := cloned["content"]
-		if hasContent && content != nil {
-			continue
-		}
-		if !hasLingmaToolCalls(cloned["tool_calls"]) {
-			continue
-		}
-		cloned["content"] = ""
-	}
-	return normalized
-}
-
-func hasLingmaToolCalls(value any) bool {
-	if value == nil {
-		return false
-	}
-	switch calls := value.(type) {
-	case []any:
-		return len(calls) > 0
-	case []map[string]any:
-		return len(calls) > 0
-	case []json.RawMessage:
-		return len(calls) > 0
-	default:
-		return false
-	}
+	return lingmawire.NormalizeAssistantToolCallContent(messages)
 }

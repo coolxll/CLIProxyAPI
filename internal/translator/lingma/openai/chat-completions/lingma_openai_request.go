@@ -11,6 +11,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/lingmawire"
 )
 
 const lingmaMaxTokensHardLimit = 16384
@@ -44,7 +45,7 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 	}
 
 	// 2. Map messages
-	var lingmaMessages []any
+	var lingmaMessages []map[string]any
 	res.Get("messages").ForEach(func(key, value gjson.Result) bool {
 		role := value.Get("role").String()
 		if strings.EqualFold(strings.TrimSpace(role), "developer") {
@@ -54,7 +55,7 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 			"role": role,
 		}
 
-		// Handle content: could be string or array of content parts
+		// Handle content: could be string, array of parts, null, or missing
 		contentVal := value.Get("content")
 		if contentVal.Exists() {
 			if contentVal.IsArray() {
@@ -80,6 +81,8 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 					})
 					msg["content"] = strings.Join(textParts, "\n")
 				}
+			} else if contentVal.Type == gjson.Null {
+				msg["content"] = nil
 			} else {
 				msg["content"] = contentVal.String()
 			}
@@ -89,10 +92,14 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		if reasoning := value.Get("reasoning_content"); reasoning.Exists() && reasoning.String() != "" {
 			reasoningText := reasoning.String()
 			thoughtBlock := "<thought>" + reasoningText + "</thought>"
-			if existing, ok := msg["content"]; ok {
+			if existing, ok := msg["content"]; ok && existing != nil {
 				switch v := existing.(type) {
 				case string:
-					msg["content"] = thoughtBlock + "\n" + v
+					if v == "" {
+						msg["content"] = thoughtBlock
+					} else {
+						msg["content"] = thoughtBlock + "\n" + v
+					}
 				default:
 					// For array content (multimodal), prepend thought block as a text element
 					if arr, ok := existing.([]any); ok {
@@ -124,6 +131,8 @@ func ConvertOpenAIRequestToLingma(modelName string, inputRawJSON []byte, stream 
 		lingmaMessages = append(lingmaMessages, msg)
 		return true
 	})
+
+	lingmaMessages = lingmawire.NormalizeAssistantToolCallContent(lingmaMessages)
 
 	requestID := uuid.New().String()
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/lingmawire"
 	"github.com/tidwall/gjson"
 )
 
@@ -46,6 +47,27 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 		res = gjson.ParseBytes(data)
 	}
 
+	if errInfo, isErr := lingmawire.ParseError(rawJSON); isErr {
+		state.Finished = true
+		state.HasError = true
+		state.ErrorMsg = errInfo.Message
+		state.ErrorType = errInfo.Type
+		state.ErrorCode = errInfo.Code
+		errMap := map[string]any{
+			"message": errInfo.Message,
+			"type":    errInfo.Type,
+		}
+		if errInfo.Code != "" {
+			errMap["code"] = errInfo.Code
+		}
+		errChunk := map[string]any{
+			"error": errMap,
+		}
+		if encoded, err := json.Marshal(errChunk); err == nil {
+			return [][]byte{encoded}
+		}
+	}
+
 	state.capture(data)
 	if !res.Get("choices").Exists() && !res.Get("usage").Exists() && (res.Get("id").Exists() || res.Get("model").Exists()) {
 		return [][]byte{state.openAIStreamChunk(false, "")}
@@ -61,11 +83,15 @@ func ConvertLingmaResponseToOpenAI(_ context.Context, modelName string, _, _, ra
 		if errMsg == "" {
 			errMsg = "unknown error from lingma"
 		}
+		errMap := map[string]any{
+			"message": errMsg,
+			"type":    errType,
+		}
+		if state.ErrorCode != "" {
+			errMap["code"] = state.ErrorCode
+		}
 		errChunk := map[string]any{
-			"error": map[string]any{
-				"message": errMsg,
-				"type":    errType,
-			},
+			"error": errMap,
 		}
 		if encoded, err := json.Marshal(errChunk); err == nil {
 			return [][]byte{encoded}
@@ -159,6 +185,30 @@ func ConvertLingmaResponseToOpenAINonStream(_ context.Context, modelName string,
 		return aggregateLingmaSSEToOpenAI(modelName, rawJSON)
 	}
 
+	if errInfo, isErr := lingmawire.ParseError(rawJSON); isErr {
+		errType := errInfo.Type
+		if errType == "" {
+			errType = "server_error"
+		}
+		errMsg := errInfo.Message
+		if errMsg == "" {
+			errMsg = "unknown error from lingma"
+		}
+		errObj := map[string]any{
+			"message": errMsg,
+			"type":    errType,
+		}
+		if errInfo.Code != "" {
+			errObj["code"] = errInfo.Code
+		}
+		out := map[string]any{
+			"error": errObj,
+		}
+		if encoded, err := json.Marshal(out); err == nil {
+			return encoded
+		}
+	}
+
 	res := gjson.ParseBytes(rawJSON)
 	if body := res.Get("body"); body.Exists() && body.Type == gjson.String {
 		return []byte(body.String())
@@ -199,6 +249,7 @@ type lingmaNonStreamAggregate struct {
 	HasError         bool
 	ErrorMsg         string
 	ErrorType        string
+	ErrorCode        string
 }
 
 type lingmaToolCallDelta struct {
@@ -217,6 +268,16 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 		}
 		collectLingmaOpenAIFragment(agg, data)
 	}
+
+	if !agg.HasError {
+		if errInfo, isErr := lingmawire.ParseError(raw); isErr {
+			agg.HasError = true
+			agg.ErrorMsg = errInfo.Message
+			agg.ErrorType = errInfo.Type
+			agg.ErrorCode = errInfo.Code
+		}
+	}
+
 	if agg.ID == "" {
 		agg.ID = "chatcmpl-" + uuid.New().String()
 	}
@@ -233,11 +294,15 @@ func aggregateLingmaSSEToOpenAI(modelName string, raw []byte) []byte {
 		if errMsg == "" {
 			errMsg = "unknown error from lingma"
 		}
+		errObj := map[string]any{
+			"message": errMsg,
+			"type":    errType,
+		}
+		if agg.ErrorCode != "" {
+			errObj["code"] = agg.ErrorCode
+		}
 		out := map[string]any{
-			"error": map[string]any{
-				"message": errMsg,
-				"type":    errType,
-			},
+			"error": errObj,
 		}
 		encoded, err := json.Marshal(out)
 		if err != nil {
@@ -503,55 +568,7 @@ func hasNonZeroUsageFields(usage gjson.Result) bool {
 }
 
 func normalizeLingmaUsage(usage gjson.Result) json.RawMessage {
-	if !usage.Exists() {
-		return nil
-	}
-	promptNode := usage.Get("prompt_tokens")
-	if !promptNode.Exists() {
-		promptNode = usage.Get("input_tokens")
-	}
-	promptTokens := promptNode.Int()
-	completionNode := usage.Get("completion_tokens")
-	if !completionNode.Exists() {
-		completionNode = usage.Get("output_tokens")
-	}
-	completionTokens := completionNode.Int()
-	totalNode := usage.Get("total_tokens")
-	totalTokens := totalNode.Int()
-	if !totalNode.Exists() || (totalTokens == 0 && promptTokens+completionTokens > 0) {
-		totalTokens = promptTokens + completionTokens
-	}
-	out := map[string]any{
-		"prompt_tokens":     promptTokens,
-		"completion_tokens": completionTokens,
-		"total_tokens":      totalTokens,
-	}
-
-	// Map cached tokens from various possible locations
-	if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
-		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
-	} else if v := usage.Get("input_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
-		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
-	} else if v := usage.Get("cached_tokens"); v.Exists() && v.Int() > 0 {
-		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
-	} else if v := usage.Get("cache_read_input_tokens"); v.Exists() && v.Int() > 0 {
-		out["prompt_tokens_details"] = map[string]any{"cached_tokens": v.Int()}
-	}
-
-	// Map reasoning tokens
-	if v := usage.Get("completion_tokens_details.reasoning_tokens"); v.Exists() && v.Int() > 0 {
-		out["completion_tokens_details"] = map[string]any{"reasoning_tokens": v.Int()}
-	} else if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() && v.Int() > 0 {
-		out["completion_tokens_details"] = map[string]any{"reasoning_tokens": v.Int()}
-	} else if v := usage.Get("reasoning_tokens"); v.Exists() && v.Int() > 0 {
-		out["completion_tokens_details"] = map[string]any{"reasoning_tokens": v.Int()}
-	}
-
-	encoded, err := json.Marshal(out)
-	if err != nil {
-		return json.RawMessage(usage.Raw)
-	}
-	return encoded
+	return lingmawire.NormalizeUsage(usage)
 }
 
 type lingmaStreamState struct {
@@ -563,6 +580,7 @@ type lingmaStreamState struct {
 	HasError     bool
 	ErrorMsg     string
 	ErrorType    string
+	ErrorCode    string
 	InThought    bool
 }
 
@@ -593,13 +611,20 @@ func (s *lingmaStreamState) capture(raw []byte) {
 	if model := strings.TrimSpace(res.Get("model").String()); model != "" {
 		s.Model = model
 	}
-	if errResult := res.Get("error"); errResult.Exists() {
+	if errInfo, isErr := lingmawire.ParseError(raw); isErr {
+		s.HasError = true
+		s.ErrorMsg = errInfo.Message
+		s.ErrorType = errInfo.Type
+		s.ErrorCode = errInfo.Code
+		s.Finished = true
+	} else if errResult := res.Get("error"); errResult.Exists() {
 		s.HasError = true
 		s.ErrorMsg = errResult.Get("message").String()
 		if s.ErrorMsg == "" {
 			s.ErrorMsg = errResult.Get("msg").String()
 		}
 		s.ErrorType = errResult.Get("type").String()
+		s.ErrorCode = errResult.Get("code").String()
 		s.Finished = true
 	}
 	res.Get("choices").ForEach(func(_, choice gjson.Result) bool {

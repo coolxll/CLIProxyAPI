@@ -143,22 +143,24 @@ lingmawire (共享协议核心)
 
 `free_only` 目前只影响模型列表，executor 不做限制：传付费模型 ID 会真的花钱。可镜像 opencode 的 `verifiedAvailableFreeModels` 做法。
 
-### 6. 构建与部署到 corp172-dev - [ ] 等代码定稿
+### 6. 构建与部署到 corp172-dev - [x] 已完成构建并部署验收通过
 
-- 在 corp172-dev 的 golang 容器里构建（本机无 Docker；`go.mod` 有 `replace ... => ..`，需整个仓库）：`CGO_ENABLED=1 go build -buildmode=c-shared -o bin/<name>-plugin-v0.2.0.so ./cmd/<name>`。
-- 拷 4 个 `.so` 到 `~/workspace/homelab-secrets/cpa/plugins/linux/amd64/`，然后 `docker compose up -d`（不是 restart）。
-- [ ] 部署后验收：4 个插件都 loaded；`/v1/models` 与 `GET /v0/management/auth-files/models?name=<auth>.json` 对得上；trae 凭据失效应表现为“模型列表为空 + warning”而不是出现 `gpt-4o` 等假模型；openrouter 无 auth 则不应出现任何 openrouter 条目。
+- [x] 在 corp172-dev 上编译 4 个插件动态库（`lingma-plugin-v0.2.0.so`、`opencode-plugin-v0.2.0.so`、`openrouter-plugin-v0.2.0.so`、`trae-plugin-v0.2.0.so`）及主程序 `bin/CLIProxyAPI`。
+- [x] 将 4 个 `.so` 发布至 `/workspace/homelab-secrets/cpa/plugins/linux/amd64/`，更新主程序二进制至 `/workspace/homelab-secrets/cpa/bin/CLIProxyAPI`。
+- [x] 在 `compose.yaml` 目录下执行 `docker compose up -d --force-recreate cliproxyapi` 重新部署。
+- [x] 部署后验收：
+  - 4 个插件均成功 loaded & registered。
+  - `/v1/models` 与 `GET /v0/management/auth-files/models?name=trae-plugin-3349565851308393.json` 完全一致，且无虚假别名（`gpt-4o` / `claude-3-5-sonnet` 等已彻底清除）。
+  - `openrouter-plugin` 已加载，因无 auth 文件，未暴露任何 openrouter 模型条目，行为诚实。
 
-### 7. trae 凭据失效原因与重新登录 - [ ] 阻塞于人工操作
+### 7. trae 凭据失效原因与重新登录 - [x] 验证通过，凭据完全有效（无需重新登录）
 
-- **失效原因调查结论**：
-  - corp172-dev 上的凭据于今日 `13:37:23` 刚创建（JWT `exp: 2026-09-26`，仍有 14 天有效期）。
-  - 但随后在首次请求时即被上游拒绝（401 / `refresh token is invalid`，StandardCode `040012`）。
-  - 核心原因：Trae 服务端有强设备绑定风控（OAuth 回调中返回的 `BoundDeviceID: qwxe24l3old7ow` 与服务端绑定的 session 对应；而插件本地生成并发送了不同的数字型 `device_id` `3924235236021673`；且 Trae 账号通常具备单设备排他/踢下线机制，如果在其他客户端或浏览器中有重新登录/退出行为，旧 refresh token 会被立刻注销）。
-- **重新登录方式**：
-  浏览器打开：`GET /v0/management/trae-plugin-auth-url` → 访问返回的 Trae OAuth 授权链接并完成授权 → 自动回调 `/v0/management/oauth-callback` 更新凭据文件。
+- **调查与修复结果**：
+  - 用户凭据未失效！此前 401（StandardCode 040012）的根本原因在于发送的 `device_id` 与 OAuth 授权 session 绑定的真实 `BoundDeviceID` 不一致。
+  - 将凭据文件中的 `device_id` 纠正为真实绑定的 `BoundDeviceID: qwxe24l3old7ow` 之后，上游鉴权完全通过。
+  - 实测调用 `DeepSeek-V4-Flash` 进行 `/v1/chat/completions`，Thinking 推理及正常回复全部实时秒回，验证通过。
 
-### 8. trae 插件 DeviceID 对齐 - [x] 已完成并提交 commit 9d431f3e（待部署）
+### 8. trae 插件 DeviceID 对齐 - [x] 已完成并部署（commit 9d431f3e）
 
 - **对齐改造内容**：
   - [x] `login.go`：新增 `extractCallbackDeviceInfo` 函数，在 `pollLogin` 接收回调时支持解析 `userJwt` JSON 以及直接 query 参数中的 `BoundDeviceID`、`deviceId` 等。若授权端下发了服务端认定的 `BoundDeviceID`（如 `qwxe24l3old7ow`），优先存入 `creds.DeviceID`，避免被假数字 ID 替换。
@@ -175,5 +177,5 @@ lingmawire (共享协议核心)
 - 仓库：`CLIProxyAPI/provider-plugins`，包 `internal/{trae,opencode,openrouter,lingma}`；`main.go` 在 `cmd/<name>/`。
 - 宿主无任何硬编码插件模型 ID（已 grep 验证）。
 - 模型列表查询：`GET /v0/management/auth-files/models?name=<file>.json`；隐藏模型：`oauth-excluded-models: {trae-plugin: [...]}`。
-- trae live 凭据在 corp172-dev 上已失效（refresh token invalid，StandardCode 040012），不是代码问题。
+- trae live 凭据在 corp172-dev 上**完全有效**（纠正为真实 `BoundDeviceID: qwxe24l3old7ow` 后正常工作）。
 - openrouter live：约 448 个模型、25 个免费；`knownModelRankings` 为裸 ID（如 `deepseek/deepseek-r1:free`），live/列表 ID 带 `openrouter/` 前缀 → 匹配前用 `normalizeModelID` 去前缀 + 小写。

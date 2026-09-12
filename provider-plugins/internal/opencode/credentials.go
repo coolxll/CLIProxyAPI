@@ -30,6 +30,14 @@ type credentials struct {
 	Model       string `json:"model,omitempty"`
 	AutoCleanup *bool  `json:"auto_cleanup,omitempty"`
 	Protocol    string `json:"protocol,omitempty"` // "opencode" or "openai"
+	FreeOnly    *bool  `json:"free_only,omitempty"`
+}
+
+func (c credentials) isFreeOnly() bool {
+	if c.FreeOnly == nil {
+		return true
+	}
+	return *c.FreeOnly
 }
 
 func (c credentials) isAutoCleanup() bool {

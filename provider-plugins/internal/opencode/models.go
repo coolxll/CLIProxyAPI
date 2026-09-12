@@ -25,7 +25,7 @@ func isFreeModel(model string) bool {
 		return true
 	}
 	switch norm {
-	case "big-pickle", "gpt-5-nano":
+	case "big-pickle":
 		return true
 	}
 	return false
@@ -33,7 +33,7 @@ func isFreeModel(model string) bool {
 
 func resolveCloudZenModel(requestedModel string) string {
 	clean := strings.TrimSpace(requestedModel)
-	if clean == "" {
+	if clean == "" || clean == "free" || clean == "opencode/free" {
 		return "big-pickle"
 	}
 	if strings.HasPrefix(clean, "opencode/") {
@@ -46,6 +46,7 @@ func resolveCloudZenModel(requestedModel string) string {
 func staticModels() []pluginapi.ModelInfo {
 	now := time.Now().Unix()
 	rawIDs := []string{
+		"opencode/free",
 		"opencode/big-pickle",
 		"opencode/deepseek-v4-flash-free",
 		"opencode/mimo-v2.5-free",
@@ -57,11 +58,6 @@ func staticModels() []pluginapi.ModelInfo {
 		"opencode/kimi-k2.5-free",
 		"opencode/glm-4.5-free",
 		"opencode/minimax-6.5-free",
-		"opencode/gpt-5-nano",
-		"opencode/claude-sonnet-4-6",
-		"opencode/claude-opus-4-6",
-		"opencode/gpt-5.4-mini",
-		"opencode/gemini-3.5-flash",
 	}
 
 	models := make([]pluginapi.ModelInfo, 0, len(rawIDs)*2)
@@ -139,9 +135,32 @@ func fetchCloudZenModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo
 	var models []pluginapi.ModelInfo
 	seen := make(map[string]struct{})
 
+	addModel := func(id, ownedBy string, created int64) {
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		models = append(models, pluginapi.ModelInfo{
+			ID:      id,
+			Object:  "model",
+			Created: created,
+			OwnedBy: ownedBy,
+		})
+	}
+
+	// Always expose opencode/free virtual alias
+	addModel("opencode/free", "opencode", now)
+	addModel("free", "opencode", now)
+
 	for _, item := range parsed.Data {
 		mID := strings.TrimSpace(item.ID)
 		if mID == "" {
+			continue
+		}
+		if creds.isFreeOnly() && !isFreeModel(mID) {
 			continue
 		}
 		ownedBy := item.OwnedBy
@@ -154,24 +173,8 @@ func fetchCloudZenModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo
 		}
 
 		prefixed := fmt.Sprintf("opencode/%s", mID)
-		if _, exists := seen[prefixed]; !exists {
-			seen[prefixed] = struct{}{}
-			models = append(models, pluginapi.ModelInfo{
-				ID:      prefixed,
-				Object:  "model",
-				Created: created,
-				OwnedBy: ownedBy,
-			})
-		}
-		if _, exists := seen[mID]; !exists {
-			seen[mID] = struct{}{}
-			models = append(models, pluginapi.ModelInfo{
-				ID:      mID,
-				Object:  "model",
-				Created: created,
-				OwnedBy: ownedBy,
-			})
-		}
+		addModel(prefixed, ownedBy, created)
+		addModel(mID, ownedBy, created)
 	}
 
 	if len(models) == 0 {
@@ -194,14 +197,14 @@ func fetchDaemonModels(host hostRPC, creds credentials) ([]pluginapi.ModelInfo, 
 		return staticModels(), nil
 	}
 
-	models, errParse := parseConfigProviders(resp.Body)
+	models, errParse := parseConfigProviders(resp.Body, creds.isFreeOnly())
 	if errParse != nil || len(models) == 0 {
 		return staticModels(), nil
 	}
 	return models, nil
 }
 
-func parseConfigProviders(body []byte) ([]pluginapi.ModelInfo, error) {
+func parseConfigProviders(body []byte, freeOnly bool) ([]pluginapi.ModelInfo, error) {
 	var resp ConfigProvidersResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
@@ -229,33 +232,38 @@ func parseConfigProviders(body []byte) ([]pluginapi.ModelInfo, error) {
 	var models []pluginapi.ModelInfo
 	seen := make(map[string]struct{})
 
+	addModel := func(id, ownedBy string, created int64) {
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		models = append(models, pluginapi.ModelInfo{
+			ID:      id,
+			Object:  "model",
+			Created: created,
+			OwnedBy: ownedBy,
+		})
+	}
+
+	addModel("opencode/free", "opencode", now)
+	addModel("free", "opencode", now)
+
 	for _, p := range providersList {
 		pID := p.ID
 		if pID == "" {
 			pID = "opencode"
 		}
 		for mID := range p.Models {
-			id := fmt.Sprintf("%s/%s", pID, mID)
-			if _, exists := seen[id]; exists {
+			if freeOnly && !isFreeModel(mID) {
 				continue
 			}
-			seen[id] = struct{}{}
-			models = append(models, pluginapi.ModelInfo{
-				ID:      id,
-				Object:  "model",
-				Created: now,
-				OwnedBy: pID,
-			})
+			id := fmt.Sprintf("%s/%s", pID, mID)
+			addModel(id, pID, now)
 			if pID == "opencode" {
-				if _, bareExists := seen[mID]; !bareExists {
-					seen[mID] = struct{}{}
-					models = append(models, pluginapi.ModelInfo{
-						ID:      mID,
-						Object:  "model",
-						Created: now,
-						OwnedBy: pID,
-					})
-				}
+				addModel(mID, pID, now)
 			}
 		}
 	}
@@ -277,8 +285,8 @@ func normalizeModelAlias(model string) string {
 
 func resolveModelRef(requestedModel string, availableModels []pluginapi.ModelInfo) OpenCodeModelRef {
 	clean := strings.TrimSpace(requestedModel)
-	if clean == "" {
-		return OpenCodeModelRef{ProviderID: "opencode", ModelID: "kimi-k2.5-free"}
+	if clean == "" || clean == "free" || clean == "opencode/free" {
+		return OpenCodeModelRef{ProviderID: "opencode", ModelID: "big-pickle"}
 	}
 
 	var pID, mID string

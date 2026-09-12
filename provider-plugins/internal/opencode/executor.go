@@ -159,6 +159,9 @@ func (p *Plugin) prepareRequest(host hostRPC, req executorRPCRequest) (credentia
 func (p *Plugin) prepareRequestWithCreds(host hostRPC, creds credentials, req executorRPCRequest) (OpenCodeModelRef, SessionPromptRequest, []byte, error) {
 	availableModels, _ := fetchModels(host, creds)
 	modelRef := resolveModelRef(req.Model, availableModels)
+	if creds.isFreeOnly() && !isFreeModel(modelRef.ModelID) {
+		return OpenCodeModelRef{}, SessionPromptRequest{}, nil, fmt.Errorf("model %q is not a free model; this credential is configured for free models only", modelRef.ModelID)
+	}
 
 	from := sdktranslator.Format(normalizeFormat(req.ExecutorRequest))
 	openaiFormat := sdktranslator.FormatOpenAI
@@ -699,6 +702,8 @@ func (p *Plugin) executeCloudZen(host hostRPC, creds credentials, req executorRP
 		}
 	} else if key == "" || key == "public" {
 		return nil, fmt.Errorf("model %q is a paid model on OpenCode Zen; please configure an API key or use a free model (e.g., deepseek-v4-flash-free, big-pickle, mimo-v2.5-free, nemotron-3.5-lightning-free, kimi-k2.5-free)", modelID)
+	} else if creds.isFreeOnly() {
+		return nil, fmt.Errorf("model %q is not a free model; this credential is configured for free models only", modelID)
 	}
 
 	openaiReq := sdktranslator.TranslateRequest(from, openaiFormat, modelID, req.Payload, true)
@@ -747,6 +752,8 @@ func (p *Plugin) executeCloudZenStream(host hostRPC, creds credentials, req exec
 		}
 	} else if key == "" || key == "public" {
 		return nil, fmt.Errorf("model %q is a paid model on OpenCode Zen; please configure an API key or use a free model (e.g., deepseek-v4-flash-free, big-pickle, mimo-v2.5-free, nemotron-3.5-lightning-free, kimi-k2.5-free)", modelID)
+	} else if creds.isFreeOnly() {
+		return nil, fmt.Errorf("model %q is not a free model; this credential is configured for free models only", modelID)
 	}
 
 	openaiReq := sdktranslator.TranslateRequest(from, openaiFormat, modelID, req.Payload, true)

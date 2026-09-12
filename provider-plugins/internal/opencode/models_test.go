@@ -20,7 +20,7 @@ func TestIsFreeModel(t *testing.T) {
 		{"kimi-k2.5-free", true},
 		{"mimo-v2.5-free", true},
 		{"nemotron-3.5-lightning-free", true},
-		{"gpt-5-nano", true},
+		{"gpt-5-nano", false},
 		{"claude-sonnet-4-6", false},
 		{"opencode/gpt-5.4", false},
 		{"claude-opus-4-6", false},
@@ -41,6 +41,8 @@ func TestResolveCloudZenModel(t *testing.T) {
 		want      string
 	}{
 		{"", "big-pickle"},
+		{"free", "big-pickle"},
+		{"opencode/free", "big-pickle"},
 		{"opencode/big-pickle", "big-pickle"},
 		{"deepseek-v4-flash-free", "deepseek-v4-flash-free"},
 		{"opencode/deepseek-v4-flash-free", "deepseek-v4-flash-free"},
@@ -86,7 +88,8 @@ func TestFetchCloudZenModels(t *testing.T) {
 		"object": "list",
 		"data": [
 			{"id": "deepseek-v4-flash-free", "object": "model", "created": 1789176681, "owned_by": "opencode"},
-			{"id": "big-pickle", "object": "model", "created": 1789176681, "owned_by": "opencode"}
+			{"id": "big-pickle", "object": "model", "created": 1789176681, "owned_by": "opencode"},
+			{"id": "claude-sonnet-4-6", "object": "model", "created": 1789176681, "owned_by": "opencode"}
 		]
 	}`)
 
@@ -120,6 +123,12 @@ func TestFetchCloudZenModels(t *testing.T) {
 	if !seen["opencode/deepseek-v4-flash-free"] || !seen["deepseek-v4-flash-free"] {
 		t.Errorf("expected deepseek-v4-flash-free models to be present, got %+v", seen)
 	}
+	if seen["opencode/claude-sonnet-4-6"] || seen["claude-sonnet-4-6"] {
+		t.Errorf("expected paid model claude-sonnet-4-6 to be filtered out, got %+v", seen)
+	}
+	if !seen["opencode/free"] || !seen["free"] {
+		t.Errorf("expected opencode/free virtual alias to be present, got %+v", seen)
+	}
 }
 
 func TestParseConfigProvidersArray(t *testing.T) {
@@ -130,32 +139,49 @@ func TestParseConfigProvidersArray(t *testing.T) {
 				"name": "OpenCode",
 				"models": {
 					"kimi-k2.5-free": { "name": "Kimi K2.5 (Free)" },
-					"big-pickle": { "name": "Big Pickle" }
+					"big-pickle": { "name": "Big Pickle" },
+					"claude-opus": { "name": "Claude Opus" }
 				}
 			},
 			{
 				"id": "custom",
 				"models": {
+					"free-model": { "name": "Free Custom" },
 					"my-model": { "name": "Custom Model" }
 				}
 			}
 		]
 	}`)
 
-	models, err := parseConfigProviders(body)
+	modelsFreeOnly, err := parseConfigProviders(body, true)
 	if err != nil {
-		t.Fatalf("parseConfigProviders() failed: %v", err)
+		t.Fatalf("parseConfigProviders(true) failed: %v", err)
 	}
 
-	modelMap := make(map[string]bool)
-	for _, m := range models {
-		modelMap[m.ID] = true
+	mapFree := make(map[string]bool)
+	for _, m := range modelsFreeOnly {
+		mapFree[m.ID] = true
 	}
 
-	expected := []string{"opencode/kimi-k2.5-free", "kimi-k2.5-free", "opencode/big-pickle", "big-pickle", "custom/my-model"}
-	for _, exp := range expected {
-		if !modelMap[exp] {
-			t.Errorf("expected model %q to be present", exp)
+	expectedFree := []string{"opencode/kimi-k2.5-free", "kimi-k2.5-free", "opencode/big-pickle", "big-pickle", "custom/free-model"}
+	for _, exp := range expectedFree {
+		if !mapFree[exp] {
+			t.Errorf("expected free model %q to be present", exp)
 		}
+	}
+	if mapFree["opencode/claude-opus"] || mapFree["custom/my-model"] {
+		t.Errorf("expected paid models to be filtered out in freeOnly mode")
+	}
+
+	modelsAll, errAll := parseConfigProviders(body, false)
+	if errAll != nil {
+		t.Fatalf("parseConfigProviders(false) failed: %v", errAll)
+	}
+	mapAll := make(map[string]bool)
+	for _, m := range modelsAll {
+		mapAll[m.ID] = true
+	}
+	if !mapAll["opencode/claude-opus"] || !mapAll["custom/my-model"] {
+		t.Errorf("expected paid models to be present when freeOnly is false")
 	}
 }

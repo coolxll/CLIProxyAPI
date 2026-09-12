@@ -13,6 +13,15 @@ import (
 
 var (
 	aliasGPTRegex = regexp.MustCompile(`^gpt-?(\d+)(.*)`)
+
+	// verifiedAvailableFreeModels contains the active free models confirmed to be operational on OpenCode Zen.
+	verifiedAvailableFreeModels = map[string]struct{}{
+		"big-pickle":                  {},
+		"mimo-v2.5-free":              {},
+		"nemotron-3.5-lightning-free": {},
+		"nemotron-3-ultra-free":       {},
+		"ling-3.0-flash-fin-free":     {},
+	}
 )
 
 func isFreeModel(model string) bool {
@@ -21,14 +30,11 @@ func isFreeModel(model string) bool {
 		parts := strings.SplitN(norm, "/", 2)
 		norm = parts[1]
 	}
-	if strings.Contains(norm, "free") {
+	if norm == "free" {
 		return true
 	}
-	switch norm {
-	case "big-pickle":
-		return true
-	}
-	return false
+	_, ok := verifiedAvailableFreeModels[norm]
+	return ok
 }
 
 func resolveCloudZenModel(requestedModel string) string {
@@ -48,16 +54,10 @@ func staticModels() []pluginapi.ModelInfo {
 	rawIDs := []string{
 		"opencode/free",
 		"opencode/big-pickle",
-		"opencode/deepseek-v4-flash-free",
 		"opencode/mimo-v2.5-free",
 		"opencode/nemotron-3.5-lightning-free",
 		"opencode/nemotron-3-ultra-free",
 		"opencode/ling-3.0-flash-fin-free",
-		"opencode/muse-spark-1.3-contributor-free",
-		"opencode/muse-spark-1.2-contributor-free",
-		"opencode/kimi-k2.5-free",
-		"opencode/glm-4.5-free",
-		"opencode/minimax-6.5-free",
 	}
 
 	models := make([]pluginapi.ModelInfo, 0, len(rawIDs)*2)

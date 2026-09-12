@@ -143,7 +143,7 @@ func setupMockOpenCodeServer(t *testing.T) *httptest.Server {
 						"id": "opencode",
 						"name": "OpenCode",
 						"models": {
-							"kimi-k2.5-free": { "name": "Kimi K2.5 (Free)" }
+							"mimo-v2.5-free": { "name": "Mimo v2.5 (Free)" }
 						}
 					}
 				]
@@ -206,7 +206,7 @@ func TestExecuteNonStreaming(t *testing.T) {
 	storageJSON := fmt.Sprintf(`{"type":"opencode-plugin","server_url":"%s"}`, server.URL)
 	req := executorRPCRequest{
 		ExecutorRequest: pluginapi.ExecutorRequest{
-			Model:       "opencode/kimi-k2.5-free",
+			Model:       "opencode/mimo-v2.5-free",
 			Format:      "openai",
 			StorageJSON: []byte(storageJSON),
 			Payload:     []byte(`{"messages":[{"role":"user","content":"What is the answer?"}],"stream":false}`),
@@ -259,7 +259,7 @@ func TestExecuteStreaming(t *testing.T) {
 	req := executorRPCRequest{
 		StreamID: "out_stream_1",
 		ExecutorRequest: pluginapi.ExecutorRequest{
-			Model:       "opencode/kimi-k2.5-free",
+			Model:       "opencode/mimo-v2.5-free",
 			Format:      "openai",
 			StorageJSON: []byte(storageJSON),
 			Payload:     []byte(`{"messages":[{"role":"user","content":"What is the answer?"}],"stream":true}`),
@@ -451,10 +451,10 @@ func TestCloudZenExecutionStreaming(t *testing.T) {
 		Mode:      "cloud",
 	})
 
-	originalReq := []byte(`{"model":"deepseek-v4-flash-free","messages":[{"role":"user","content":"Hi"}]}`)
+	originalReq := []byte(`{"model":"nemotron-3.5-lightning-free","messages":[{"role":"user","content":"Hi"}]}`)
 	req := executorRPCRequest{
 		ExecutorRequest: pluginapi.ExecutorRequest{
-			Model:           "deepseek-v4-flash-free",
+			Model:           "nemotron-3.5-lightning-free",
 			Format:          "openai",
 			Payload:         originalReq,
 			OriginalRequest: originalReq,

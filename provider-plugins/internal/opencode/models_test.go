@@ -15,11 +15,13 @@ func TestIsFreeModel(t *testing.T) {
 	}{
 		{"opencode/big-pickle", true},
 		{"big-pickle", true},
-		{"deepseek-v4-flash-free", true},
-		{"opencode/deepseek-v4-flash-free", true},
-		{"kimi-k2.5-free", true},
 		{"mimo-v2.5-free", true},
+		{"opencode/mimo-v2.5-free", true},
 		{"nemotron-3.5-lightning-free", true},
+		{"nemotron-3-ultra-free", true},
+		{"ling-3.0-flash-fin-free", true},
+		{"deepseek-v4-flash-free", false}, // unavailable upstream
+		{"kimi-k2.5-free", false},         // unsupported on Zen
 		{"gpt-5-nano", false},
 		{"claude-sonnet-4-6", false},
 		{"opencode/gpt-5.4", false},
@@ -44,8 +46,8 @@ func TestResolveCloudZenModel(t *testing.T) {
 		{"free", "big-pickle"},
 		{"opencode/free", "big-pickle"},
 		{"opencode/big-pickle", "big-pickle"},
-		{"deepseek-v4-flash-free", "deepseek-v4-flash-free"},
-		{"opencode/deepseek-v4-flash-free", "deepseek-v4-flash-free"},
+		{"mimo-v2.5-free", "mimo-v2.5-free"},
+		{"opencode/mimo-v2.5-free", "mimo-v2.5-free"},
 		{"gpt5nano", "gpt-5-nano"},
 		{"opencode/gpt5nano", "gpt-5-nano"},
 	}
@@ -87,8 +89,9 @@ func TestFetchCloudZenModels(t *testing.T) {
 	mockResponse := []byte(`{
 		"object": "list",
 		"data": [
-			{"id": "deepseek-v4-flash-free", "object": "model", "created": 1789176681, "owned_by": "opencode"},
+			{"id": "mimo-v2.5-free", "object": "model", "created": 1789176681, "owned_by": "opencode"},
 			{"id": "big-pickle", "object": "model", "created": 1789176681, "owned_by": "opencode"},
+			{"id": "deepseek-v4-flash-free", "object": "model", "created": 1789176681, "owned_by": "opencode"},
 			{"id": "claude-sonnet-4-6", "object": "model", "created": 1789176681, "owned_by": "opencode"}
 		]
 	}`)
@@ -120,8 +123,11 @@ func TestFetchCloudZenModels(t *testing.T) {
 	if !seen["opencode/big-pickle"] || !seen["big-pickle"] {
 		t.Errorf("expected big-pickle models to be present, got %+v", seen)
 	}
-	if !seen["opencode/deepseek-v4-flash-free"] || !seen["deepseek-v4-flash-free"] {
-		t.Errorf("expected deepseek-v4-flash-free models to be present, got %+v", seen)
+	if !seen["opencode/mimo-v2.5-free"] || !seen["mimo-v2.5-free"] {
+		t.Errorf("expected mimo-v2.5-free models to be present, got %+v", seen)
+	}
+	if seen["opencode/deepseek-v4-flash-free"] || seen["deepseek-v4-flash-free"] {
+		t.Errorf("expected unavailable deepseek-v4-flash-free to be filtered out, got %+v", seen)
 	}
 	if seen["opencode/claude-sonnet-4-6"] || seen["claude-sonnet-4-6"] {
 		t.Errorf("expected paid model claude-sonnet-4-6 to be filtered out, got %+v", seen)
@@ -138,7 +144,7 @@ func TestParseConfigProvidersArray(t *testing.T) {
 				"id": "opencode",
 				"name": "OpenCode",
 				"models": {
-					"kimi-k2.5-free": { "name": "Kimi K2.5 (Free)" },
+					"mimo-v2.5-free": { "name": "Mimo v2.5 (Free)" },
 					"big-pickle": { "name": "Big Pickle" },
 					"claude-opus": { "name": "Claude Opus" }
 				}
@@ -146,7 +152,6 @@ func TestParseConfigProvidersArray(t *testing.T) {
 			{
 				"id": "custom",
 				"models": {
-					"free-model": { "name": "Free Custom" },
 					"my-model": { "name": "Custom Model" }
 				}
 			}
@@ -163,7 +168,7 @@ func TestParseConfigProvidersArray(t *testing.T) {
 		mapFree[m.ID] = true
 	}
 
-	expectedFree := []string{"opencode/kimi-k2.5-free", "kimi-k2.5-free", "opencode/big-pickle", "big-pickle", "custom/free-model"}
+	expectedFree := []string{"opencode/mimo-v2.5-free", "mimo-v2.5-free", "opencode/big-pickle", "big-pickle"}
 	for _, exp := range expectedFree {
 		if !mapFree[exp] {
 			t.Errorf("expected free model %q to be present", exp)

@@ -378,4 +378,3 @@ func extractCallbackDeviceInfo(fragment url.Values) (boundDeviceID, refreshToken
 	}
 	return strings.TrimSpace(boundDeviceID), strings.TrimSpace(refreshToken), strings.TrimSpace(token)
 }
-

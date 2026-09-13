@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coolxll/lingma-protocol-go"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
-	"github.com/coolxll/lingma-protocol-go"
 	"github.com/tidwall/gjson"
 )
 

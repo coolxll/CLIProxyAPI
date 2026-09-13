@@ -186,12 +186,12 @@ func (p *Plugin) parseAuth(raw []byte) ([]byte, error) {
 		label = accountLabel(creds)
 	}
 	auth := pluginapi.AuthData{
-		Provider:         ProviderID,
-		ID:               stableAuthID(creds),
-		FileName:         fileName,
-		Label:            label,
-		StorageJSON:      storageJSON,
-		Metadata:         sanitizedMetadata(creds, label),
+		Provider:    ProviderID,
+		ID:          stableAuthID(creds),
+		FileName:    fileName,
+		Label:       label,
+		StorageJSON: storageJSON,
+		Metadata:    sanitizedMetadata(creds, label),
 		Attributes: map[string]string{
 			"account": accountLabel(creds),
 		},

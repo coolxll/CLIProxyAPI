@@ -501,4 +501,3 @@ func TestRefreshTokenFallbackDerivesStableDeviceID(t *testing.T) {
 		t.Errorf("expected 16-digit device ID, got %s", creds.DeviceID)
 	}
 }
-

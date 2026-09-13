@@ -10,8 +10,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
 	"github.com/coolxll/lingma-protocol-go"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
 )
 
 const lingmaMaxTokensHardLimit = 16384

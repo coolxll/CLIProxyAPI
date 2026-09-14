@@ -3,7 +3,7 @@ module github.com/router-for-me/CLIProxyAPI/v7/provider-plugins
 go 1.26.0
 
 require (
-	github.com/coolxll/lingma-protocol-go v0.0.0
+	github.com/coolxll/lingma-protocol-go v0.1.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/router-for-me/CLIProxyAPI/v7 v7.0.0
@@ -46,7 +46,8 @@ require (
 	google.golang.org/protobuf v1.34.1 // indirect
 )
 
-replace (
-	github.com/coolxll/lingma-protocol-go => ../../lingma-protocol-go
-	github.com/router-for-me/CLIProxyAPI/v7 => ..
-)
+// The parent module is a real subdirectory of the build context, so this
+// replace resolves inside a Docker build. lingma-protocol-go deliberately has
+// no replace: it is a separate repository and is consumed as a released
+// version, so the image build stays self-contained.
+replace github.com/router-for-me/CLIProxyAPI/v7 => ..

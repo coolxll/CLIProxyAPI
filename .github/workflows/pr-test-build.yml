@@ -17,6 +17,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Runs before anything needs the network or a sibling checkout: if go.mod
+      # has a replace pointing outside the repository, the Docker image build
+      # cannot resolve it and would fail only at release time.
+      - name: Check dependencies are buildable outside the repository
+        run: bash .github/scripts/check-lingma-protocol-go-pin.sh
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Build

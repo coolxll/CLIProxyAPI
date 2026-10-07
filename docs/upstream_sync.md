@@ -97,6 +97,7 @@ When upstream bumps the major version path (e.g., `github.com/router-for-me/CLIP
 2. **Common Upstream Sync Conflict Spots**:
    - `internal/thinking/`: Check newly added upstream providers and appliers. Ensure downstream additions (e.g., Lingma thinking options) cleanly plug into `ApplyThinking()`.
    - `internal/runtime/executor/`: Check for duplicate utility functions (e.g., package-level helpers like `firstNonEmpty` in `trae_common.go` vs `devin_executor.go`).
+   - `internal/pluginhost/`: Upstream enforces `hostCallbackInstance` isolation on all plugin callbacks. Downstream HTTP callback wrappers (`openCallbackContextForPluginInstanceHTTP` and `openHostHTTPCallbackContext`) must pass `a.instance` so that plugin Cgo callbacks are not rejected with `host callback ID does not belong to the calling plugin instance`.
    - Downstream-only tests: Update or retire tests that assert obsolete model filtering (e.g., `codex-free` definitions).
    - `AGENTS.md` & `config.example.yaml`: Preserve downstream architectural rules, conventions, and config additions.
 

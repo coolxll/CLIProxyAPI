@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	traeenc "github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/trae"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	traeenc "github.com/router-for-me/CLIProxyAPI/v8/sdk/encoding/trae"
 	"github.com/tidwall/gjson"
 )
 

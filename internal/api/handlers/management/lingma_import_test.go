@@ -3,7 +3,7 @@ package management
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/lingma"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/lingma"
 )
 
 func TestBuildLingmaCredentialMetadataIncludesProviderType(t *testing.T) {

@@ -59,9 +59,9 @@ import (
 	"fmt"
 	"unsafe"
 
-	lingmaplugin "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma"
-	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	lingmaplugin "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma"
+	"github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/pluginruntime"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
 var provider = lingmaplugin.New(callHost)

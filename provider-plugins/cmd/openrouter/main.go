@@ -59,9 +59,9 @@ import (
 	"fmt"
 	"unsafe"
 
-	openrouterplugin "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/openrouter"
-	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	openrouterplugin "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/openrouter"
+	"github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/pluginruntime"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
 var provider = openrouterplugin.New(callHost)

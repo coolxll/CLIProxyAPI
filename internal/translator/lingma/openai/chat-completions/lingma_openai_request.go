@@ -11,7 +11,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/coolxll/lingma-protocol-go"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/lingma/helpers"
 )
 
 const lingmaMaxTokensHardLimit = 16384

@@ -7,11 +7,11 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	traeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/trae"
-	traetranslator "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/trae"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	traeenc "github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/trae"
+	traeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/trae"
+	traetranslator "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/trae"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	traeenc "github.com/router-for-me/CLIProxyAPI/v8/sdk/encoding/trae"
 	"github.com/tidwall/gjson"
 )
 

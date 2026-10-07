@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	traetranslator "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/trae"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	traeenc "github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/trae"
+	traetranslator "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/trae"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	traeenc "github.com/router-for-me/CLIProxyAPI/v8/sdk/encoding/trae"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/lingma"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/encoding/lingma"
 	"github.com/tidwall/gjson"
 )
 

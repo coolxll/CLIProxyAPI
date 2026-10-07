@@ -17,11 +17,11 @@ import (
 	"strings"
 	"time"
 
-	traeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/trae"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	traeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/trae"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/browser"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 const (

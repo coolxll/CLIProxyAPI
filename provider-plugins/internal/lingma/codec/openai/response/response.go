@@ -11,7 +11,7 @@ import (
 
 	"github.com/coolxll/lingma-protocol-go"
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/helpers"
+	"github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma/codec/helpers"
 	"github.com/tidwall/gjson"
 )
 

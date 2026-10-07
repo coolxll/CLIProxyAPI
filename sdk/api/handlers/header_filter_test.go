@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 func TestFilterUpstreamHeaders_RemovesConnectionScopedHeaders(t *testing.T) {

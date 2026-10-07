@@ -6,10 +6,10 @@ import (
 	"slices"
 	"testing"
 
-	nativeClaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/claude"
-	nativeOpenAI "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/openai/chat-completions"
-	pluginClaude "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/claude"
-	pluginOpenAI "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/openai/request"
+	nativeClaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/lingma/claude"
+	nativeOpenAI "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/lingma/openai/chat-completions"
+	pluginClaude "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma/codec/claude"
+	pluginOpenAI "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma/codec/openai/request"
 )
 
 // dynamicFields are skipped during parity comparison because they contain

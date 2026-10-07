@@ -1,4 +1,4 @@
-module github.com/router-for-me/CLIProxyAPI/v7/provider-plugins
+module github.com/router-for-me/CLIProxyAPI/v8/provider-plugins
 
 go 1.26.0
 
@@ -6,7 +6,7 @@ require (
 	github.com/coolxll/lingma-protocol-go v0.1.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/router-for-me/CLIProxyAPI/v7 v7.0.0
+	github.com/router-for-me/CLIProxyAPI/v8 v8.0.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
@@ -50,4 +50,4 @@ require (
 // replace resolves inside a Docker build. lingma-protocol-go deliberately has
 // no replace: it is a separate repository and is consumed as a released
 // version, so the image build stays self-contained.
-replace github.com/router-for-me/CLIProxyAPI/v7 => ..
+replace github.com/router-for-me/CLIProxyAPI/v8 => ..

@@ -1,8 +1,8 @@
 package claude
 
 import (
-	chat_completions "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/openai/chat-completions"
-	openaiclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/claude"
+	chat_completions "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/lingma/openai/chat-completions"
+	openaiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/claude"
 )
 
 // ConvertClaudeRequestToLingma converts a Claude Messages API request to Lingma format

@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	nativeClaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/claude"
-	nativeOpenAI "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/openai/responses"
-	pluginClaude "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/claude"
-	pluginOpenAI "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/openai/response"
+	nativeClaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/lingma/claude"
+	nativeOpenAI "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/lingma/openai/responses"
+	pluginClaude "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma/codec/claude"
+	pluginOpenAI "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma/codec/openai/response"
 )
 
 // TestOpenAIResponseParityStream verifies plugin and native produce identical

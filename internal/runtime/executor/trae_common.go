@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	traeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/trae"
+	traeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/trae"
 	"github.com/tidwall/gjson"
 )
 
@@ -71,15 +71,6 @@ func openAIMessageText(message gjson.Result) string {
 		return builder.String()
 	}
 	return content.String()
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }
 
 func setTraeCommonHeaders(header http.Header, creds *traeauth.TraeCredentials) {

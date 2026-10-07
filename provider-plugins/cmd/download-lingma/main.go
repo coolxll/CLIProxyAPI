@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma"
+	"github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma"
 )
 
 func main() {

@@ -59,9 +59,9 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
-	traeplugin "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/trae"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/pluginruntime"
+	traeplugin "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/trae"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
 var provider = traeplugin.New(callHost)

@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	claudetranslator "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/claude"
-	chattranslator "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/openai/request"
-	openaitranslator "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/lingma/codec/openai/response"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	claudetranslator "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma/codec/claude"
+	chattranslator "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma/codec/openai/request"
+	openaitranslator "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/lingma/codec/openai/response"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

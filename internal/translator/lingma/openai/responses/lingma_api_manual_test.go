@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	lingmaauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/lingma"
-	lingmaencoding "github.com/router-for-me/CLIProxyAPI/v7/sdk/encoding/lingma"
+	lingmaauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/lingma"
+	lingmaencoding "github.com/router-for-me/CLIProxyAPI/v8/sdk/encoding/lingma"
 	"github.com/tidwall/gjson"
 )
 

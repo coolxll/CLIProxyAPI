@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/helpers"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/lingma/openai/responses"
-	openaiclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/claude"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/lingma/helpers"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/lingma/openai/responses"
+	openaiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/claude"
 	"github.com/tidwall/gjson"
 )
 

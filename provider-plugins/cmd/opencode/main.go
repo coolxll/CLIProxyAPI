@@ -59,9 +59,9 @@ import (
 	"fmt"
 	"unsafe"
 
-	opencodeplugin "github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/opencode"
-	"github.com/router-for-me/CLIProxyAPI/v7/provider-plugins/internal/pluginruntime"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	opencodeplugin "github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/opencode"
+	"github.com/router-for-me/CLIProxyAPI/v8/provider-plugins/internal/pluginruntime"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
 var provider = opencodeplugin.New(callHost)

@@ -78,3 +78,69 @@ what makes it a reliable marker for "does this build carry the fix": check with
 `grep -a -o -E 'StreamUsageBuffer\)\.[A-Za-z]+' <binary> | sort -u`, which works
 on published builds because Go's reflect method-name tables survive
 `-ldflags="-s -w"`.
+
+## Major Go Module Version Bumps (e.g. v7 -> v8)
+
+When upstream bumps the major version path (e.g., `github.com/router-for-me/CLIProxyAPI/v8`):
+
+1. **Go Internal Package Visibility Rule**:
+   Go strictly prohibits importing an `internal/` package from an ancestor whose module path does not match. If `provider-plugins/go.mod` or any subpackage declares `.../v7`, attempting to import `.../v8/internal/...` triggers:
+   ```text
+   use of internal package github.com/router-for-me/CLIProxyAPI/v8/internal/... not allowed
+   ```
+   All downstream packages and plugins must bump their module declarations and import paths in lockstep:
+   ```bash
+   find . -type f -name "*.go" -exec sed -i '' 's#github.com/router-for-me/CLIProxyAPI/v7#github.com/router-for-me/CLIProxyAPI/v8#g' {} +
+   # Update provider-plugins/go.mod
+   ```
+
+2. **Common Upstream Sync Conflict Spots**:
+   - `internal/thinking/`: Check newly added upstream providers and appliers. Ensure downstream additions (e.g., Lingma thinking options) cleanly plug into `ApplyThinking()`.
+   - `internal/runtime/executor/`: Check for duplicate utility functions (e.g., package-level helpers like `firstNonEmpty` in `trae_common.go` vs `devin_executor.go`).
+   - Downstream-only tests: Update or retire tests that assert obsolete model filtering (e.g., `codex-free` definitions).
+   - `AGENTS.md` & `config.example.yaml`: Preserve downstream architectural rules, conventions, and config additions.
+
+3. **Post-Merge Model Catalog Refresh**:
+   Upstream expects model definitions in `internal/registry/models.json` and `model_definitions.go` to match the latest provider models. Always run:
+   ```bash
+   ./.github/scripts/refresh-model-catalogs.sh
+   ```
+   Verify and commit updated catalogs if any definitions changed.
+
+## Publishing and Homelab Deployment Workflow
+
+After merging and pushing to `origin/main`:
+
+1. **Tag and Push Docker Image**:
+   ```bash
+   git tag vYYYY.MM.DD
+   git push origin vYYYY.MM.DD
+   ```
+   Monitor GitHub Actions workflow `docker-image.yml`:
+   ```bash
+   gh run list --workflow=docker-image.yml --repo coolxll/CLIProxyAPI --limit 1
+   gh run view <run-id> --repo coolxll/CLIProxyAPI
+   ```
+
+2. **Extract Manifest Digest**:
+   The multi-arch manifest step pushes the final manifest. Extract the `sha256:...` digest from the `docker_manifest` step logs or test pull on a remote host:
+   ```bash
+   gh run view --job=<manifest-job-id> --repo coolxll/CLIProxyAPI --log | grep -E "pushing sha256:[a-f0-9]+ to ghcr.io"
+   ```
+
+3. **Update Declarative Homelab Stacks**:
+   In the homelab infrastructure repository (`homelab-infra`):
+   - Update `hosts/<host>/stacks/<cpa-stack>/compose.yaml` with the new digest:
+     `image: ghcr.io/coolxll/cliproxyapi@sha256:<digest>`
+   - Commit and push to `homelab-infra`'s `main` branch.
+
+4. **Rollout to Homelab Hosts**:
+   Deploy across all homelab instances via SSH:
+   ```bash
+   ssh <host> "cd <homelab-infra-path> && git pull --ff-only && cd hosts/<host>/stacks/<cpa-stack> && sudo docker compose pull cliproxyapi && sudo docker compose up -d cliproxyapi"
+   ```
+   **Key Host Considerations**:
+   - **File Permissions**: Files like `.env` or `app.env` are often mode `0600 root:root`. Always run `sudo docker compose` if unprivileged compose complains with permission denied.
+   - **Local Host Git State**: If a remote host diverged or has unpushed commits, back up the commit on a temporary branch (`git branch backup/<name> main`) before resetting to `origin/main`.
+   - **Mounted Plugins**: Built-in plugins inside the Docker image can be overridden by host-mounted volumes (`/CLIProxyAPI/plugins/...`). Verify that mounted `.so` binaries remain ABI-compatible or rebuild them if necessary.
+

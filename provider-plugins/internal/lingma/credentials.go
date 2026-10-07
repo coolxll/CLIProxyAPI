@@ -20,15 +20,26 @@ import (
 )
 
 const (
-	defaultAPIBaseURL = "https://lingma-api.tongyi.aliyun.com"
-	signatureSecret   = "d2FyLCB3YXIgbmV2ZXIgY2hhbmdlcw=="
-	serverPubKeyPEM   = `-----BEGIN PUBLIC KEY-----
+	defaultAPIBaseURL     = "https://lingma-api.tongyi.aliyun.com"
+	defaultQoderCNBaseURL = "https://gateway.qoder.com.cn"
+	signatureSecret       = "d2FyLCB3YXIgbmV2ZXIgY2hhbmdlcw=="
+	serverPubKeyPEM       = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
 4k6Pz1EaDicBMpdpxKduSZu5OANqUq8er4GM95omAGIOPOh+Nx0spthYA2BqGz+l
 6HRkPJ7S236FZz73In/KVuLnwI8JJ2CbuJap8kvheCCZpmAWpb/cPx/3Vr/J6I17
 XcW+ML9FoCI6AOvOzwIDAQAB
 -----END PUBLIC KEY-----`
 )
+
+func resolveAPIBaseURL(config pluginConfig, creds credentials) string {
+	if config.APIBaseURL != "" && config.APIBaseURL != defaultAPIBaseURL {
+		return config.APIBaseURL
+	}
+	if creds.IsQoder || strings.Contains(strings.ToLower(creds.Source), "qoder") || strings.Contains(strings.ToLower(creds.Name), "qoder") {
+		return defaultQoderCNBaseURL
+	}
+	return defaultAPIBaseURL
+}
 
 var serverPublicKey = mustParseServerPublicKey()
 
@@ -65,6 +76,13 @@ func credentialsFromStorage(raw []byte) (credentials, error) {
 func exchangeToken(host hostRPC, creds *credentials, apiBaseURL string) error {
 	if creds == nil {
 		return fmt.Errorf("Lingma credentials are nil")
+	}
+	if creds.IsQoder || strings.Contains(apiBaseURL, "qoder.com.cn") {
+		// QoderCN does not use Lingma's V3 grantAuthInfos exchange.
+		if errActivate := activateCosyKey(host, *creds, apiBaseURL); errActivate != nil {
+			host.log("warn", "Qoder key activation probe warning: "+errActivate.Error(), nil)
+		}
+		return nil
 	}
 	temporaryKey := make([]byte, 16)
 	if _, errRead := rand.Read(temporaryKey); errRead != nil {
@@ -215,6 +233,10 @@ func buildHeaders(creds credentials, encodedBody, fullURL string, now time.Time)
 	pathWithoutAlgo := extractPathWithoutAlgo(fullURL)
 	signatureInput := payloadBase64 + "\n" + creds.CosyKey + "\n" + cosyDate + "\n" + encodedBody + "\n" + pathWithoutAlgo
 	signature := fmt.Sprintf("%x", md5.Sum([]byte(signatureInput)))
+	ua := "Go-http-client/1.1"
+	if creds.IsQoder || strings.Contains(fullURL, "qoder.com.cn") {
+		ua = "Bun/1.3.14"
+	}
 	return http.Header{
 		"Content-Type":         []string{"application/json"},
 		"Accept":               []string{"text/event-stream"},
@@ -229,7 +251,7 @@ func buildHeaders(creds credentials, encodedBody, fullURL string, now time.Time)
 		"Cosy-Machineid":       []string{creds.MachineID},
 		"Cosy-User":            []string{creds.UID},
 		"Cosy-Organization-Id": []string{creds.OrganizationID},
-		"User-Agent":           []string{"Go-http-client/1.1"},
+		"User-Agent":           []string{ua},
 	}, nil
 }
 

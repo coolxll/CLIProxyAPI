@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -24,21 +25,58 @@ type storedCredentials struct {
 	SecurityOAuthAlt   string `json:"securityOAuthToken"`
 	RefreshToken       string `json:"refresh_token"`
 	RefreshTokenAlt    string `json:"refreshToken"`
-	ExpireTime         int64  `json:"expire_time"`
-	ExpireTimeAlt      int64  `json:"expireTime"`
+	ExpireTime         any    `json:"expire_time"`
+	ExpireTimeAlt      any    `json:"expireTime"`
+}
+
+func findFirstFile(baseDir string, subpaths ...string) string {
+	for _, sub := range subpaths {
+		p := filepath.Join(baseDir, filepath.FromSlash(sub))
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+func parseExpireTime(val any) int64 {
+	switch v := val.(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case int:
+		return int64(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return n
+		}
+	case string:
+		v = strings.TrimSpace(v)
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 func loadCredentialsFromDir(dir string) (*credentials, error) {
-	idFile := filepath.Join(dir, "id")
-	userFile := filepath.Join(dir, "user")
+	idPath := findFirstFile(dir, "id", ".auth/id", "cache/id", ".auth/machine_id", "machine_id")
+	if idPath == "" {
+		return nil, fmt.Errorf("id file not found in %s", dir)
+	}
+	userPath := findFirstFile(dir, "user", ".auth/user", "cache/user")
+	if userPath == "" {
+		return nil, fmt.Errorf("user file not found in %s", dir)
+	}
 
-	machineIDContent, err := readTrimmed(idFile)
+	machineIDContent, err := readTrimmed(idPath)
 	if err != nil {
 		return nil, fmt.Errorf("read machine id file: %w", err)
 	}
 	machineID := parseMachineID(machineIDContent)
 
-	userB64, err := readTrimmed(userFile)
+	userB64, err := readTrimmed(userPath)
 	if err != nil {
 		return nil, fmt.Errorf("read user file: %w", err)
 	}
@@ -65,10 +103,12 @@ func loadCredentialsFromDir(dir string) (*credentials, error) {
 	if refreshToken == "" {
 		refreshToken = user.RefreshTokenAlt
 	}
-	expireTime := user.ExpireTime
+	expireTime := parseExpireTime(user.ExpireTime)
 	if expireTime == 0 {
-		expireTime = user.ExpireTimeAlt
+		expireTime = parseExpireTime(user.ExpireTimeAlt)
 	}
+
+	isQoder := strings.Contains(strings.ToLower(dir), "qoder")
 
 	return &credentials{
 		Type:               ProviderID,
@@ -82,6 +122,8 @@ func loadCredentialsFromDir(dir string) (*credentials, error) {
 		ExpireTime:         expireTime,
 		Name:               user.Name,
 		OrganizationID:     user.OrganizationID,
+		IsQoder:            isQoder,
+		Source:             dir,
 	}, nil
 }
 

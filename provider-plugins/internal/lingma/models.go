@@ -20,7 +20,8 @@ func (p *Plugin) modelsForAuth(raw []byte) ([]byte, error) {
 		return nil, errCredentials
 	}
 	host := hostRPC{call: p.hostCall, callbackID: req.HostCallbackID}
-	modelURL := strings.TrimRight(p.configSnapshot().APIBaseURL, "/") + "/algo/api/v2/model/list"
+	effectiveBaseURL := resolveAPIBaseURL(p.configSnapshot(), creds)
+	modelURL := strings.TrimRight(effectiveBaseURL, "/") + "/algo/api/v2/model/list"
 	headers, errHeaders := buildHeaders(creds, "", modelURL, time.Now())
 	if errHeaders != nil {
 		return nil, errHeaders

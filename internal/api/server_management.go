@@ -375,4 +375,3 @@ func (s *Server) serveTraeAuthorize(c *gin.Context) {
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.String(http.StatusOK, "<html><body><h2>Trae authorization successful! You may close this tab.</h2></body></html>")
 }
-

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,21 +82,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	dir, err := findAuthDir()
+	loc, err := findAuthLocation()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Found Lingma auth files in: %s\n", dir)
+	brand := "Lingma"
+	if loc.isQoder {
+		brand = "QoderCN"
+	}
+	fmt.Printf("Found %s auth files in: %s\n", brand, loc.dir)
 
-	machineID, err := readTrimmed(filepath.Join(dir, "id"))
+	idContent, err := readTrimmed(loc.idPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading id file: %v\n", err)
 		os.Exit(1)
 	}
+	machineID := parseMachineID(idContent)
 
-	userB64, err := readTrimmed(filepath.Join(dir, "user"))
+	userB64, err := readTrimmed(loc.userPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading user file: %v\n", err)
 		os.Exit(1)
@@ -122,12 +128,14 @@ func main() {
 		EncryptUserInfo    string `json:"encrypt_user_info"`
 		SecurityOAuthToken string `json:"security_oauth_token"`
 		RefreshToken       string `json:"refresh_token"`
-		ExpireTime         int64  `json:"expire_time"`
+		ExpireTime         any    `json:"expire_time"`
 	}
 	if err := json.Unmarshal(userJSON, &user); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing user JSON: %v\n", err)
 		os.Exit(1)
 	}
+
+	expireTime := parseExpireTime(user.ExpireTime)
 
 	finalName := manualName
 	if finalName == "" {
@@ -147,15 +155,19 @@ func main() {
 		} else {
 			machineSuffix = machineID
 		}
-		finalName = fmt.Sprintf("lingma-%s-%s", accountPart, machineSuffix)
+		prefix := "lingma"
+		if loc.isQoder {
+			prefix = "qoder"
+		}
+		finalName = fmt.Sprintf("%s-%s-%s", prefix, accountPart, machineSuffix)
 	}
 
 	var expiresAt time.Time
-	if user.ExpireTime > 0 {
-		if user.ExpireTime > 32503680000 {
-			expiresAt = time.UnixMilli(user.ExpireTime)
+	if expireTime > 0 {
+		if expireTime > 32503680000 {
+			expiresAt = time.UnixMilli(expireTime)
 		} else {
-			expiresAt = time.Unix(user.ExpireTime, 0)
+			expiresAt = time.Unix(expireTime, 0)
 		}
 	} else {
 		expiresAt = time.Now().Add(24 * time.Hour)
@@ -174,9 +186,10 @@ func main() {
 		"security_oauth_token": user.SecurityOAuthToken,
 		"encrypt_user_info":    user.EncryptUserInfo,
 		"user_type":            user.UserType,
-		"expire_time":          user.ExpireTime,
+		"expire_time":          expireTime,
 		"name":                 finalName,
 		"expires_at":           expiresAt,
+		"is_qoder":             loc.isQoder,
 	}
 	if user.RefreshToken != "" {
 		exportData["refresh_token"] = user.RefreshToken
@@ -217,46 +230,116 @@ func main() {
 	fmt.Printf("Import Name: %s\n", finalName)
 }
 
-func findAuthDir() (string, error) {
-	candidates := authDirCandidates()
-	for _, dir := range candidates {
-		idFile := filepath.Join(dir, "id")
-		userFile := filepath.Join(dir, "user")
-		if _, err := os.Stat(idFile); err == nil {
-			if _, err := os.Stat(userFile); err == nil {
-				return dir, nil
-			}
+type authLocation struct {
+	dir      string
+	idPath   string
+	userPath string
+	isQoder  bool
+}
+
+func findFirstFile(baseDir string, subpaths ...string) string {
+	for _, sub := range subpaths {
+		p := filepath.Join(baseDir, filepath.FromSlash(sub))
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
 		}
 	}
-	return "", fmt.Errorf("lingma auth files not found, searched %d locations", len(candidates))
+	return ""
+}
+
+func parseMachineID(content string) string {
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "{") {
+		var legacy struct {
+			MachineID string `json:"machine_id"`
+		}
+		if err := json.Unmarshal([]byte(content), &legacy); err == nil && legacy.MachineID != "" {
+			return legacy.MachineID
+		}
+	}
+	return content
+}
+
+func parseExpireTime(val any) int64 {
+	switch v := val.(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case int:
+		return int64(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return n
+		}
+	case string:
+		v = strings.TrimSpace(v)
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func findAuthLocation() (*authLocation, error) {
+	candidates := authDirCandidates()
+	for _, dir := range candidates {
+		idPath := findFirstFile(dir, "id", ".auth/id", "cache/id", ".auth/machine_id", "machine_id")
+		userPath := findFirstFile(dir, "user", ".auth/user", "cache/user")
+		if idPath != "" && userPath != "" {
+			isQoder := strings.Contains(strings.ToLower(dir), "qoder")
+			return &authLocation{
+				dir:      dir,
+				idPath:   idPath,
+				userPath: userPath,
+				isQoder:  isQoder,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("lingma/qoder auth files not found, searched %d locations", len(candidates))
 }
 
 func authDirCandidates() []string {
 	var candidates []string
 	home, _ := os.UserHomeDir()
 
+	// QoderCN directories
+	candidates = append(candidates,
+		filepath.Join(home, ".qoder-cn"),
+		filepath.Join(home, ".qoderclicn"),
+	)
+
 	switch runtime.GOOS {
 	case "darwin":
 		candidates = append(candidates,
+			filepath.Join(home, "Library", "Application Support", "QoderCN", "SharedClientCache", "cache"),
+			filepath.Join(home, "Library", "Application Support", "QoderCN", "SharedClientCache"),
 			filepath.Join(home, "Library", "Application Support", "lingma", "SharedClientCache", "cache"),
 		)
 	case "linux":
 		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-			candidates = append(candidates, filepath.Join(xdg, "lingma", "SharedClientCache", "cache"))
+			candidates = append(candidates,
+				filepath.Join(xdg, "QoderCN", "SharedClientCache", "cache"),
+				filepath.Join(xdg, "lingma", "SharedClientCache", "cache"),
+			)
 		}
 		candidates = append(candidates,
+			filepath.Join(home, ".config", "QoderCN", "SharedClientCache", "cache"),
 			filepath.Join(home, ".config", "lingma", "SharedClientCache", "cache"),
 		)
 	case "windows":
 		if appdata := os.Getenv("APPDATA"); appdata != "" {
-			candidates = append(candidates, filepath.Join(appdata, "lingma", "SharedClientCache", "cache"))
+			candidates = append(candidates,
+				filepath.Join(appdata, "QoderCN", "SharedClientCache", "cache"),
+				filepath.Join(appdata, "lingma", "SharedClientCache", "cache"),
+			)
 		}
 	}
 
-	// Fallbacks
+	// Lingma fallbacks
 	candidates = append(candidates,
 		filepath.Join(home, ".lingma", "vscode", "sharedClientCache", "cache"),
-		filepath.Join(home, ".lingma", "core"), // Some versions use this
+		filepath.Join(home, ".lingma", "core"),
 	)
 
 	return candidates

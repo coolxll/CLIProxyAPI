@@ -258,4 +258,3 @@ func TestPostOAuthCallbackTraeFragment(t *testing.T) {
 		t.Fatalf("unexpected callback payload: %+v", payload)
 	}
 }
-

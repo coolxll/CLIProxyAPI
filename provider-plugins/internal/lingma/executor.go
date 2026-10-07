@@ -486,16 +486,57 @@ func (p *Plugin) logLargeThinking(host hostRPC, profile requestProfile, model st
 	})
 }
 
+func isQoderEndpoint(apiBaseURL string, creds credentials) bool {
+	if strings.Contains(apiBaseURL, "qoder.com.cn") {
+		return true
+	}
+	if creds.IsQoder || strings.Contains(strings.ToLower(creds.Source), "qoder") || strings.Contains(strings.ToLower(creds.Name), "qoder") {
+		return true
+	}
+	return false
+}
+
+func applyQoderCNBody(body []byte) []byte {
+	reqID := gjson.GetBytes(body, "request_id").String()
+	body, _ = sjson.SetBytes(body, "agent_id", "agent_common")
+	body, _ = sjson.SetBytes(body, "task_id", "common")
+	body, _ = sjson.SetBytes(body, "session_type", "qoderclicn")
+	body, _ = sjson.SetBytes(body, "source", 1)
+	body, _ = sjson.SetBytes(body, "business.product", "qoderclicn")
+	if reqSetID := gjson.GetBytes(body, "request_set_id").String(); reqSetID == "" && reqID != "" {
+		body, _ = sjson.SetBytes(body, "request_set_id", reqID)
+	}
+
+	isReasoning := gjson.GetBytes(body, "model_config.is_reasoning").Bool()
+	if isReasoning {
+		body, _ = sjson.SetBytes(body, "model_config.source", "system")
+		body, _ = sjson.SetBytes(body, "parameters.enable_thinking", true)
+		if !gjson.GetBytes(body, "parameters.reasoning_effort").Exists() {
+			body, _ = sjson.SetBytes(body, "parameters.reasoning_effort", "high")
+		}
+	} else {
+		body, _ = sjson.SetBytes(body, "model_config.source", "")
+		body, _ = sjson.SetBytes(body, "parameters.enable_thinking", false)
+	}
+	return body
+}
+
 func chatURL(apiBaseURL string, body []byte, model string) string {
 	agentID := gjson.GetBytes(body, "agent_id").String()
-	if agentID == "" {
+	if strings.Contains(apiBaseURL, "qoder.com.cn") {
+		agentID = "agent_common"
+	} else if agentID == "" {
 		agentID = lingmahelpers.AgentID(model)
 	}
 	return fmt.Sprintf("%s/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=%s&Encode=1", strings.TrimRight(apiBaseURL, "/"), agentID)
 }
 
 func encodeChatRequest(creds credentials, config pluginConfig, body []byte, model string, attributes map[string]string) (pluginapi.HTTPRequest, error) {
-	requestURL := chatURL(config.APIBaseURL, body, model)
+	effectiveBaseURL := resolveAPIBaseURL(config, creds)
+	if isQoderEndpoint(effectiveBaseURL, creds) {
+		body = applyQoderCNBody(body)
+	}
+	requestURL := chatURL(effectiveBaseURL, body, model)
 	encodedBody := lingmaencoding.Encode(body)
 	headers, errHeaders := buildHeaders(creds, string(encodedBody), requestURL, time.Now())
 	if errHeaders != nil {

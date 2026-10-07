@@ -84,6 +84,8 @@ type credentials struct {
 	EncryptUserInfo    string `json:"encrypt_user_info"`
 	UserType           string `json:"user_type"`
 	Name               string `json:"name"`
+	IsQoder            bool   `json:"is_qoder,omitempty"`
+	Source             string `json:"source,omitempty"`
 }
 
 // New constructs a Lingma shadow plugin.

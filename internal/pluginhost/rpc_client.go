@@ -417,7 +417,7 @@ func (a *rpcPluginAdapter) openHostHTTPCallbackContext(ctx context.Context, http
 	if strings.TrimSpace(provider) == "" {
 		provider = a.id
 	}
-	return a.host.openCallbackContextForPluginHTTP(ctx, a.id, auth, provider)
+	return a.host.openCallbackContextForPluginInstanceHTTP(ctx, a.id, a.instance, auth, provider)
 }
 
 func (a *rpcPluginAdapter) RegisterModels(ctx context.Context, req pluginapi.ModelRegistrationRequest) (pluginapi.ModelRegistrationResponse, error) {

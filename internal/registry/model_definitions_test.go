@@ -69,8 +69,6 @@ func TestCodexConfigurationUpdateCapability(t *testing.T) {
 	}
 }
 
-
-
 func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 	tierModels := map[string][]*ModelInfo{
 		"team": GetCodexTeamModels(),

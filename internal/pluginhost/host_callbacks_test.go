@@ -1696,3 +1696,17 @@ func TestHostModelExecuteCallbackPreservesHTTPStatusOnError(t *testing.T) {
 		t.Fatalf("clienterror.HTTPStatusFromError(errCall) = %d, want %d", got, http.StatusTooManyRequests)
 	}
 }
+
+func TestHostHTTPCallbackContextBindsToPluginInstance(t *testing.T) {
+	host := New()
+	instance := &hostCallbackInstance{}
+	callbackID, closeCallback := host.openCallbackContextForPluginInstanceHTTP(context.Background(), "test-plugin", instance, nil, "test-provider")
+	defer closeCallback()
+
+	callCtx := withHostCallbackIdentity(context.Background(), "test-plugin", instance)
+	handle, errAcquire := host.acquireHostHTTPOperation(callCtx, callbackID, "")
+	if errAcquire != nil {
+		t.Fatalf("expected acquireHostHTTPOperation to succeed, got: %v", errAcquire)
+	}
+	handle.finish()
+}

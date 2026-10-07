@@ -187,10 +187,20 @@ func (h *Host) openCallbackContextForPluginInstance(ctx context.Context, pluginI
 }
 
 func (h *Host) openCallbackContextForPluginHTTP(ctx context.Context, pluginID string, auth *coreauth.Auth, provider string) (string, func()) {
+	return h.openCallbackContextForPluginInstanceHTTP(ctx, pluginID, nil, auth, provider)
+}
+
+func (h *Host) openCallbackContextForPluginInstanceHTTP(ctx context.Context, pluginID string, instance *hostCallbackInstance, auth *coreauth.Auth, provider string) (string, func()) {
 	if h == nil || h.callbackContexts == nil {
 		return "", func() {}
 	}
-	return h.callbackContexts.open(ctx, pluginID, nil, auth, provider)
+	if strings.TrimSpace(pluginID) == "" {
+		pluginID = hostCallbackPluginIDFromContext(ctx)
+	}
+	if instance == nil {
+		instance = hostCallbackInstanceFromContext(ctx)
+	}
+	return h.callbackContexts.open(ctx, pluginID, instance, auth, provider)
 }
 
 func (h *Host) addCallbackCleanup(id string, cleanup func()) bool {

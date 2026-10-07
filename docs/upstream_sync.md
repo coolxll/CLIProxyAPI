@@ -145,3 +145,19 @@ After merging and pushing to `origin/main`:
    - **Local Host Git State**: If a remote host diverged or has unpushed commits, back up the commit on a temporary branch (`git branch backup/<name> main`) before resetting to `origin/main`.
    - **Mounted Plugins**: Built-in plugins inside the Docker image can be overridden by host-mounted volumes (`/CLIProxyAPI/plugins/...`). Verify that mounted `.so` binaries remain ABI-compatible or rebuild them if necessary.
 
+
+## Upstream v8 Major Evolution & Changes Summary
+
+Upstream transitioned from v7 to v8 with several structural redesigns, which caused frontend `management.html` to require v8+ APIs:
+1. **Management & Config Protocol Redesign**:
+   - V7 legacy flat management endpoints under `/v0/management` have been overhauled or scoped; new management contracts expect strict authentication, typed schemas, and updated route structures.
+   - Configuration sections like `database` have been sanitized/commented during v8 migration in favor of native store abstractions (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`).
+2. **Provider Plugin Protocol Hardening**:
+   - Upstream enforces Cgo instance tracking (`hostCallbackInstance`) across all callbacks to avoid cross-tenant/cross-instance invocation leakage.
+   - Dynamic plugin loading requires ABI-identical Go version and dependency graph matching the host binary.
+   - Status codes and retryability: plugins must surface HTTP error codes (such as 429 rate limiting) through `pluginruntime.StatusError` so `FailureFromError` translates them into upstream-retryable status codes rather than generic 500 plugin failures.
+   - All provider plugins (`lingma`, `trae`, `opencode`, `openrouter`) are built into `/CLIProxyAPI/plugins/linux/${TARGETARCH}/` within the multi-arch Docker image.
+3. **Antigravity Model Resolution & Opus 5.5 Support**:
+   - Antigravity models in CPA are not static; CPA queries Google's internal `fetchAvailableModels` API (`daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`) and intersects results with `models.json` via `filterAntigravityModels`.
+   - Google gates Claude 3.7 / 4.6 / 5.5 models per Google account entitlement. Older accounts may only receive `claude-opus-4-6-thinking`, whereas newer or whitelisted accounts receive `claude-opus-5-5-high`, `claude-opus-5-5-medium`, `claude-opus-5-5-low`, and `claude-sonnet-5-5-*`.
+   - CPA matches the upstream model ID: `claude-opus-5-5-high` (with 1M context / 128k output and thinking signature support). Ensure the synced auth file contains an account with 5.5 entitlements.

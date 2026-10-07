@@ -723,7 +723,7 @@ func (p *Plugin) executeCloudZen(host hostRPC, creds credentials, req executorRP
 		return nil, fmt.Errorf("OpenCode Zen upstream call failed: %w", errDo)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("OpenCode Zen upstream returned HTTP %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, pluginruntime.NewStatusError(resp.StatusCode, fmt.Sprintf("OpenCode Zen upstream returned HTTP %d: %s", resp.StatusCode, string(resp.Body)))
 	}
 
 	processedBody := postProcessCloudZenResponse(resp.Body, modelID)
@@ -774,7 +774,7 @@ func (p *Plugin) executeCloudZenStream(host hostRPC, creds credentials, req exec
 	}
 	if streamResp.StatusCode != http.StatusOK {
 		host.closeHTTPStream(streamResp.StreamID)
-		return nil, fmt.Errorf("OpenCode Zen upstream stream returned HTTP %d", streamResp.StatusCode)
+		return nil, pluginruntime.NewStatusError(streamResp.StatusCode, fmt.Sprintf("OpenCode Zen upstream stream returned HTTP %d", streamResp.StatusCode))
 	}
 
 	if !p.beginStream(req.StreamID, host, streamResp.StreamID) {

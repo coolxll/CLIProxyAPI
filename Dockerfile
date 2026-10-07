@@ -20,7 +20,10 @@ RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 RUN mkdir -p ./plugins/linux/${TARGETARCH} \
     && cd provider-plugins \
     && CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH} go build -buildmode=c-shared -o ../plugins/linux/${TARGETARCH}/lingma-plugin-v0.2.0.so ./cmd/lingma \
-    && rm -f ../plugins/linux/${TARGETARCH}/lingma-plugin-v0.2.0.h
+    && CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH} go build -buildmode=c-shared -o ../plugins/linux/${TARGETARCH}/trae-plugin-v0.2.0.so ./cmd/trae \
+    && CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH} go build -buildmode=c-shared -o ../plugins/linux/${TARGETARCH}/opencode-plugin-v0.2.0.so ./cmd/opencode \
+    && CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH} go build -buildmode=c-shared -o ../plugins/linux/${TARGETARCH}/openrouter-plugin-v0.2.0.so ./cmd/openrouter \
+    && rm -f ../plugins/linux/${TARGETARCH}/*.h
 
 FROM debian:bookworm
 

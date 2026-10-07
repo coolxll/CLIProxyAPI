@@ -126,6 +126,9 @@ func main() {
 		if result.RefreshToken != "" {
 			refreshToken = result.RefreshToken
 		}
+		if result.BoundDeviceID != "" {
+			deviceID = result.BoundDeviceID
+		}
 		fmt.Printf("✅ Logged in as %s (%s)\n", result.Nickname, result.Email)
 		fmt.Printf("✅ Token expires: %s\n", result.ExpiresAt.Format(time.RFC3339))
 	}
@@ -150,6 +153,9 @@ func main() {
 		jwtToken = result.AccessToken
 		if result.RefreshToken != "" {
 			refreshToken = result.RefreshToken
+		}
+		if result.BoundDeviceID != "" {
+			deviceID = result.BoundDeviceID
 		}
 
 		fmt.Printf("✅ Token refreshed, expires: %s\n", result.ExpiresAt.Format(time.RFC3339))
@@ -222,9 +228,10 @@ func main() {
 
 // TokenRefreshResult holds the result of a token refresh
 type TokenRefreshResult struct {
-	AccessToken  string
-	RefreshToken string
-	ExpiresAt    time.Time
+	AccessToken   string
+	RefreshToken  string
+	ExpiresAt     time.Time
+	BoundDeviceID string
 }
 
 // refreshAccessToken refreshes the access token using the refresh token
@@ -296,6 +303,30 @@ func refreshAccessToken(host, refreshToken string) (*TokenRefreshResult, error) 
 		{"refresh_token"},
 	})
 
+	boundDeviceID := extractString(result, [][]string{
+		{"Result", "BoundDeviceID"},
+		{"Result", "boundDeviceId"},
+		{"Result", "bound_device_id"},
+		{"Result", "DeviceID"},
+		{"Result", "deviceId"},
+		{"Result", "device_id"},
+		{"result", "BoundDeviceID"},
+		{"result", "boundDeviceId"},
+		{"result", "bound_device_id"},
+		{"result", "DeviceID"},
+		{"result", "deviceId"},
+		{"result", "device_id"},
+		{"data", "BoundDeviceID"},
+		{"data", "boundDeviceId"},
+		{"data", "bound_device_id"},
+		{"data", "DeviceID"},
+		{"data", "deviceId"},
+		{"data", "device_id"},
+		{"BoundDeviceID"},
+		{"boundDeviceId"},
+		{"bound_device_id"},
+	})
+
 	if accessToken == "" {
 		return nil, fmt.Errorf("no access token in response: %s", string(body[:min(len(body), 500)]))
 	}
@@ -307,9 +338,10 @@ func refreshAccessToken(host, refreshToken string) (*TokenRefreshResult, error) 
 	}
 
 	return &TokenRefreshResult{
-		AccessToken:  accessToken,
-		RefreshToken: newRefresh,
-		ExpiresAt:    expiresAt,
+		AccessToken:   accessToken,
+		RefreshToken:  newRefresh,
+		ExpiresAt:     expiresAt,
+		BoundDeviceID: boundDeviceID,
 	}, nil
 }
 
@@ -338,13 +370,14 @@ func extractString(data map[string]any, paths [][]string) string {
 
 // OAuthLoginResult holds the result of a successful OAuth login.
 type OAuthLoginResult struct {
-	AccessToken  string
-	RefreshToken string
-	ExpiresAt    time.Time
-	Email        string
-	Nickname     string
-	LoginHost    string
-	LoginRegion  string
+	AccessToken   string
+	RefreshToken  string
+	ExpiresAt     time.Time
+	Email         string
+	Nickname      string
+	LoginHost     string
+	LoginRegion   string
+	BoundDeviceID string
 }
 
 // runOAuthLogin performs the full browser-based OAuth login flow.
@@ -376,6 +409,7 @@ func runOAuthLogin(machineID, deviceID string) (*OAuthLoginResult, error) {
 		LoginHost     string
 		LoginRegion   string
 		CloudideToken string
+		BoundDeviceID string
 	}
 	resultCh := make(chan callbackResult, 1)
 	errCh := make(chan error, 1)
@@ -409,11 +443,33 @@ func runOAuthLogin(machineID, deviceID string) (*OAuthLoginResult, error) {
 			region = inferRegion(lh)
 		}
 
+		boundDevID := ""
+		if userJWT := qs.Get("userJwt"); userJWT != "" {
+			var parsedJWT map[string]any
+			if err := json.Unmarshal([]byte(userJWT), &parsedJWT); err == nil {
+				boundDevID = extractString(parsedJWT, [][]string{
+					{"BoundDeviceID"},
+					{"boundDeviceId"},
+					{"bound_device_id"},
+					{"DeviceID"},
+					{"deviceId"},
+					{"device_id"},
+				})
+			}
+		}
+		if boundDevID == "" {
+			boundDevID = qs.Get("BoundDeviceID")
+			if boundDevID == "" {
+				boundDevID = qs.Get("deviceId")
+			}
+		}
+
 		resultCh <- callbackResult{
 			RefreshToken:  rt,
 			LoginHost:     lh,
 			LoginRegion:   region,
 			CloudideToken: qs.Get("cloudideToken"),
+			BoundDeviceID: boundDevID,
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -467,14 +523,20 @@ func runOAuthLogin(machineID, deviceID string) (*OAuthLoginResult, error) {
 			}
 		}
 
+		resolvedDeviceID := tokenResult.BoundDeviceID
+		if resolvedDeviceID == "" {
+			resolvedDeviceID = cb.BoundDeviceID
+		}
+
 		return &OAuthLoginResult{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    tokenResult.ExpiresAt,
-			Email:        email,
-			Nickname:     nickname,
-			LoginHost:    loginHost,
-			LoginRegion:  cb.LoginRegion,
+			AccessToken:   accessToken,
+			RefreshToken:  refreshToken,
+			ExpiresAt:     tokenResult.ExpiresAt,
+			Email:         email,
+			Nickname:      nickname,
+			LoginHost:     loginHost,
+			LoginRegion:   cb.LoginRegion,
+			BoundDeviceID: resolvedDeviceID,
 		}, nil
 
 	case err := <-errCh:

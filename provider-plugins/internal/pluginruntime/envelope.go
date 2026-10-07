@@ -71,3 +71,17 @@ func FailureFromError(err error) []byte {
 	})
 	return encoded
 }
+
+// StatusError is an error that includes an HTTP status code.
+type StatusError struct {
+	Code int
+	Msg  string
+}
+
+func (e StatusError) Error() string   { return e.Msg }
+func (e StatusError) StatusCode() int { return e.Code }
+
+// NewStatusError creates an error with an HTTP status code.
+func NewStatusError(code int, msg string) error {
+	return StatusError{Code: code, Msg: msg}
+}

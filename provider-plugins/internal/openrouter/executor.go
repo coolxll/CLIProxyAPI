@@ -83,11 +83,11 @@ func (p *Plugin) execute(raw []byte) ([]byte, error) {
 				currentModel = fallback
 				continue
 			}
-			return nil, fmt.Errorf("OpenRouter 429 rate limit exceeded for model %q", currentModel)
+			return nil, pluginruntime.NewStatusError(http.StatusTooManyRequests, fmt.Sprintf("OpenRouter 429 rate limit exceeded for model %q", currentModel))
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("OpenRouter upstream returned HTTP %d: %s", resp.StatusCode, string(resp.Body))
+			return nil, pluginruntime.NewStatusError(resp.StatusCode, fmt.Sprintf("OpenRouter upstream returned HTTP %d: %s", resp.StatusCode, string(resp.Body)))
 		}
 
 		lastResp = resp
@@ -174,12 +174,12 @@ func (p *Plugin) executeStream(raw []byte) ([]byte, error) {
 				currentModel = fallback
 				continue
 			}
-			return nil, fmt.Errorf("OpenRouter 429 rate limit exceeded for model %q", currentModel)
+			return nil, pluginruntime.NewStatusError(http.StatusTooManyRequests, fmt.Sprintf("OpenRouter 429 rate limit exceeded for model %q", currentModel))
 		}
 
 		if sResp.StatusCode != http.StatusOK {
 			host.closeHTTPStream(sResp.StreamID)
-			return nil, fmt.Errorf("OpenRouter upstream stream returned HTTP %d", sResp.StatusCode)
+			return nil, pluginruntime.NewStatusError(sResp.StatusCode, fmt.Sprintf("OpenRouter upstream stream returned HTTP %d", sResp.StatusCode))
 		}
 
 		streamResp = sResp

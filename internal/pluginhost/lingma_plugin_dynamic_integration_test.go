@@ -98,7 +98,80 @@ func TestLingmaDynamicLibraryLoadsAndExecutesThroughHostCallbacks(t *testing.T) 
 	}
 }
 
+func TestTraeDynamicLibraryLoadsAndRegisters(t *testing.T) {
+	pluginDir := buildPluginLibrary(t, "trae-plugin", "trae")
+	enabled := true
+	host := New()
+	t.Cleanup(host.ShutdownAll)
+	host.ApplyConfig(context.Background(), &config.Config{
+		AuthDir: t.TempDir(),
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     pluginDir,
+			Configs: map[string]config.PluginInstanceConfig{
+				"trae-plugin": {Enabled: &enabled},
+			},
+		},
+	})
+	if !host.PluginRegistered("trae-plugin") {
+		t.Fatal("trae-plugin was not registered from its dynamic library")
+	}
+	if !host.HasAuthProvider("trae-plugin") || !host.HasExecutorCandidateProvider("trae-plugin") {
+		t.Fatal("trae-plugin did not expose auth and executor capabilities")
+	}
+}
+
+func TestOpenCodeDynamicLibraryLoadsAndRegisters(t *testing.T) {
+	pluginDir := buildPluginLibrary(t, "opencode-plugin", "opencode")
+	enabled := true
+	host := New()
+	t.Cleanup(host.ShutdownAll)
+	host.ApplyConfig(context.Background(), &config.Config{
+		AuthDir: t.TempDir(),
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     pluginDir,
+			Configs: map[string]config.PluginInstanceConfig{
+				"opencode-plugin": {Enabled: &enabled},
+			},
+		},
+	})
+	if !host.PluginRegistered("opencode-plugin") {
+		t.Fatal("opencode-plugin was not registered from its dynamic library")
+	}
+	if !host.HasAuthProvider("opencode-plugin") || !host.HasExecutorCandidateProvider("opencode-plugin") {
+		t.Fatal("opencode-plugin did not expose auth and executor capabilities")
+	}
+}
+
+func TestOpenRouterDynamicLibraryLoadsAndRegisters(t *testing.T) {
+	pluginDir := buildPluginLibrary(t, "openrouter-plugin", "openrouter")
+	enabled := true
+	host := New()
+	t.Cleanup(host.ShutdownAll)
+	host.ApplyConfig(context.Background(), &config.Config{
+		AuthDir: t.TempDir(),
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     pluginDir,
+			Configs: map[string]config.PluginInstanceConfig{
+				"openrouter-plugin": {Enabled: &enabled},
+			},
+		},
+	})
+	if !host.PluginRegistered("openrouter-plugin") {
+		t.Fatal("openrouter-plugin was not registered from its dynamic library")
+	}
+	if !host.HasAuthProvider("openrouter-plugin") || !host.HasExecutorCandidateProvider("openrouter-plugin") {
+		t.Fatal("openrouter-plugin did not expose auth and executor capabilities")
+	}
+}
+
 func buildLingmaPluginLibrary(t *testing.T) string {
+	return buildPluginLibrary(t, "lingma-plugin", "lingma")
+}
+
+func buildPluginLibrary(t *testing.T, pluginName, cmdName string) string {
 	t.Helper()
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -106,12 +179,12 @@ func buildLingmaPluginLibrary(t *testing.T) string {
 	}
 	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
 	outputDir := t.TempDir()
-	outputPath := filepath.Join(outputDir, "lingma-plugin-v0.2.0"+pluginExtension(runtime.GOOS))
-	command := exec.Command("go", "build", "-buildmode=c-shared", "-o", outputPath, "./cmd/lingma")
+	outputPath := filepath.Join(outputDir, pluginName+"-v0.2.0"+pluginExtension(runtime.GOOS))
+	command := exec.Command("go", "build", "-buildmode=c-shared", "-o", outputPath, "./cmd/"+cmdName)
 	command.Dir = filepath.Join(repositoryRoot, "provider-plugins")
 	command.Env = append(os.Environ(), "CGO_ENABLED=1")
 	if output, errBuild := command.CombinedOutput(); errBuild != nil {
-		t.Fatalf("build Lingma dynamic plugin: %v\n%s", errBuild, output)
+		t.Fatalf("build dynamic plugin %s: %v\n%s", pluginName, errBuild, output)
 	}
 	_ = os.Remove(strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".h")
 	return outputDir

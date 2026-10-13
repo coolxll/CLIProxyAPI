@@ -130,7 +130,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          cache: false
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -188,6 +188,7 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/CLIProxyAPI_*
           if-no-files-found: error
+          retention-days: 7
       - name: Upload release assets
         shell: bash
         env:
@@ -324,6 +325,7 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/CLIProxyAPI_*
           if-no-files-found: error
+          retention-days: 7
       - name: Upload release assets
         shell: bash
         env:
@@ -389,7 +391,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          cache: false
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -443,6 +445,7 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/CLIProxyAPI_*
           if-no-files-found: error
+          retention-days: 7
       - name: Upload release assets
         shell: bash
         env:
@@ -517,7 +520,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          cache: false
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Fetch tags
@@ -644,6 +647,7 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/CLIProxyAPI_*
           if-no-files-found: error
+          retention-days: 7
       - name: Upload release assets
         shell: bash
         env:
